@@ -1,0 +1,13 @@
+# Local-development defaults only. Production must activate the prod profile.
+# JWT_SECRET has NO committed fallback: set it in backend/.env.properties
+# (gitignored) or your environment. The old committed dev secret was rotated
+# and must not be reintroduced into source.
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: update
+app:
+  seed:
+    enabled: ${APP_SEED_ENABLED:true}
+  cors:
+    allowed-origins: ${CORS_ORIGINS:http://localhost:*,http://127.0.0.1:*,http://[::1]:*}

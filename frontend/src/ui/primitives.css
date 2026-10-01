@@ -1,0 +1,177 @@
+/*
+ * NovaTutor UI primitives — visual styles for the shared components in
+ * primitives.jsx. These are the only page-agnostic component styles in the
+ * redesigned system; page-specific styling lives beside page CSS sections.
+ *
+ * All values come from tokens.css. No hardcoded colors/radii/shadows here.
+ */
+
+/* ============ Button ============ */
+.nv-btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  border:var(--bw) solid transparent;border-radius:var(--r-sm);
+  padding:10px 16px;min-height:var(--tap);
+  font:600 var(--fs-sm)/1 var(--font-ui);letter-spacing:.1px;
+  cursor:pointer;text-decoration:none;
+  transition:background var(--t-fast) var(--ease-out),border-color var(--t-fast) var(--ease-out),
+             color var(--t-fast) var(--ease-out),transform var(--t-fast) var(--ease-out),
+             box-shadow var(--t-fast) var(--ease-out);
+}
+.nv-btn:active{transform:translateY(1px)}
+.nv-btn:disabled{opacity:.55;cursor:not-allowed;transform:none}
+.nv-btn:focus-visible{outline:none;box-shadow:var(--focus-ring)}
+
+.nv-btn--primary{background:var(--accent);color:var(--on-ink)}
+.nv-btn--primary:hover:not(:disabled){background:var(--accent-strong)}
+
+.nv-btn--secondary{background:var(--surface);color:var(--text);border-color:var(--border-strong)}
+.nv-btn--secondary:hover:not(:disabled){border-color:var(--accent);color:var(--accent-strong)}
+
+.nv-btn--ghost{background:transparent;color:var(--text-2)}
+.nv-btn--ghost:hover:not(:disabled){background:var(--surface-2);color:var(--text)}
+
+.nv-btn--danger{background:var(--danger);color:#fff}
+.nv-btn--danger:hover:not(:disabled){filter:brightness(.88)}
+
+.nv-btn--sm{padding:7px 12px;min-height:32px;font-size:var(--fs-xs)}
+.nv-btn--block{width:100%}
+
+/* ============ Icon button ============ */
+.nv-icon-btn{
+  display:inline-grid;place-items:center;width:var(--tap);height:var(--tap);
+  border:var(--bw) solid var(--border);border-radius:var(--r-sm);
+  background:var(--surface);color:var(--text-2);cursor:pointer;
+  transition:border-color var(--t-fast) var(--ease-out),color var(--t-fast) var(--ease-out),
+             background var(--t-fast) var(--ease-out);
+}
+.nv-icon-btn:hover{border-color:var(--accent);color:var(--accent-strong)}
+.nv-icon-btn:focus-visible{outline:none;box-shadow:var(--focus-ring)}
+.nv-icon-btn:disabled{opacity:.5;cursor:not-allowed}
+
+/* ============ Card / Panel ============ */
+.nv-card{background:var(--surface);border:var(--bw) solid var(--border);border-radius:var(--r-md)}
+.nv-card--pad{padding:var(--sp-5)}
+.nv-card--interactive{transition:border-color var(--t-fast) var(--ease-out),transform var(--t-fast) var(--ease-out),box-shadow var(--t-fast) var(--ease-out);cursor:pointer}
+.nv-card--interactive:hover{border-color:var(--border-strong);transform:translateY(-1px);box-shadow:var(--shadow-1)}
+
+/* ============ Section header ============ */
+.nv-section-head{display:flex;align-items:flex-end;justify-content:space-between;gap:var(--sp-4);margin:var(--sp-6) 0 var(--sp-4)}
+.nv-section-head h2{font:600 var(--fs-xl)/1.2 var(--font-display);letter-spacing:-.3px;margin:0;color:var(--text)}
+.nv-section-head p{margin:4px 0 0;color:var(--muted);font-size:var(--fs-sm)}
+.nv-section-head .nv-btn{flex:none}
+
+/* ============ Badge ============ */
+.nv-badge{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:var(--r-full);
+  font:600 var(--fs-xs)/1.4 var(--font-ui);border:var(--bw) solid transparent}
+.nv-badge--neutral{background:var(--surface-2);color:var(--text-2);border-color:var(--border)}
+.nv-badge--accent{background:var(--accent-soft);color:var(--accent-strong);border-color:transparent}
+.nv-badge--energy{background:var(--energy-soft);color:var(--energy);border-color:transparent}
+.nv-badge--success{background:var(--success-soft);color:var(--success)}
+.nv-badge--warning{background:var(--warning-soft);color:var(--warning)}
+.nv-badge--danger{background:var(--danger-soft);color:var(--danger)}
+
+/* ============ Inputs ============ */
+.nv-field{display:grid;gap:6px}
+.nv-field>label{font:600 var(--fs-xs)/1.3 var(--font-ui);color:var(--text-2)}
+.nv-input,.nv-textarea,.nv-select{
+  width:100%;box-sizing:border-box;
+  border:var(--bw) solid var(--border-strong);border-radius:var(--r-sm);
+  background:var(--surface);color:var(--text);
+  padding:11px 13px;font:400 var(--fs-sm)/1.5 var(--font-ui);
+  transition:border-color var(--t-fast) var(--ease-out),box-shadow var(--t-fast) var(--ease-out);
+}
+.nv-textarea{resize:vertical;min-height:96px;line-height:1.6}
+.nv-input::placeholder,.nv-textarea::placeholder{color:var(--muted)}
+.nv-input:focus,.nv-textarea:focus,.nv-select:focus{outline:none;border-color:var(--accent);box-shadow:var(--focus-ring)}
+.nv-input:disabled,.nv-textarea:disabled,.nv-select:disabled{background:var(--surface-2);opacity:.7}
+.nv-field-error{font-size:var(--fs-xs);color:var(--danger);margin:0}
+
+/* Password input with trailing toggle button */
+.nv-pass{position:relative}
+.nv-pass .nv-input{padding-right:44px}
+.nv-pass-toggle{
+  position:absolute;right:5px;top:50%;transform:translateY(-50%);
+  border:0;background:transparent;color:var(--muted);cursor:pointer;
+  width:32px;height:32px;display:grid;place-items:center;border-radius:var(--r-sm);
+}
+.nv-pass-toggle:hover{color:var(--text);background:var(--surface-2)}
+.nv-pass-toggle:focus-visible{outline:none;box-shadow:var(--focus-ring)}
+
+/* ============ Segmented control (single-select tabs) ============ */
+.nv-seg{display:inline-flex;padding:3px;gap:2px;background:var(--surface-2);border:var(--bw) solid var(--border);border-radius:var(--r-sm)}
+.nv-seg>button{
+  border:0;background:transparent;border-radius:calc(var(--r-sm) - 2px);
+  padding:8px 14px;min-height:34px;font:600 var(--fs-xs)/1 var(--font-ui);color:var(--text-2);cursor:pointer;
+  transition:background var(--t-fast) var(--ease-out),color var(--t-fast) var(--ease-out);
+  white-space:nowrap;
+}
+.nv-seg>button:hover{color:var(--text)}
+.nv-seg>button[aria-pressed="true"],.nv-seg>button.is-active{background:var(--surface);color:var(--accent-strong);box-shadow:var(--shadow-1)}
+.nv-seg>button:focus-visible{outline:none;box-shadow:var(--focus-ring)}
+
+/* Scrollable tab row (mobile-first; used by hubs) */
+.nv-tabs{display:flex;gap:4px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.nv-tabs::-webkit-scrollbar{display:none}
+.nv-tabs>button{
+  flex:none;border:0;background:transparent;border-radius:var(--r-sm);
+  padding:9px 14px;font:600 var(--fs-sm)/1 var(--font-ui);color:var(--muted);cursor:pointer;
+  border-bottom:2px solid transparent;
+  transition:color var(--t-fast) var(--ease-out),border-color var(--t-fast) var(--ease-out);
+}
+.nv-tabs>button:hover{color:var(--text)}
+.nv-tabs>button.is-active{color:var(--accent-strong);border-bottom-color:var(--accent)}
+.nv-tabs>button:focus-visible{outline:none;box-shadow:var(--focus-ring)}
+
+/* ============ Progress ============ */
+.nv-progress{height:6px;background:var(--surface-2);border-radius:var(--r-full);overflow:hidden}
+.nv-progress>i{display:block;height:100%;background:var(--accent);border-radius:inherit;
+  transition:width var(--t-slow) var(--ease-out)}
+.nv-progress--energy>i{background:var(--energy)}
+
+/* ============ Empty / Error states ============ */
+.nv-empty{display:grid;place-items:center;align-content:center;gap:6px;text-align:center;
+  padding:var(--sp-7) var(--sp-5);color:var(--muted)}
+.nv-empty svg,.nv-empty .nv-empty-icon{color:var(--border-strong)}
+.nv-empty b{font:600 var(--fs-md)/1.3 var(--font-ui);color:var(--text-2)}
+.nv-empty span{font-size:var(--fs-sm);max-width:44ch}
+
+.nv-error-banner{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:var(--r-sm);
+  background:var(--danger-soft);border:var(--bw) solid color-mix(in srgb,var(--danger) 30%,transparent);
+  color:var(--danger);font-size:var(--fs-sm);line-height:1.5}
+.nv-error-banner b{font-weight:700}
+
+/* ============ Modal / Sheet / Drawer ============ */
+.nv-overlay{position:fixed;inset:0;background:rgba(15,18,24,.5);z-index:60;
+  display:grid;place-items:center;padding:var(--sp-4);
+  animation:nv-fade-in var(--t-fast) var(--ease-out)}
+.nv-overlay--sheet{place-items:end center;padding:0}
+.nv-modal{background:var(--elevated);border:var(--bw) solid var(--border);border-radius:var(--r-lg);
+  box-shadow:var(--shadow-2);width:min(560px,100%);max-height:min(80vh,640px);
+  display:flex;flex-direction:column;overflow:hidden;
+  animation:nv-pop-in var(--t-slow) var(--ease-out)}
+.nv-sheet{background:var(--elevated);border:var(--bw) solid var(--border);border-radius:var(--r-lg) var(--r-lg) 0 0;
+  width:100%;max-height:86vh;display:flex;flex-direction:column;overflow:hidden;
+  animation:nv-slide-up var(--t-slow) var(--ease-out)}
+.nv-drawer{background:var(--elevated);border-left:var(--bw) solid var(--border);height:100%;
+  width:min(420px,92vw);display:flex;flex-direction:column;overflow:hidden;justify-self:end;
+  animation:nv-slide-in-right var(--t-slow) var(--ease-out)}
+.nv-modal-head,.nv-sheet-head,.nv-drawer-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);
+  padding:var(--sp-4) var(--sp-5);border-bottom:var(--bw) solid var(--border)}
+.nv-modal-head h3,.nv-sheet-head h3,.nv-drawer-head h3{margin:0;font:600 var(--fs-lg)/1.2 var(--font-display);color:var(--text)}
+.nv-modal-body,.nv-sheet-body,.nv-drawer-body{padding:var(--sp-5);overflow:auto}
+@keyframes nv-fade-in{from{opacity:0}}
+@keyframes nv-pop-in{from{opacity:0;transform:scale(.97) translateY(6px)}}
+@keyframes nv-slide-up{from{transform:translateY(100%)}}
+@keyframes nv-slide-in-right{from{transform:translateX(100%)}}
+
+/* ============ Skeleton block helpers for list/card loading ============ */
+.nv-skeleton-card{padding:var(--sp-4)}
+.nv-skeleton-row{display:flex;gap:12px;align-items:center;padding:10px 0}
+
+/* ============ Utility ============ */
+.nv-eyebrow{font:700 var(--fs-xs)/1 var(--font-ui);letter-spacing:1.6px;text-transform:uppercase;color:var(--muted)}
+.nv-row{display:flex;align-items:center;gap:var(--sp-3)}
+.nv-row--between{justify-content:space-between}
+.nv-stack{display:grid;gap:var(--sp-3)}
+.nv-muted{color:var(--muted)}
+.nv-sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;clip:rect(0 0 0 0);overflow:hidden;white-space:nowrap}

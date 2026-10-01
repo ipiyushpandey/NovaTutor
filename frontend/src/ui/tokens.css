@@ -1,0 +1,170 @@
+/*
+ * NovaTutor design tokens — "Editorial Ink".
+ *
+ * Single source of truth for the visual identity. Pages consume ONLY these
+ * variables; no component may hardcode colors, radii or shadows.
+ *
+ * Identity: high-contrast editorial black/white/neutral. The interface is
+ * strong WITHOUT any accent color. Ink (--ink) is the emphasis color:
+ * selection, active navigation, primary buttons. Color appears ONLY where it
+ * carries meaning: success, warning, danger, progress, energy (streak/XP),
+ * AI/live state, exam states.
+ *
+ * Load order: tokens.css -> motion.css -> primitives.css -> styles.css.
+ * styles.css (legacy) is migrated toward these tokens phase by phase and
+ * finally retires; tokens stay stable across that migration.
+ */
+
+:root{
+  /* ---- Color · neutrals (editorial off-white, light mode) ---- */
+  --bg:#FCFCFA;            /* app background */
+  --surface:#FFFFFF;       /* resting surface */
+  --surface-2:#F5F5F2;     /* recessed surface (wells, code chips, hover fill) */
+  --elevated:#FFFFFF;      /* sheets, modals, drawers */
+  --border:#E7E7E4;        /* hairline borders */
+  --border-strong:#D9D9D5; /* input borders, dividers needing weight */
+
+  /* ---- Color · text ---- */
+  --text:#14161B;
+  --text-2:#4B4F58;        /* secondary */
+  --muted:#71757E;         /* captions, metadata — contrast-checked >= 4.5:1 on --bg */
+
+  /* ---- Color · emphasis (ink replaces "accent everywhere") ----
+     Selection, active nav, primary actions. Black in light mode,
+     white in dark mode — emphasis by contrast, not hue. */
+  --ink:#14161B;
+  --ink-2:#3C3F46;         /* hovered ink */
+  --ink-soft:#F0F0ED;      /* tinted neutral fill (selected rows, wells) */
+  --on-ink:#FCFCFA;        /* text on ink fills */
+
+  /* ---- Color · accent (restrained, meaningful uses only) ----
+     Primary CTAs and the AI identity. NOT for every active state. */
+  --accent:#14161B;        /* primary action = ink button */
+  --accent-rgb:20,22,28;   /* rgb twin of --ink for alpha tints (rgba(var(--accent-rgb),.08)) */
+  --accent-strong:#000000; /* pressed */
+  --accent-soft:#F0F0ED;   /* neutral tinted fill */
+  --accent-ring:rgba(20,22,27,.28); /* focus rings */
+
+  /* ---- Color · energy (learning signals ONLY: streaks, XP, milestones) ---- */
+  --energy:#B45309;
+  --energy-soft:#FDF1DF;
+
+  /* ---- Color · semantic ---- */
+  --success:#167D4A;   --success-soft:#E7F5EC;
+  --warning:#B45309;   --warning-soft:#FDF1DF;
+  --danger:#B3362B;    --danger-soft:#FBEAE8;
+  --info:#3D6B8C;      --info-soft:#E9F1F6;
+  --live:#6B5CE7;      /* AI / streaming / live state (only place violet survives) */
+  --live-soft:#EFEDFC;
+
+  /* ---- Color · code surfaces (both modes; editor stays dark for focus) ---- */
+  --code-bg:#171A23;
+  --code-border:#2A2E3C;
+  --code-text:#E8EAF2;
+
+  /* ---- Typography ---- */
+  --font-ui:'DM Sans',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --font-display:'Space Grotesk','DM Sans',system-ui,sans-serif; /* brand + page titles only */
+  --font-reading:'Source Serif 4',Georgia,'Times New Roman',serif; /* lessons + long AI answers */
+  --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+
+  --fs-xs:12px;    /* metadata, captions */
+  --fs-sm:13px;    /* body minimum (mobile-safe) */
+  --fs-md:15px;    /* default body */
+  --fs-lg:17px;    /* emphasized body, list titles */
+  --fs-xl:20px;    /* section titles */
+  --fs-2xl:24px;   /* page titles (calm pages) */
+  --fs-3xl:31px;   /* display titles */
+  --lh-tight:1.25;
+  --lh-body:1.6;
+  --lh-reading:1.75; /* long-form measure */
+
+  /* ---- Spacing (4-base scale) ---- */
+  --sp-1:4px;  --sp-2:8px;  --sp-3:12px; --sp-4:16px;
+  --sp-5:24px; --sp-6:32px; --sp-7:48px; --sp-8:64px;
+
+  /* ---- Radii ---- */
+  --r-sm:8px;   /* controls: buttons, inputs, chips */
+  --r-md:12px;  /* cards, list rows */
+  --r-lg:16px;  /* sheets, modals, drawers */
+  --r-full:999px;
+
+  /* ---- Elevation (two steps only) ---- */
+  --shadow-1:0 1px 2px rgba(23,26,33,.05),0 1px 6px rgba(23,26,33,.04);
+  --shadow-2:0 6px 24px rgba(23,26,33,.10),0 2px 8px rgba(23,26,33,.06);
+
+  /* ---- Borders ---- */
+  --bw:1px;
+
+  /* ---- Motion ---- */
+  --t-fast:120ms;   /* hover, press, toggles */
+  --t-med:200ms;    /* reveals, transitions, progress */
+  --t-slow:300ms;   /* drawers, sheets, modals */
+  --ease-out:cubic-bezier(.2,.7,.3,1);
+  --ease-in-out:cubic-bezier(.5,0,.3,1);
+
+  /* ---- Breakpoints (reference values for media queries) ---- */
+  --bp-xs:360px; --bp-sm:480px; --bp-md:768px; --bp-lg:1024px; --bp-xl:1280px;
+
+  /* ---- Layout ---- */
+  --topbar-h:60px;         /* horizontal navbar height */
+  --content-max:1280px;    /* content ceiling on large screens */
+  --reading-max:72ch;      /* long-form measure cap */
+  --tap:40px;              /* minimum touch target */
+
+  /* ---- Focus ---- */
+  --focus-ring:0 0 0 3px var(--accent-ring);
+
+  color-scheme:light;
+}
+
+/* ---- Dark mode: same structure, re-graded (never a blind inversion) ---- */
+:root.dark{
+  --bg:#0E1013;
+  --surface:#15181D;
+  --surface-2:#1B1F26;
+  --elevated:#1B1F26;
+  --border:#262B33;
+  --border-strong:#3A4150;
+
+  --text:#EDEEF2;
+  --text-2:#B9BFca;
+  --muted:#9AA1AD;
+
+  --ink:#EDEEF2;
+  --ink-2:#FFFFFF;
+  --ink-soft:#1E232B;
+  --on-ink:#14161B;
+
+  --accent:#EDEEF2;        /* primary action = white button in dark mode */
+  --accent-rgb:237,238,242;
+  --accent-strong:#FFFFFF;
+  --accent-soft:#1E232B;
+  --accent-ring:rgba(237,238,242,.32);
+
+  --energy:#E8B45A;
+  --energy-soft:#332812;
+
+  --success:#4CC38A;  --success-soft:#15301F;
+  --warning:#E8B45A;  --warning-soft:#332812;
+  --danger:#E5766B;   --danger-soft:#3A1D1A;
+  --info:#7FB3D8;     --info-soft:#1A2A36;
+  --live:#8B7CF7;     --live-soft:#1F1B33;
+
+  --code-bg:#12151D;
+  --code-border:#262B38;
+  --code-text:#E8EAF2;
+
+  --shadow-1:0 1px 2px rgba(0,0,0,.35);
+  --shadow-2:0 6px 24px rgba(0,0,0,.45);
+
+  color-scheme:dark;
+}
+
+/* Honor OS-level reduced motion globally: every token-driven animation and
+   smooth scroll collapses to instant. Individual loops must ALSO disable
+   themselves via the .reduce-motion media block in motion.css. */
+@media (prefers-reduced-motion:reduce){
+  :root{--t-fast:1ms;--t-med:1ms;--t-slow:1ms}
+  *{scroll-behavior:auto!important}
+}

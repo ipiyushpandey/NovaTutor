@@ -1,0 +1,61 @@
+/*
+ * NovaTutor motion language — purposeful, cheap, reduced-motion safe.
+ *
+ * Rules:
+ *  - Animate ONLY transform/opacity (compositor-friendly).
+ *  - Every animation is enabled by an opt-in class, never globally.
+ *  - prefers-reduced-motion collapses all of it (tokens go to 1ms and the
+ *    animation properties below are neutralized).
+ */
+
+/* ---- Page transition: applied to the page container on route change ---- */
+@keyframes nova-page-in{
+  from{opacity:0;transform:translateY(8px)}
+  to{opacity:1;transform:none}
+}
+.page-in{animation:nova-page-in var(--t-med) var(--ease-out) both}
+
+/* ---- Staggered entrance for repeated items (cards, rows, list items) ---- */
+/* Parent adds .stagger; children get an incremental delay via --i. */
+@keyframes nova-rise{
+  from{opacity:0;transform:translateY(10px)}
+  to{opacity:1;transform:none}
+}
+.stagger>*{animation:nova-rise var(--t-med) var(--ease-out) both;animation-delay:calc(min(var(--i,0),5)*30ms)}
+.stagger>:nth-child(1){--i:0}.stagger>:nth-child(2){--i:1}.stagger>:nth-child(3){--i:2}
+.stagger>:nth-child(4){--i:3}.stagger>:nth-child(5){--i:4}.stagger>:nth-child(6){--i:5}
+
+/* ---- Scroll reveal: single fire when .in-view is added by useInView() ---- */
+.reveal{opacity:0;transform:translateY(14px);transition:opacity var(--t-slow) var(--ease-out),transform var(--t-slow) var(--ease-out)}
+.reveal.in-view{opacity:1;transform:none}
+
+/* ---- Skeleton loading (pulsing opacity only) ---- */
+@keyframes nova-pulse{50%{opacity:.45}}
+.skeleton{background:var(--surface-2);border-radius:var(--r-sm);animation:nova-pulse 1.4s ease-in-out infinite}
+.skeleton-text{height:12px;margin:6px 0}
+.skeleton-text.w60{width:60%}.skeleton-text.w80{width:80%}
+
+/* ---- Live status dot (the ONLY allowed loop) ---- */
+@keyframes nova-live{50%{opacity:.5}}
+.live-dot{animation:nova-live 2.2s ease-in-out infinite}
+
+/* ---- Success confirm: checkmark draw-on (stroke-dashoffset animation is
+   cheap and fires once; used on completion feedback) ---- */
+@keyframes nova-check{to{stroke-dashoffset:0}}
+.nova-check path{stroke-dasharray:24;stroke-dashoffset:24;animation:nova-check .35s var(--ease-out) forwards}
+
+/* ---- Press feedback for all interactive elements (see primitives.css) ---- */
+@keyframes nova-press{50%{transform:scale(.985)}}
+.press:active{animation:nova-press var(--t-fast) var(--ease-out)}
+
+/* ---- Streaming caret for AI output ---- */
+@keyframes nova-caret{50%{opacity:0}}
+.stream-caret::after{content:'▍';color:var(--accent);animation:nova-caret 1s steps(1) infinite}
+
+/* ---- Reduced motion: neutralize everything opted in above ---- */
+@media (prefers-reduced-motion:reduce){
+  .page-in,.stagger>*,.reveal,.skeleton,.live-dot,.press:active{animation:none!important}
+  .reveal{opacity:1;transform:none}
+  .nova-check path{stroke-dashoffset:0;animation:none}
+  .stream-caret::after{animation:none}
+}
