@@ -9,7 +9,7 @@
 .gate-page button:focus-visible,
 .gate-page a:focus-visible,
 .gate-page input:focus-visible,
-.gate-page select:focus-visible{outline:3px solid rgba(30,122,95,.24);outline-offset:2px;}
+.gate-page select:focus-visible{outline:3px solid var(--accent-ring);outline-offset:2px;}
 .gate-page .gate-subject-card,
 .gate-page .gate-note-card,
 .gate-page .gate-official-card,
@@ -17,15 +17,15 @@
 .gate-page .gate-options button,
 .gate-page .gate-tabs button{transition:transform .18s ease,border-color .18s ease,background-color .18s ease,box-shadow .18s ease,color .18s ease;}
 .gate-page .gate-options button{min-width:0;overflow-wrap:anywhere;}
-.gate-page .gate-options button:hover{transform:translateY(-1px);box-shadow:0 7px 18px rgba(55,38,90,.07);}
-.gate-page .gate-options button.selected{background:rgba(30,122,95,.12);border-color:var(--accent);box-shadow:0 0 0 3px rgba(30,122,95,.10),0 8px 20px rgba(30,122,95,.08);}
-.gate-page .gate-options button.selected span{background:var(--accent);color:#fff;box-shadow:0 0 0 2px rgba(30,122,95,.14);}
+.gate-page .gate-options button:hover{transform:translateY(-1px);box-shadow:0 7px 18px rgba(var(--accent-rgb,20,22,28),.07);}
+.gate-page .gate-options button.selected{background:var(--accent-soft);border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-ring),0 8px 20px rgba(var(--accent-rgb,20,22,28),.08);}
+.gate-page .gate-options button.selected span{background:var(--accent);color:var(--on-ink);box-shadow:0 0 0 2px var(--accent-ring);}
 .gate-page .gate-resource-card a,
 .gate-page .gate-resource-card .text-btn,
 .gate-page .gate-syllabus-index,
 .gate-page .gate-question-meta b,
 .gate-page .gate-options button span{transition:background-color .18s ease,color .18s ease,border-color .18s ease;}
-.gate-page .gate-resource-card a:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(30,122,95,.12);}
+.gate-page .gate-resource-card a:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(var(--accent-rgb,20,22,28),.12);}
 .gate-page .gate-source-links a{min-width:0;overflow-wrap:anywhere;transition:transform .18s ease,border-color .18s ease,background-color .18s ease;}
 .gate-page .gate-source-links a:hover{transform:translateY(-1px);}
 .gate-page .gate-pdf-container{width:100%;max-width:100%;overflow:auto;border:1px solid var(--border);border-radius:14px;background:var(--card);box-shadow:0 8px 24px rgba(20,20,35,.06);}
@@ -35,15 +35,15 @@
 .dark .gate-page .gate-resource-card a,
 .dark .gate-page .gate-syllabus-index,
 .dark .gate-page .gate-question-meta b,
-.dark .gate-page .gate-options button span{background:#1d2b25;color:var(--accent-dark,#3fbf9a);border-color:var(--border);}
-.dark .gate-page .gate-options button.selected{background:rgba(63,191,154,.22);border-color:var(--accent-dark,#3fbf9a);color:var(--text);box-shadow:0 0 0 3px rgba(63,191,154,.13),0 8px 20px rgba(0,0,0,.18);}
-.dark .gate-page .gate-options button.selected span{background:var(--accent-dark,#3fbf9a);color:#fff;border-color:var(--accent-dark,#3fbf9a);}
+.dark .gate-page .gate-options button span{background:var(--accent-soft);color:var(--accent);border-color:var(--border);}
+.dark .gate-page .gate-options button.selected{background:var(--accent-soft);border-color:var(--accent);color:var(--text);box-shadow:0 0 0 3px var(--accent-ring),0 8px 20px rgba(0,0,0,.18);}
+.dark .gate-page .gate-options button.selected span{background:var(--accent);color:var(--on-ink);border-color:var(--accent);}
 .dark .gate-page .gate-resource-card a:hover,
 .dark .gate-page .gate-source-links a:hover{background:var(--surface-2);}
 .dark .gate-page .gate-test-shell.active-paper .gate-test-head,
 .dark .gate-page .gate-test-shell.active-paper .gate-test-backbar,
 .dark .gate-page .gate-test-shell.active-paper .gate-question-nav{box-shadow:none;}
-.dark .gate-page .gate-test-shell.active-paper .gate-question-nav-actions{background:rgba(21,25,39,.96);}
+.dark .gate-page .gate-test-shell.active-paper .gate-question-nav-actions{background:var(--elevated);}
 
 @media(max-width:600px){
   .gate-page .gate-options button{padding:13px 12px;min-height:54px;font-size:12px;}
@@ -81,9 +81,9 @@
 .gate-page .gate-subject-grid,
 .gate-page .gate-resource-grid,
 .gate-page .gate-topic-grid{align-items:stretch}
-.gate-page .gate-pdf-container{scrollbar-width:thin;scrollbar-color:rgba(30,122,95,.35) transparent}
+.gate-page .gate-pdf-container{scrollbar-width:thin;scrollbar-color:rgba(var(--accent-rgb,20,22,28),.35) transparent}
 .gate-page .gate-pdf-container::-webkit-scrollbar{height:8px;width:8px}
-.gate-page .gate-pdf-container::-webkit-scrollbar-thumb{background:rgba(30,122,95,.35);border-radius:20px}
+.gate-page .gate-pdf-container::-webkit-scrollbar-thumb{background:rgba(var(--accent-rgb,20,22,28),.35);border-radius:20px}
 .gate-page .gate-pdf-container::-webkit-scrollbar-track{background:transparent}
 @media(max-width:600px){
   .gate-page .gate-card-pdf-list .compact{white-space:normal;min-height:42px}

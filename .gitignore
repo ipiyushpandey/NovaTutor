@@ -7,8 +7,9 @@ target/
 .env.*
 .env.properties
 backend/.env.properties
-# The setup template is safe to commit (placeholders only):
+# The setup templates are safe to commit (placeholders only):
 !backend/.env.properties.example
+!frontend/.env.example
 
 # Logs and runtime output
 *.log

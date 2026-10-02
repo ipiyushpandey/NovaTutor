@@ -89,13 +89,17 @@
 /* Password input with trailing toggle button */
 .nv-pass{position:relative}
 .nv-pass .nv-input{padding-right:44px}
-.nv-pass-toggle{
-  position:absolute;right:5px;top:50%;transform:translateY(-50%);
+/* Centred with top/bottom + margin:auto rather than translateY(-50%), so the
+   global button:hover lift rule can't displace it (same trap as .auth-pass). */
+.nv-pass .nv-pass-toggle{
+  position:absolute;right:5px;top:0;bottom:0;margin:auto 0;
   border:0;background:transparent;color:var(--muted);cursor:pointer;
   width:32px;height:32px;display:grid;place-items:center;border-radius:var(--r-sm);
+  transform:none;
 }
-.nv-pass-toggle:hover{color:var(--text);background:var(--surface-2)}
-.nv-pass-toggle:focus-visible{outline:none;box-shadow:var(--focus-ring)}
+.nv-pass .nv-pass-toggle:hover{color:var(--text);background:var(--surface-2);transform:none}
+.nv-pass .nv-pass-toggle:active{transform:none}
+.nv-pass .nv-pass-toggle:focus-visible{outline:none;box-shadow:var(--focus-ring);transform:none}
 
 /* ============ Segmented control (single-select tabs) ============ */
 .nv-seg{display:inline-flex;padding:3px;gap:2px;background:var(--surface-2);border:var(--bw) solid var(--border);border-radius:var(--r-sm)}

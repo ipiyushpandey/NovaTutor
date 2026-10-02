@@ -146,6 +146,7 @@ export default function DsaPractice({user,api}){
                 </span>
                 <span className="dsa-row-actions" onClick={e=>e.stopPropagation()}>
                   <button className={'dsa-star'+(st.bookmarked?' on':'')} title={st.bookmarked?'Remove bookmark':'Bookmark'}
+                    aria-label={st.bookmarked?'Remove bookmark':'Bookmark problem'} aria-pressed={st.bookmarked}
                     onClick={async()=>{
                       const nb=!st.bookmarked;
                       setProgress(prev=>({...prev,[p.slug]:{...st,bookmarked:nb}}));
@@ -277,7 +278,7 @@ function DsaProblemView({api,slug,saved,onBack,onProgress}){
           </div>
         </div>
         <div className="dsa-detail-actions">
-          <button className={'dsa-star'+(bookmarked?' on':'')} onClick={toggleBookmark} title={bookmarked?'Remove bookmark':'Bookmark'}>★</button>
+          <button className={'dsa-star'+(bookmarked?' on':'')} onClick={toggleBookmark} title={bookmarked?'Remove bookmark':'Bookmark'} aria-label={bookmarked?'Remove bookmark':'Bookmark problem'} aria-pressed={bookmarked}>★</button>
           <span className="dsa-status"><Clock3 size={13}/>{saved?.attempts||0} attempt{(saved?.attempts||0)===1?'':'s'}</span>
         </div>
       </div>
