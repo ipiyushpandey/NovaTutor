@@ -31,6 +31,9 @@ build/
 .idea/
 .vscode/
 
+# Local agent/development tooling (machine-specific data, may contain credentials)
+.freebuff/
+
 # OS files
 .DS_Store
 Thumbs.db

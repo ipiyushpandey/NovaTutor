@@ -1,17 +1,17 @@
 import React,{useEffect,useMemo,useState,useCallback,useRef} from 'react';
-import {Code2,Target,Trophy,CheckCircle2,ChevronRight,ChevronLeft,BookOpen,Lightbulb,Brain,PlayCircle,BarChart3,Clock3,RotateCcw} from './icons.jsx';
+import {Code2,Target,CheckCircle2,ChevronLeft,BookOpen,Lightbulb,Brain,PlayCircle,Clock3,RotateCcw} from './icons.jsx';
 import AiMarkdown from './AiMarkdown.jsx';
 
 const LANGS=[['java','Java'],['python','Python'],['c++','C++'],['c','C'],['javascript','JavaScript'],['go','Go']];
-const DIFF_COLOR={EASY:'#16a34a',MEDIUM:'#d97706',HARD:'#dc2626'};
+const DIFF_COLOR={EASY:'var(--success)',MEDIUM:'var(--warning)',HARD:'var(--danger)'};
 
 function DiffPill({d}){
-  const c=DIFF_COLOR[d]||'#1e7a5f';
+  const c=DIFF_COLOR[d]||'var(--text-2)';
   return <span className="dsa-pill" style={{color:c}}>{d}</span>;
 }
 function StatusMark({st}){
-  if(st==='SOLVED') return <span className="dsa-status" style={{color:'#16a34a'}}><CheckCircle2 size={14}/>Solved</span>;
-  if(st==='ATTEMPTED') return <span className="dsa-status" style={{color:'#d97706'}}><RotateCcw size={13}/>Attempted</span>;
+  if(st==='SOLVED') return <span className="dsa-status" style={{color:'var(--success)'}}><CheckCircle2 size={14}/>Solved</span>;
+  if(st==='ATTEMPTED') return <span className="dsa-status" style={{color:'var(--warning)'}}><RotateCcw size={13}/>Attempted</span>;
   return <span className="dsa-status" style={{color:'var(--muted)'}}><Target size={13}/>New</span>;
 }
 
@@ -98,9 +98,9 @@ export default function DsaPractice({user,api}){
 
       <section className="dsa-stat-grid">
         <div><b>{summary?summary.total:'—'}</b><span>Total problems</span></div>
-        <div><b style={{color:'#16a34a'}}>{summary?summary.solved:'—'}</b><span>Solved</span></div>
-        <div><b style={{color:'#d97706'}}>{summary?summary.attempted:'—'}</b><span>Attempted</span></div>
-        <div><b style={{color:'#f0a500'}}>{summary?summary.bookmarked:'—'}</b><span>Bookmarked</span></div>
+        <div><b style={{color:'var(--success)'}}>{summary?summary.solved:'—'}</b><span>Solved</span></div>
+        <div><b style={{color:'var(--energy)'}}>{summary?summary.attempted:'—'}</b><span>Attempted</span></div>
+        <div><b style={{color:'var(--energy)'}}>{summary?summary.bookmarked:'—'}</b><span>Bookmarked</span></div>
       </section>
 
       <section id="dsa-browser">
@@ -110,13 +110,13 @@ export default function DsaPractice({user,api}){
         </div>
         <div className="dsa-toolbar">
           <input type="text" placeholder="Search title, slug or tag…" value={q} onChange={e=>setQ(e.target.value)}/>
-          <select value={diff} onChange={e=>setDiff(e.target.value)}>
+          <select aria-label="Difficulty" value={diff} onChange={e=>setDiff(e.target.value)}>
             <option value="ALL">All difficulty</option><option value="EASY">Easy</option><option value="MEDIUM">Medium</option><option value="HARD">Hard</option>
           </select>
-          <select value={topic} onChange={e=>setTopic(e.target.value)}>
+          <select aria-label="Topic" value={topic} onChange={e=>setTopic(e.target.value)}>
             {topics.map(t=><option key={t} value={t}>{t==='ALL'?'All topics':t}</option>)}
           </select>
-          <select value={status} onChange={e=>setStatus(e.target.value)}>
+          <select aria-label="Status" value={status} onChange={e=>setStatus(e.target.value)}>
             <option value="ALL">Any status</option><option value="NEW">New</option><option value="ATTEMPTED">Attempted</option><option value="SOLVED">Solved</option><option value="BOOKMARKED">Bookmarked</option>
           </select>
           <span className="dsa-count">{filtered.length} problem{filtered.length===1?'':'s'}</span>
@@ -308,7 +308,7 @@ function DsaProblemView({api,slug,saved,onBack,onProgress}){
         <div className="dsa-editor-head">
           <h4><Code2 size={15}/>Solution</h4>
           <div className="dsa-editor-tools">
-            <select value={lang} onChange={e=>switchLang(e.target.value)}>
+            <select aria-label="Language" value={lang} onChange={e=>switchLang(e.target.value)}>
               {LANGS.map(l=><option key={l[0]} value={l[0]} disabled={l[0]==='c'&&!problem.cSupported}>{l[1]}{l[0]==='c'&&!problem.cSupported?' (n/a)':''}</option>)}
             </select>
             <button className="text-btn" onClick={async()=>{const s=await api(`/dsa/problems/${slug}/starter?language=${encodeURIComponent(lang)}`);if(s&&s.code)onEdit(s.code);}}>Reset starter</button>
