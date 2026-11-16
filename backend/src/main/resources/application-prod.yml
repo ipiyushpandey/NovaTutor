@@ -13,7 +13,10 @@ spring:
       max-lifetime: ${DB_POOL_MAX_LIFETIME_MS:1800000}
   jpa:
     hibernate:
-      ddl-auto: validate
+      # Managed MySQL-compatible providers start empty: set JPA_DDL_AUTO=update
+      # for the first deploy so Hibernate creates the schema, then revert to
+      # validate. Never set create/create-drop on a database with data.
+      ddl-auto: ${JPA_DDL_AUTO:validate}
   jackson:
     serialization:
       write-dates-as-timestamps: false
@@ -23,7 +26,9 @@ spring:
       max-request-size: 50MB
 app:
   seed:
-    enabled: false
+    # Off by default in production. A first deploy against an empty schema can
+    # opt in with APP_SEED_ENABLED=true; the seeder never wipes existing data.
+    enabled: ${APP_SEED_ENABLED:false}
   rate-limit:
     enabled: ${RATE_LIMIT_ENABLED:true}
     requests-per-minute: ${RATE_LIMIT_RPM:1000}

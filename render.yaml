@@ -1,0 +1,72 @@
+# Render Blueprint for NovaTutor.
+#
+# Frontend: free static site (React + Vite, SPA rewrite)
+# Backend:  free Docker web service (Java 21 + Spring Boot 3.5.3, prod profile)
+# Database: external managed MySQL-compatible service (see DEPLOYMENT.md)
+#
+# Values marked `sync: false` are secrets/instance-specific and must be set in
+# the Render dashboard. They are never stored in this file.
+
+services:
+  - type: web
+    name: novatutor-api
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerContext: .
+    dockerfilePath: ./deploy/backend.Dockerfile
+    healthCheckPath: /actuator/health/readiness
+    autoDeploy: true
+    envVars:
+      - key: SPRING_PROFILES_ACTIVE
+        value: prod
+      # Managed MySQL-compatible database (TLS required by the provider).
+      - key: DB_URL
+        sync: false
+      - key: DB_USERNAME
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      # Set to `update` only for the very first deploy against an empty schema,
+      # then change back to `validate`.
+      - key: JPA_DDL_AUTO
+        value: validate
+      - key: JWT_SECRET
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.6-flash
+      - key: GEMINI_FALLBACK_MODEL
+        value: gemini-3.5-flash-lite
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      # Exact public frontend origin, no trailing slash.
+      - key: CORS_ORIGINS
+        sync: false
+      # First deploy on an empty database: true (seeds courses, lessons, quizzes).
+      # Afterwards set false so startup stays fast.
+      - key: APP_SEED_ENABLED
+        value: "false"
+      # The sandbox needs Docker-in-Docker, which is unavailable on free hosting.
+      - key: CODE_RUNNER_ENABLED
+        value: "false"
+      - key: RATE_LIMIT_TRUST_PROXY
+        value: "true"
+
+  - type: web
+    name: novatutor
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    autoDeploy: true
+    envVars:
+      - key: VITE_API_URL
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
