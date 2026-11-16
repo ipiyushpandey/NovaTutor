@@ -10,7 +10,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /build/target/ai-tutor-0.0.1-SNAPSHOT.jar app.jar
+# AdminController creates its GATE notes directory at startup. The runtime user
+# is unprivileged, so that path must exist and be writable inside the image.
+RUN mkdir -p /app/gate-notes && chown -R 10001:10001 /app
 USER 10001:10001
+ENV GATE_NOTES_DIR=/app/gate-notes
 EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 CMD curl -fsS http://127.0.0.1:8080/actuator/health/readiness || exit 1
 ENTRYPOINT ["java","-XX:MaxRAMPercentage=75","-XX:+ExitOnOutOfMemoryError","-Djava.security.egd=file:/dev/urandom","-jar","/app/app.jar"]
