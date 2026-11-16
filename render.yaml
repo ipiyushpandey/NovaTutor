@@ -50,9 +50,15 @@ services:
       # Afterwards set false so startup stays fast.
       - key: APP_SEED_ENABLED
         value: "false"
-      # The sandbox needs Docker-in-Docker, which is unavailable on free hosting.
+      # Free web services cannot run Docker-in-Docker, so the judge delegates to
+      # an isolated remote runner (Judge0-compatible) instead of local containers.
+      # `remote` never executes student code inside this service.
       - key: CODE_RUNNER_ENABLED
-        value: "false"
+        value: "true"
+      - key: CODE_RUNNER_PROVIDER
+        value: "remote"
+      - key: CODE_RUNNER_TIMEOUT_SECONDS
+        value: "5"
       - key: RATE_LIMIT_TRUST_PROXY
         value: "true"
 
