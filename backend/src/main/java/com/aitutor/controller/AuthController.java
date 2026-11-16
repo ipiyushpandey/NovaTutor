@@ -44,7 +44,7 @@ public class AuthController {
                boolean profileComplete, boolean emailVerified) {}
     record Pending(boolean pending, String email, boolean verificationSent,
                    boolean emailDeliveryConfigured, String message) {}
-    record ProviderInfo(boolean googleEnabled, String googleClientId) {}
+    record ProviderInfo(boolean googleEnabled, String googleClientId, boolean emailDeliveryConfigured) {}
 
     @PostMapping("/register")
     @ResponseStatus(HttpStatus.ACCEPTED)
@@ -130,7 +130,7 @@ public class AuthController {
         }
         if (rateLimited) {
             throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "VERIFICATION_COOLDOWN",
-                    "A verification email was just sent. Wait one minute before requesting another.");
+                    "Please wait a minute before requesting another verification email.");
         }
         return Map.of(
                 "sent", sent,
@@ -144,10 +144,14 @@ public class AuthController {
     @ResponseStatus(HttpStatus.ACCEPTED)
     public Map<String, Object> forgotPassword(@Valid @RequestBody EmailReq r) {
         boolean sent = verification.requestPasswordReset(r.email());
+        boolean configured = mail.isConfigured();
+        String message = configured
+                ? "If an account exists for that email, a password reset link has been sent."
+                : "If an account exists for that email, reset instructions will be available once email delivery is configured on this server.";
         return Map.of(
                 "sent", sent,
-                "emailDeliveryConfigured", mail.isConfigured(),
-                "message", "If an account exists for that email, a password reset link has been sent.");
+                "emailDeliveryConfigured", configured,
+                "message", message);
     }
 
     @PostMapping("/reset-password")
@@ -169,7 +173,8 @@ public class AuthController {
 
     @GetMapping("/providers")
     public ProviderInfo providers() {
-        return new ProviderInfo(google.isConfigured(), google.isConfigured() ? google.clientId() : "");
+        return new ProviderInfo(google.isConfigured(), google.isConfigured() ? google.clientId() : "",
+                mail.isConfigured());
     }
 
     private Res response(User u) {

@@ -266,7 +266,7 @@ function DsaProblemView({api,slug,saved,onBack,onProgress}){
   if(!problem) return <div className="dsa-page"><div className="dsa-loading">Loading problem…</div></div>;
 
   const st=(result&&result.status)||'';
-  const bannerClass=st==='PASSED'?'pass':(st==='FAILED'||st==='RUNTIME_ERROR')?'fail':(st==='COMPILE_ERROR'||st==='UNSUPPORTED_LANGUAGE')?'warn':'info';
+  const bannerClass=st==='PASSED'?'pass':(st==='FAILED'||st==='RUNTIME_ERROR'||st==='MEMORY_LIMIT')?'fail':(st==='COMPILE_ERROR'||st==='UNSUPPORTED_LANGUAGE')?'warn':'info';
 
   return (
     <div className="dsa-page">
@@ -332,7 +332,7 @@ function DsaProblemView({api,slug,saved,onBack,onProgress}){
       {result&&(
         <div className="dsa-card dsa-res">
           <div className={`dsa-banner ${bannerClass}`}>
-            <b>{result.status==='PASSED'?'Accepted':result.status==='FAILED'?'Wrong answer':result.status.replace(/_/g,' ')}</b>
+            <b>{result.status==='PASSED'?'Accepted':result.status==='FAILED'?'Wrong answer':result.status==='MEMORY_LIMIT'?'Memory limit exceeded':result.status.replace(/_/g,' ')}</b>
             <span>{result.passed}/{result.total} tests passed{result.message?` — ${result.message}`:''}</span>
           </div>
           {/* Sandbox failure paths must never dead-end: give the student the
@@ -340,6 +340,7 @@ function DsaProblemView({api,slug,saved,onBack,onProgress}){
           {result.status==='SANDBOX_NOT_ENABLED'&&<div className="dsa-banner info"><span>Code execution is switched off on this server (CODE_RUNNER_ENABLED). AI hints and static analysis still work without it.</span></div>}
           {result.status==='RUNNER_UNAVAILABLE'&&<div className="dsa-banner info"><span>The execution service is temporarily unreachable, so your code was not judged. Please try again in a moment.</span></div>}
           {result.status==='RUNNER_BUSY'&&<div className="dsa-banner info"><span>The judge is handling other submissions. Retry in a few seconds.</span></div>}
+          {result.status==='MEMORY_LIMIT'&&<div className="dsa-banner info"><span>The judge enforces a fixed memory cap. Your program exceeded it, so it was stopped — free large arrays or recursion depth and submit again.</span></div>}
           {(typeof result.durationMs==='number'&&result.durationMs>0)&&<small className="dsa-hidden-note">Judged in {result.durationMs} ms{typeof result.memoryKb==='number'&&result.memoryKb>0?` · ${Math.round(result.memoryKb/1024)} MB peak memory`:''}.</small>}
           <div className="dsa-tests">
             {(result.tests||[]).map(t=>(

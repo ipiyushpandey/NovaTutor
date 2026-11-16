@@ -186,3 +186,10 @@
  .public-sections section,.auth-spinner,.admin-center>.ac-nav.open,.ac-modal,.ac-modal-backdrop,.topnav-panel,.topnav-sheet{animation:none!important}
  .brand-mark{transition:none}
 }
+
+/* V2.2: verification-availability warning (delivery not configured). */
+.auth-warning{display:block}
+.auth-warning b{display:block;margin-bottom:4px;color:var(--text-1)}
+.auth-warning span{display:block}
+.auth-warning .auth-inline-link{margin-top:8px;padding:0}
+.auth-note{margin:8px 0 0;font-size:11.5px;color:var(--text-3);text-align:center}

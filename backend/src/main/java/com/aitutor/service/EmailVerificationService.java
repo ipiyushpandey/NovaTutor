@@ -46,6 +46,10 @@ public class EmailVerificationService {
 
     public Issue issueVerification(User user, boolean enforceCooldown) {
         if (user.isEmailVerified()) return new Issue(false, mail.isConfigured(), false);
+        // Without a delivery channel, do not mint a token or start the resend
+        // cooldown: the previous link stays valid and the caller can honestly
+        // report that no email was sent.
+        if (!mail.isConfigured()) return new Issue(false, false, false);
         LocalDateTime now = LocalDateTime.now();
         if (enforceCooldown && user.getVerificationSentAt() != null
                 && user.getVerificationSentAt().plus(RESEND_COOLDOWN).isAfter(now)) {
@@ -92,7 +96,7 @@ public class EmailVerificationService {
 
     /** Always succeeds from the caller's point of view: never reveals whether an account exists. */
     public boolean requestPasswordReset(String email) {
-        if (email == null || email.isBlank()) return false;
+        if (email == null || email.isBlank() || !mail.isConfigured()) return false;
         Optional<User> found = users.findByEmail(email.trim().toLowerCase());
         if (found.isEmpty()) return false;
         User user = found.get();

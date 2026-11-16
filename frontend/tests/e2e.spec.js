@@ -66,6 +66,39 @@ test.describe('signed-out experience', () => {
     await noHorizontalOverflow(page);
   });
 
+  test('unverified login shows an honest warning when email delivery is off', async ({ page }) => {
+    await page.route('**/api/auth/providers', route => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ googleEnabled: false, googleClientId: '', emailDeliveryConfigured: false }),
+    }));
+    await page.route('**/api/auth/login', route => route.fulfill({
+      status: 403,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'EMAIL_UNVERIFIED', message: 'Verify your email address before signing in.' }),
+    }));
+    await page.goto('/#/login');
+    await page.locator('#auth-email').fill('unverified@novatutor.test');
+    await page.locator('#auth-pass').fill('SomePass123456');
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+
+    await expect(page.getByRole('heading', { name: 'Email verification is unavailable' })).toBeVisible();
+    await expect(page.locator('.auth-warning')).toContainText(/cannot send email/i);
+    await expect(page.getByRole('button', { name: 'Contact support' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Resend verification email' })).toBeDisabled();
+    await expect(page.locator('.auth-notice')).toHaveCount(0);
+    await noHorizontalOverflow(page);
+  });
+
+  test('320px viewport keeps the auth screen usable', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 720 });
+    await page.goto('/#/login');
+    await expect(page.locator('#auth-email')).toBeVisible();
+    await expect(page.locator('#auth-pass')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
+    await noHorizontalOverflow(page);
+  });
+
   test('favicon and document title carry the new brand', async ({ page }) => {
     await page.goto('/#/login');
     await expect(page).toHaveTitle(/NovaTutor/);
@@ -89,6 +122,13 @@ test.describe('authenticated experience', () => {
     } else {
       await expect(page.locator('.topnav-brand')).toBeVisible();
     }
+    await expect(page.locator('.auth-warning')).toHaveCount(0);
+
+    // Session restoration must not demote or re-warn a verified account.
+    await page.reload();
+    await expect(page).toHaveURL(/#\/(dashboard|onboarding)/, { timeout: 25_000 });
+    await expect(page.locator('.auth-warning')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: /Email verification is unavailable/i })).toHaveCount(0);
     await noHorizontalOverflow(page);
   });
 });

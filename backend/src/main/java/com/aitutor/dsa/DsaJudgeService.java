@@ -124,6 +124,15 @@ public class DsaJudgeService {
             if (recordProgress && user != null) record(user, problem, lang, 0, tests.size(), false);
             return new RunResult("TIMEOUT", "Time limit exceeded — your program ran longer than the judge allows.", List.of(), 0, tests.size(), false, durationMs);
         }
+        if ("MEMORY_LIMIT".equals(status)) {
+            if (recordProgress && user != null) record(user, problem, lang, 0, tests.size(), false);
+            long limitKb = out.get("memoryLimitKb") instanceof Number n ? n.longValue() : 0L;
+            String limit = limitKb > 0 ? " the judge's " + Math.max(1, limitKb / 1024) + " MB limit" : "the judge's memory limit";
+            return new RunResult("MEMORY_LIMIT",
+                    "Memory limit exceeded — your program was stopped at" + limit
+                            + ". Reduce large allocations and try again.",
+                    List.of(), 0, tests.size(), false, durationMs, memoryKb);
+        }
         if ("COMPILE_ERROR".equals(status)) {
             String stderr = String.valueOf(out.getOrDefault("stderr", ""));
             if (recordProgress && user != null) record(user, problem, lang, 0, tests.size(), false);

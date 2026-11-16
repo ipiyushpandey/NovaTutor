@@ -99,7 +99,12 @@ public class SandboxExecutionService {
                 if(exceeded) return Map.of("enabled",true,"status","OUTPUT_LIMIT","exitCode",-1,"stdout",truncate(output.toString()),"stderr","Execution produced too much output.","durationMs",timeoutSeconds*1000);
                 return Map.of("enabled",true,"status","TIMEOUT","exitCode",-1,"stdout",truncate(output.toString()),"stderr","Execution exceeded the sandbox time limit.","durationMs",timeoutSeconds*1000);}
             String out=output.toString();
-            return Map.of("enabled",true,"status",process.exitValue()==0?"PASSED":"RUNTIME_ERROR","exitCode",process.exitValue(),"stdout",truncate(out),"stderr",process.exitValue()==0?"":"Process exited with a non-zero status.","durationMs",0);
+            int exit=process.exitValue();
+            // Docker reports an OOM kill of a --memory-capped container as 137
+            // (SIGKILL). Local execution is a development path; production uses
+            // the remote provider, whose verdict mapping is in RemoteCodeRunner.
+            if(exit==137) return Map.of("enabled",true,"status","MEMORY_LIMIT","exitCode",-1,"stdout",truncate(out),"stderr","Memory limit exceeded: the sandbox stopped the process at the configured "+memoryMb+" MB limit.","durationMs",0,"memoryKb",memoryMb*1024);
+            return Map.of("enabled",true,"status",exit==0?"PASSED":"RUNTIME_ERROR","exitCode",exit,"stdout",truncate(out),"stderr",exit==0?"":"Process exited with a non-zero status.","durationMs",0);
         } catch(IOException e){return Map.of("enabled",true,"status","RUNNER_UNAVAILABLE","exitCode",-1,"stdout","","stderr","Docker sandbox is unavailable. Start Docker Desktop and make sure the configured runner image can be pulled.","detail",e.getMessage());}
         catch(InterruptedException e){Thread.currentThread().interrupt();return Map.of("enabled",true,"status","INTERRUPTED","exitCode",-1,"stdout","","stderr","Execution was interrupted.");}
         finally{concurrency.release(); if(dir!=null)try{Files.walk(dir).sorted(Comparator.reverseOrder()).forEach(x->{try{Files.deleteIfExists(x);}catch(IOException ignored){}});}catch(IOException ignored){}}

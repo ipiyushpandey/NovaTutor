@@ -182,7 +182,7 @@ public class RemoteCodeRunner {
     }
 
     /** Maps the provider verdict onto the contract used by the judge and the UI. */
-    private Map<String, Object> toResult(Map<String, Object> raw, String body, long startedNanos) {
+    Map<String, Object> toResult(Map<String, Object> raw, String body, long startedNanos) {
         long providerMs = Math.round(seconds(raw.get("time")) * 1000);
         long durationMs = providerMs > 0 ? providerMs : Math.max(0, (System.nanoTime() - startedNanos) / 1_000_000);
         long memoryKb = Math.round(number(raw.get("memory")));
@@ -198,6 +198,7 @@ public class RemoteCodeRunner {
         out.put("enabled", true);
         out.put("durationMs", durationMs);
         out.put("memoryKb", memoryKb);
+        out.put("memoryLimitKb", memoryLimitKb);
 
         int verdict = id == null ? -1 : id;
         if (verdict == COMPILATION_ERROR) {
@@ -231,10 +232,27 @@ public class RemoteCodeRunner {
             return out;
         }
         if (verdict >= 7 && verdict <= 12) {
+            if (isMemoryLimit(memoryKb, message, stderr, exitCode)) {
+                out.put("status", "MEMORY_LIMIT");
+                out.put("exitCode", -1);
+                out.put("stdout", stdout);
+                out.put("stderr", "Memory limit exceeded: the program was stopped after reaching the judge's "
+                        + Math.max(1, memoryLimitKb / 1024) + " MB limit.");
+                return out;
+            }
             out.put("status", "RUNTIME_ERROR");
             out.put("exitCode", exitCode == null ? -1 : exitCode);
             out.put("stdout", stdout);
             out.put("stderr", stderr.isBlank() ? "Your program exited with a runtime error." : stderr);
+            return out;
+        }
+        if (verdict >= 1 && verdict <= 2) {
+            // wait=true should never return a queued submission, but an unknown
+            // provider state must stay a non-verdict rather than a result.
+            out.put("status", "RUNNER_UNAVAILABLE");
+            out.put("exitCode", -1);
+            out.put("stdout", "");
+            out.put("stderr", "The execution service did not finish judging this submission. Please retry.");
             return out;
         }
         out.put("status", "RUNTIME_ERROR");
@@ -242,6 +260,29 @@ public class RemoteCodeRunner {
         out.put("stdout", stdout);
         out.put("stderr", stderr.isBlank() ? "The program did not finish normally." : stderr);
         return out;
+    }
+
+    /**
+     * Judge0 has no dedicated memory-limit status. Its sandbox kills an
+     * over-limit process with SIGKILL, which arrives as a runtime-error status
+     * (usually NZEC) with the provider's reported memory pinned to the
+     * configured limit and an exit/kill notice. Requiring both signals keeps an
+     * ordinary crash or an explicit exit(137) from being mislabelled.
+     */
+    boolean isMemoryLimit(long memoryKb, String message, String stderr, Integer exitCode) {
+        if (memoryKb <= 0 || memoryLimitKb <= 0) return false;
+        boolean nearLimit = memoryKb * 100L >= memoryLimitKb * 98L;
+        if (!nearLimit) return false;
+        if (exitCode != null && exitCode == 137) return true;
+        String signal = ((message == null ? "" : message) + " " + (stderr == null ? "" : stderr))
+                .toLowerCase(Locale.ROOT);
+        return signal.contains("137")
+                || signal.contains("killed")
+                || signal.contains("sigkill")
+                || signal.contains("memory limit")
+                || signal.contains("outofmemory")
+                || signal.contains("memoryerror")
+                || signal.contains("bad_alloc");
     }
 
     private static Integer statusIdOf(String body) {

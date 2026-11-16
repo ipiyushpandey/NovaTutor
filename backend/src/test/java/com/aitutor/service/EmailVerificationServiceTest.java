@@ -81,13 +81,14 @@ class EmailVerificationServiceTest {
     }
 
     @Test
-    void verificationIssueIsReportedWhenSmtpIsMissing() {
+    void missingSmtpDoesNotMintATokenOrStartACooldown() {
         when(mail.isConfigured()).thenReturn(false);
-        when(mail.sendHtml(anyString(), anyString(), anyString())).thenReturn(false);
-        EmailVerificationService.Issue issue = service.issueVerification(user, false);
+        EmailVerificationService.Issue issue = service.issueVerification(user, true);
         assertFalse(issue.sent());
         assertFalse(issue.configured());
-        assertNotNull(user.getVerificationTokenHash());
+        assertFalse(issue.rateLimited());
+        assertNull(user.getVerificationTokenHash());
+        assertNull(user.getVerificationSentAt());
     }
 
     @Test

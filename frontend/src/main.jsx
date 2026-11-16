@@ -720,14 +720,14 @@ function Auth({onLogin,dark,setDark}){
  const [notice,setNotice]=useState('');
  const [loading,setLoading]=useState(false);
  const [showPass,setShowPass]=useState(false);
- const [providers,setProviders]=useState({googleEnabled:false,googleClientId:''});
+ const [providers,setProviders]=useState({googleEnabled:false,googleClientId:'',emailDeliveryConfigured:null});
  const [pending,setPending]=useState(null);
  const [token,setToken]=useState('');
  const [verifyState,setVerifyState]=useState(null);
  const [publicPage,setPublicPage]=useState(()=>{const r=readHashRoute();return PUBLIC_CONTENT[r.path]?r.path:''});
 
  useEffect(()=>{
-  api('/auth/providers').then(setProviders).catch(()=>setProviders({googleEnabled:false,googleClientId:''}));
+  api('/auth/providers').then(setProviders).catch(()=>setProviders({googleEnabled:false,googleClientId:'',emailDeliveryConfigured:null}));
  },[]);
 
  useEffect(()=>{
@@ -781,7 +781,9 @@ function Auth({onLogin,dark,setDark}){
    }
   }catch(x){
    if(x.code==='EMAIL_UNVERIFIED'){
-    setPending({email:form.email,verificationSent:false,emailDeliveryConfigured:true,message:x.message});
+    setPending({email:form.email,verificationSent:false,
+      emailDeliveryConfigured:typeof providers.emailDeliveryConfigured==='boolean'?providers.emailDeliveryConfigured:null,
+      message:x.message});
     setMode('unverified');
    }else setErr(x.message||'Could not continue. Please try again.');
   }finally{setLoading(false)}
@@ -793,6 +795,9 @@ function Auth({onLogin,dark,setDark}){
   setLoading(true);setErr('');setNotice('');
   try{
    const r=await api('/auth/resend-verification',{method:'POST',body:JSON.stringify({email})});
+   setPending(p=>({...(p||{email}),email,
+     verificationSent:Boolean(r?.sent),
+     emailDeliveryConfigured:typeof r?.emailDeliveryConfigured==='boolean'?r.emailDeliveryConfigured:(p?.emailDeliveryConfigured??null)}));
    setNotice(r?.message||'If an unverified account exists for that address, a new link has been sent.');
   }catch(x){setErr(x.message||'Could not resend the verification email.')}
   finally{setLoading(false)}
@@ -811,8 +816,10 @@ function Auth({onLogin,dark,setDark}){
  if(publicPage) return <PublicPage page={publicPage} onBack={()=>{window.location.hash='/login';setPublicPage('')}}/>;
 
  const isAuthForm=['login','register','forgot'].includes(mode);
- const heading=mode==='login'?(adminMode?'Admin sign in':'Welcome back'):mode==='register'?'Create your account':mode==='forgot'?'Reset your password':mode==='pending'?'Check your inbox':mode==='unverified'?'Verify your email':'Choose a new password';
- const sub=mode==='login'?(adminMode?'Owner access to the operational control center.':'Continue where you left off.'):mode==='register'?'A few details, then confirm your email to activate your workspace.':mode==='forgot'?'Enter your account email and we will send a single-use link.':mode==='pending'?'Email verification keeps accounts secure.':mode==='unverified'?'Your account exists but this address is not confirmed yet.':'Set a new password for your NovaTutor account.';
+ const deliveryUnavailable=pending?.emailDeliveryConfigured===false
+   ||(pending?.emailDeliveryConfigured==null&&providers.emailDeliveryConfigured===false);
+ const heading=mode==='login'?(adminMode?'Admin sign in':'Welcome back'):mode==='register'?'Create your account':mode==='forgot'?'Reset your password':mode==='pending'?(deliveryUnavailable?'Email verification is unavailable':'Check your inbox'):mode==='unverified'?(deliveryUnavailable?'Email verification is unavailable':'Verify your email'):'Choose a new password';
+ const sub=mode==='login'?(adminMode?'Owner access to the operational control center.':'Continue where you left off.'):mode==='register'?'A few details, then confirm your email to activate your workspace.':mode==='forgot'?'Enter your account email and we will send a single-use link.':mode==='pending'?(deliveryUnavailable?'Your account is created, but this server cannot send verification email yet.':'Email verification keeps accounts secure.'):mode==='unverified'?'Your account exists but this address is not confirmed yet.':'Set a new password for your NovaTutor account.';
 
  return <div className="auth">
  <BooksScene/>
@@ -835,15 +842,20 @@ function Auth({onLogin,dark,setDark}){
    {!verifyState?<><div className="auth-spinner" aria-hidden="true"/><p>Verifying your email address…</p></>
     :<><div className={'auth-state-icon '+(verifyState.ok?'ok':'bad')}>{verifyState.ok?'✓':'!'}</div><h3>{verifyState.ok?'Email verified':'Verification failed'}</h3><p>{verifyState.message}</p>
       <button type="button" className="primary full" onClick={()=>{window.location.hash='/login';setMode('login');setErr('');setNotice(verifyState.ok?'Email verified. Sign in to continue.':'')}}>Continue to sign in</button>
-      {!verifyState.ok&&<button type="button" className="switch" onClick={()=>{setMode('unverified');setPending({email:form.email,emailDeliveryConfigured:true});setErr('')}}>Resend verification email</button>}</>}
+      {!verifyState.ok&&<button type="button" className="switch" onClick={()=>{setMode('unverified');setPending({email:form.email,emailDeliveryConfigured:typeof providers.emailDeliveryConfigured==='boolean'?providers.emailDeliveryConfigured:null});setErr('')}}>Resend verification email</button>}</>}
   </div>}
 
   {(mode==='pending'||mode==='unverified')&&<div className="auth-state">
    <div className="auth-state-icon ok">✉</div>
    <h3>{mode==='pending'?'Verify your email to activate your account':'Verify your email'}</h3>
-   <p>{pending?.message||'Check your inbox for the verification link. It expires in 24 hours.'}</p>
-   {pending&&pending.emailDeliveryConfigured===false&&<p className="auth-warning">Email delivery is not configured on this server yet. Your account is safe, but verification cannot complete until an administrator sets SMTP credentials.</p>}
-   <button type="button" className="primary full" disabled={loading||!pending?.email} onClick={resend}>{loading?'Sending…':'Resend verification email'}</button>
+   <p>{deliveryUnavailable?'Your email address is not confirmed yet. This server cannot send the verification email right now, so the account stays locked until email delivery is configured.':(pending?.message||'Check your inbox for the verification link. It expires in 24 hours.')}</p>
+   {deliveryUnavailable&&<div className="auth-warning" role="status">
+     <b>Email verification is temporarily unavailable.</b>
+     <span>Your account is safe, but this server cannot send email yet, so the account stays locked until an administrator configures email delivery.</span>
+     <button type="button" className="auth-inline-link" onClick={()=>navigatePublic('contact')}>Contact support</button>
+   </div>}
+   <button type="button" className="primary full" disabled={loading||!pending?.email||deliveryUnavailable} onClick={resend}>{loading?'Sending…':'Resend verification email'}</button>
+   {deliveryUnavailable&&<p className="auth-note">Resending is disabled until delivery is configured, so you are not shown a false confirmation.</p>}
    <button type="button" className="switch" onClick={()=>{setMode('login');setErr('');setNotice('')}}>Back to sign in</button>
   </div>}
 
