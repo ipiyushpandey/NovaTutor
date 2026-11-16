@@ -56,14 +56,15 @@ async function api(path,opt={},_retry=false){
   const raw=await r.text();
   if(!r.ok){
    let message=raw||`Request failed (${r.status})`;
-   try{const parsed=JSON.parse(raw);message=parsed.message||parsed.error||message}catch{}
+   let code='';
+   try{const parsed=JSON.parse(raw);message=parsed.message||parsed.error||message;code=parsed.error||''}catch{}
    // A short-lived/stale JWT can happen while an admin page is open. Refresh once
    // through /auth/me and retry the original request before declaring the session dead.
    if(r.status===401&&!_retry&&session?.token&&path!=='/auth/me'){
     const refreshed=await refreshSessionToken();
     if(refreshed){clearTimeout(timeout);return api(path,opt,true);}
    }
-   const err=new Error(message); err.status=r.status;
+   const err=new Error(message); err.status=r.status; err.code=code;
    // 403 means authenticated but not permitted; do not destroy a valid session.
    if(r.status===401){
     localStorage.removeItem('ai_user');

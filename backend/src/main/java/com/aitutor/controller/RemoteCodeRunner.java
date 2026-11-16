@@ -12,7 +12,9 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -62,6 +64,10 @@ public class RemoteCodeRunner {
     private final int maxCodeChars;
     private final int memoryLimitKb;
     private final Semaphore concurrency = new Semaphore(4);
+    private final LongAdder submissions = new LongAdder();
+    private final Map<String, LongAdder> verdicts = new ConcurrentHashMap<>();
+    private volatile long lastLatencyMs = 0;
+    private volatile java.time.Instant lastExecutionAt = null;
 
     public RemoteCodeRunner(
             @Value("${app.code-runner.remote.url:https://ce.judge0.com}") String baseUrl,
@@ -91,6 +97,34 @@ public class RemoteCodeRunner {
     }
 
     public Map<String, Object> execute(String language, String code, String stdin) {
+        long startedAt = System.nanoTime();
+        Map<String, Object> result = run(language, code, stdin);
+        lastLatencyMs = (System.nanoTime() - startedAt) / 1_000_000;
+        lastExecutionAt = java.time.Instant.now();
+        submissions.increment();
+        String status = String.valueOf(result.getOrDefault("status", "UNKNOWN"));
+        verdicts.computeIfAbsent(status, k -> new LongAdder()).increment();
+        return result;
+    }
+
+    /** Operator-facing health view of the judge provider. No user data. */
+    public Map<String, Object> stats() {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("provider", "judge0-compatible");
+        out.put("baseUrl", baseUrl);
+        out.put("enabled", true);
+        out.put("concurrency", 4);
+        out.put("activePermitsFree", concurrency.availablePermits());
+        out.put("submissions", submissions.sum());
+        out.put("lastLatencyMs", lastLatencyMs);
+        out.put("lastExecutionAt", lastExecutionAt == null ? null : lastExecutionAt.toString());
+        Map<String, Long> byStatus = new LinkedHashMap<>();
+        verdicts.forEach((k, v) -> byStatus.put(k, v.sum()));
+        out.put("verdicts", byStatus);
+        return out;
+    }
+
+    private Map<String, Object> run(String language, String code, String stdin) {
         if (code == null || code.isBlank()) throw new IllegalArgumentException("Code is empty");
         if (code.length() > maxCodeChars) throw new IllegalArgumentException("Code is too large for the sandbox");
         Integer languageId = languageId(language);

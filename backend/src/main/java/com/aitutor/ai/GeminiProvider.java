@@ -33,15 +33,15 @@ public class GeminiProvider implements AiProvider {
 
     public GeminiProvider(
             @Value("${ai.gemini.api-key:}") String key,
-            @Value("${ai.gemini.model:gemini-3.6-flash}") String model,
-            @Value("${ai.gemini.fallback-model:gemini-3.5-flash-lite}") String fallbackModel,
+            @Value("${ai.gemini.model:gemini-3.5-flash-lite}") String model,
+            @Value("${ai.gemini.fallback-model:gemini-3.1-flash-lite}") String fallbackModel,
             @Value("${ai.gemini.max-attempts:1}") int maxAttempts,
             @Value("${ai.gemini.max-output-tokens:4096}") int maxOutputTokens,
             ObjectMapper objectMapper) {
         this.key = key == null ? "" : key.trim();
-        this.model = (model == null || model.isBlank()) ? "gemini-3.6-flash" : model.trim();
+        this.model = (model == null || model.isBlank()) ? "gemini-3.5-flash-lite" : model.trim();
         this.fallbackModel = (fallbackModel == null || fallbackModel.isBlank())
-                ? "gemini-3.5-flash-lite" : fallbackModel.trim();
+                ? "gemini-3.1-flash-lite" : fallbackModel.trim();
         this.maxAttempts = Math.max(1, Math.min(maxAttempts, 2));
         // AI Teacher is optimized for fast first response. Keep a bounded ceiling so
         // a large environment value cannot turn a normal lesson into a long generation.
@@ -123,12 +123,16 @@ public class GeminiProvider implements AiProvider {
     private void streamModel(String modelName, String prompt, AiTask task, Consumer<String> onChunk) throws Exception {
         Map<String, Object> body = buildBody(prompt, task, false);
         String json = objectMapper.writeValueAsString(body);
+        // The streaming endpoint rejects the x-goog-api-key header for newer
+        // key formats (401 ACCESS_TOKEN_TYPE_UNSUPPORTED) while accepting the
+        // same key as a query parameter. Keep the key out of application logs;
+        // only the Google request URL carries it.
         URI uri = URI.create("https://generativelanguage.googleapis.com/v1beta/models/"
-                + modelName + ":streamGenerateContent?alt=sse");
+                + modelName + ":streamGenerateContent?alt=sse&key="
+                + java.net.URLEncoder.encode(key, StandardCharsets.UTF_8));
         HttpRequest request = HttpRequest.newBuilder(uri)
                 // Only bound time-to-first-response headers; streaming body can continue.
                 .timeout(Duration.ofSeconds(20))
-                .header("x-goog-api-key", key)
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(json, StandardCharsets.UTF_8))
                 .build();
@@ -194,8 +198,8 @@ public class GeminiProvider implements AiProvider {
             try {
                 Map<String, Object> body = buildBody(prompt, task, true);
                 Map<?, ?> out = client.post()
-                        .uri("https://generativelanguage.googleapis.com/v1beta/models/" + modelName + ":generateContent")
-                        .header("x-goog-api-key", key)
+                        .uri("https://generativelanguage.googleapis.com/v1beta/models/" + modelName
+                                + ":generateContent?key=" + java.net.URLEncoder.encode(key, StandardCharsets.UTF_8))
                         .header("Content-Type", "application/json")
                         .body(body)
                         .retrieve()

@@ -1,0 +1,188 @@
+/*
+ * NovaTutor V2.1 — premium interaction layer.
+ *
+ * Loaded after the legacy stylesheet and the motion/primitives system so it
+ * can refine shared components without forking them. Everything here is
+ * transform/opacity based and disabled under prefers-reduced-motion.
+ */
+
+/* ------------------------------------------------------------------ */
+/* Brand                                                              */
+/* ------------------------------------------------------------------ */
+.brand-mark{flex:0 0 auto;display:block}
+.auth-brand b,.topnav-brand span,.public-brand b{font-family:var(--font-display);font-weight:700;letter-spacing:-.45px}
+.auth-brand span,.public-brand small{letter-spacing:2.2px}
+.auth-brand{margin-bottom:clamp(20px,4vh,34px)}
+
+/* ------------------------------------------------------------------ */
+/* Auth — status, Google, notices                                     */
+/* ------------------------------------------------------------------ */
+.auth-notice{margin:0 0 var(--sp-4);padding:11px 13px;border:1px solid color-mix(in srgb,var(--success) 30%,var(--border));background:color-mix(in srgb,var(--success) 8%,var(--surface));color:var(--text-2);border-radius:var(--r-sm);font-size:12.5px;line-height:1.5}
+.auth-warning{margin:10px 0 14px;padding:10px 12px;border:1px solid color-mix(in srgb,var(--warning) 35%,var(--border));background:color-mix(in srgb,var(--warning) 9%,var(--surface));border-radius:var(--r-sm);font-size:12px;line-height:1.55;color:var(--text-2)}
+.auth-inline-link{align-self:flex-end;margin:-6px 0 14px;border:0;background:none;padding:2px 0;color:var(--muted);font:600 12px var(--font-ui);cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+.auth-inline-link:hover{color:var(--text)}
+.auth-divider{display:flex;align-items:center;gap:12px;margin:16px 0 14px;color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+.auth-divider:before,.auth-divider:after{content:'';height:1px;flex:1;background:var(--border)}
+.google-signin{display:flex;justify-content:center;min-height:44px;max-width:100%;overflow:hidden}
+.google-signin>div,.google-signin iframe{max-width:100%!important}
+.auth-google-note{margin:8px 0 0;text-align:center;font-size:10.5px;line-height:1.5;color:var(--muted)}
+.auth-state{display:grid;justify-items:center;text-align:center;gap:8px;padding:8px 0 4px}
+.auth-state h3{margin:2px 0 0;font:600 18px var(--font-display);color:var(--text)}
+.auth-state p{margin:0 0 8px;font-size:13px;line-height:1.6;color:var(--text-2);max-width:38ch}
+.auth-state .primary{max-width:320px}
+.auth-state .switch{margin-top:4px}
+.auth-state-icon{width:52px;height:52px;border-radius:50%;display:grid;place-items:center;font-size:22px;font-weight:800;background:var(--surface-2);border:1px solid var(--border);color:var(--text-2)}
+.auth-state-icon.ok{background:color-mix(in srgb,var(--success) 12%,var(--surface));border-color:color-mix(in srgb,var(--success) 30%,var(--border));color:var(--success)}
+.auth-state-icon.bad{background:color-mix(in srgb,var(--danger) 10%,var(--surface));border-color:color-mix(in srgb,var(--danger) 30%,var(--border));color:var(--danger)}
+.auth-spinner{width:34px;height:34px;border-radius:50%;border:3px solid var(--border);border-top-color:var(--text);animation:nova-spin .8s linear infinite}
+@keyframes nova-spin{to{transform:rotate(360deg)}}
+.auth-fineprint{color:var(--muted)}
+.auth-fineprint button{border:0;padding:0;background:none;color:var(--text-2);font:inherit;text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+.auth-fineprint button:hover{color:var(--text)}
+
+/* ------------------------------------------------------------------ */
+/* Footer                                                             */
+/* ------------------------------------------------------------------ */
+.nova-footer{display:grid;gap:12px;margin-top:28px;padding-top:18px;border-top:1px solid var(--border)}
+.nova-footer-brand{display:flex;align-items:center;gap:9px}
+.nova-footer-brand span{display:grid;gap:2px}
+.nova-footer-brand b{font:700 13px var(--font-display);color:var(--text);letter-spacing:-.2px}
+.nova-footer-brand small{font-size:8px;letter-spacing:1.7px;color:var(--muted)}
+.nova-footer-links{display:flex;flex-wrap:wrap;gap:6px 16px}
+.nova-footer-links button{border:0;background:none;padding:2px 0;color:var(--text-2);font:500 11.5px var(--font-ui);cursor:pointer;text-align:left}
+.nova-footer-links button:hover{color:var(--text);text-decoration:underline;text-underline-offset:3px}
+.nova-footer-copy{margin:0;font-size:10.5px;line-height:1.5;color:var(--muted)}
+.nova-footer-compact{margin-top:22px;gap:9px;padding-top:14px}
+.nova-footer-compact .nova-footer-copy{font-size:10px}
+.dark .nova-footer{border-color:var(--border)}
+
+/* ------------------------------------------------------------------ */
+/* Public pages (About / Contact / Privacy / Terms)                   */
+/* ------------------------------------------------------------------ */
+.public-page{min-height:100vh;display:flex;flex-direction:column;background:var(--bg);color:var(--text)}
+.public-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px clamp(18px,5vw,56px);border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:20}
+.public-brand{display:flex;align-items:center;gap:10px;border:0;background:none;padding:0;cursor:pointer;text-align:left}
+.public-brand span{display:grid;gap:3px}
+.public-brand b{font-size:17px;color:var(--text)}
+.public-brand small{font-size:8px;color:var(--muted)}
+.public-main{width:min(860px,100%);margin:0 auto;padding:clamp(30px,6vw,64px) clamp(18px,5vw,32px) 48px;flex:1}
+.public-main h1{font:600 clamp(30px,5.2vw,50px)/1.08 var(--font-display);letter-spacing:-1.4px;margin:12px 0 16px;max-width:18ch}
+.public-main h1 span{color:var(--muted)}
+.public-intro{font-size:clamp(15px,2vw,17px);line-height:1.7;color:var(--text-2);max-width:62ch;margin:0 0 clamp(28px,5vw,44px)}
+.public-sections{display:grid;gap:0}
+.public-sections section{padding:22px 0;border-top:1px solid var(--border)}
+.public-sections h2{font:600 18px/1.3 var(--font-display);letter-spacing:-.2px;margin:0 0 8px;color:var(--text)}
+.public-sections p{margin:0;font-size:14.5px;line-height:1.75;color:var(--text-2);max-width:72ch}
+.public-cta{margin-top:26px;text-decoration:none}
+.public-page>.nova-footer{width:min(860px,100%);margin:0 auto;padding:20px clamp(18px,5vw,32px) 34px;border-top:1px solid var(--border)}
+.main-topnav .public-page{min-height:auto}
+.main-topnav .public-head{position:static}
+@media(max-width:640px){
+ .public-head{padding:14px 16px}
+ .public-main h1{letter-spacing:-.9px}
+ .public-sections p{font-size:14px}
+}
+
+/* ------------------------------------------------------------------ */
+/* Admin — compact three-dot navigation on small screens              */
+/* ------------------------------------------------------------------ */
+.ac-nav-toggle{display:none}
+.ac-nav-backdrop{display:none}
+.ac-perf-table{display:grid;gap:7px;margin:12px 0}
+.ac-perf-table>div{display:grid;gap:3px;padding:10px 11px;border:1px solid var(--border);border-radius:10px}
+.ac-perf-table b{font-size:10px;color:var(--text)}
+.ac-perf-table span{font-size:9.5px;line-height:1.5;color:var(--muted)}
+
+@media(max-width:900px){
+ /* The admin workspace keeps its own full-screen shell, so the permanent
+    sidebar is replaced by one compact trigger with an overlay panel. */
+ .admin-center{padding:16px 14px 40px !important}
+ .admin-center>.ac-nav-toggle{
+  display:flex!important;align-items:center;gap:8px;
+  position:sticky;top:0;z-index:270;margin:0 0 14px auto;width:auto;
+  min-height:44px;padding:0 14px;border:1px solid var(--border);border-radius:999px;
+  background:var(--surface);color:var(--text);font:700 11px var(--font-ui);
+  box-shadow:0 6px 18px rgba(0,0,0,.08);cursor:pointer
+ }
+ .ac-nav-toggle .ac-nav-dots{letter-spacing:1px;font-size:14px;line-height:1;color:var(--text-2)}
+ .ac-nav-toggle[aria-expanded="true"]{border-color:var(--text);box-shadow:0 10px 26px rgba(0,0,0,.16)}
+ .admin-center>.ac-nav{
+  display:none!important;position:fixed!important;inset:auto 12px auto auto!important;
+  top:60px!important;left:auto!important;bottom:auto!important;
+  width:min(310px,calc(100vw - 24px))!important;max-height:min(72vh,580px)!important;
+  padding:8px!important;background:var(--surface)!important;
+  border:1px solid var(--border)!important;border-radius:16px!important;
+  flex-direction:column!important;align-items:stretch!important;gap:3px!important;
+  overflow-y:auto!important;overflow-x:hidden!important;
+  box-shadow:0 26px 70px rgba(0,0,0,.28)!important;z-index:280!important
+ }
+ .admin-center>.ac-nav.open{display:flex!important;animation:nova-menu-in .16s ease-out both}
+ .admin-center>.ac-nav:before{display:none!important}
+ .admin-center>.ac-nav button{width:100%!important;min-height:44px!important;justify-content:flex-start!important;padding:11px 12px!important;font-size:12px!important;white-space:normal!important;flex:0 0 auto!important}
+ .admin-center>.ac-nav button.active{background:var(--accent)!important;color:var(--on-ink)!important}
+ .admin-center>.ac-head,
+ .admin-center>.ac-notice,
+ .admin-center>section,
+ .admin-center>.ac-grid,
+ .admin-center>.ac-stats,
+ .admin-center>div:not(.ac-nav):not(.ac-nav-backdrop){margin-left:0!important}
+ .admin-center>.ac-head{margin-bottom:12px;padding-bottom:12px}
+ .ac-head-left{flex-direction:row;align-items:center;gap:10px}
+ .ac-head h1{font-size:26px!important}
+ .admin-center>.ac-nav-backdrop{
+  display:block!important;position:fixed!important;inset:0!important;
+  background:rgba(8,10,14,.42);z-index:275!important;backdrop-filter:blur(1.5px)
+ }
+ .admin-center .ac-stats{grid-template-columns:1fr 1fr!important}
+ .admin-center .ac-grid{grid-template-columns:1fr!important}
+}
+@media(max-width:420px){
+ .admin-center{padding:12px 10px 30px!important}
+ .admin-center>.ac-head h1{font-size:22px!important}
+ .admin-center .ac-stats{grid-template-columns:1fr!important}
+}
+
+/* ------------------------------------------------------------------ */
+/* Motion — purposeful, cheap, reduced-motion safe                    */
+/* ------------------------------------------------------------------ */
+@keyframes nova-menu-in{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+@keyframes nova-card-lift{to{transform:translateY(-2px)}}
+
+@media(prefers-reduced-motion:no-preference){
+ /* Buttons: responsive press feedback without layout shift. */
+ .primary,.secondary,.danger-btn,.icon-btn,.topnav-icon-btn,.sheet-item,.topnav-item,.ac-nav button,.choice,.signal-card,.career-goal{
+  transition:transform .16s var(--ease-out),background .18s var(--ease-out),border-color .18s var(--ease-out),box-shadow .18s var(--ease-out),color .18s var(--ease-out)
+ }
+ .primary:active,.secondary:active,.danger-btn:active{transform:scale(.985)}
+ .primary:hover{transform:translateY(-1px)}
+ /* Cards gently lift; content never moves out of its column. */
+ .course-card,.ac-stat,.signal-card,.career-quick>button,.revision-item,.nova-dna-card,.path-step{
+  transition:transform .22s var(--ease-out),box-shadow .22s var(--ease-out),border-color .22s var(--ease-out)
+ }
+ .course-card:hover,.ac-stat:hover,.signal-card:hover,.career-quick>button:hover,.nova-dna-card:hover{
+  transform:translateY(-2px);box-shadow:0 12px 30px rgba(20,24,36,.08)
+ }
+ /* Menus and dialogs enter from their trigger. */
+ .topnav-panel,.account-panel{animation:nova-menu-in .16s var(--ease-out) both}
+ .topnav-sheet{animation:nova-menu-in .18s var(--ease-out) both}
+ .ac-modal{animation:nova-menu-in .18s var(--ease-out) both}
+ .ac-modal-backdrop{animation:nova-fade .18s ease-out both}
+ @keyframes nova-fade{from{opacity:0}to{opacity:1}}
+ /* Progress indicators grow instead of jumping. */
+ .progress span,.ac-bar-track i,.mastery-bar span,.nova-concept-track i,.brain-score i em{
+  transition:width .5s var(--ease-out)
+ }
+ /* Brand hover: subtle, once. */
+ .topnav-brand:hover .brand-mark,.auth-brand:hover .brand-mark{transform:rotate(-4deg) scale(1.03)}
+ .brand-mark{transition:transform .28s var(--ease-out)}
+ /* Page changes keep the existing transform-only entrance. */
+ .page-transition{animation:nova-page-in .26s var(--ease-out) both}
+ /* Public page sections reveal in reading order. */
+ .public-sections section{animation:nova-rise .45s var(--ease-out) both;animation-delay:calc(min(var(--i,0),6)*55ms)}
+ /* Login scene stays dynamic but calmer on small screens (already CSS-only). */
+}
+
+@media(prefers-reduced-motion:reduce){
+ .public-sections section,.auth-spinner,.admin-center>.ac-nav.open,.ac-modal,.ac-modal-backdrop,.topnav-panel,.topnav-sheet{animation:none!important}
+ .brand-mark{transition:none}
+}

@@ -23,5 +23,15 @@ public class User {
  private String preferredAiLanguage;
  @Column(nullable=false, columnDefinition="boolean default true") private boolean active=true;
  @Column(nullable=false, columnDefinition="boolean default false") private boolean blocked=false;
+ /* Email ownership. The column default is TRUE so every account that existed
+    before email verification was introduced keeps working; new registrations
+    explicitly set false until they click the emailed link. */
+ @Column(nullable=false, columnDefinition="boolean default true") private boolean emailVerified=false;
+ @Column(length=200) private String googleSubject;
+ @Column(length=64) private String verificationTokenHash;
+ private LocalDateTime verificationExpiresAt;
+ private LocalDateTime verificationSentAt;
+ @Column(length=64) private String resetTokenHash;
+ private LocalDateTime resetExpiresAt;
  public User(String name,String email,String password){this.name=name;this.email=email;this.password=password;}
 }

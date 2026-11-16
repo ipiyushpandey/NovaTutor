@@ -14,6 +14,12 @@ import java.util.Map;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+    /** Deliberate API failures carry a stable code the frontend can branch on. */
+    @ExceptionHandler(ApiException.class)
+    ResponseEntity<Map<String,String>> apiException(ApiException e) {
+        return ResponseEntity.status(e.status()).body(Map.of("error", e.code(), "message", e.getMessage()));
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     ResponseEntity<Map<String,String>> validation(MethodArgumentNotValidException e) {
         String message = e.getBindingResult().getFieldErrors().stream().findFirst()
@@ -23,7 +29,9 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(IllegalArgumentException.class)
     ResponseEntity<Map<String,String>> badRequest(IllegalArgumentException e) {
-        return ResponseEntity.badRequest().body(Map.of("error", "bad_request", "message", e.getMessage() == null ? "Invalid request" : e.getMessage()));
+        String message = e.getMessage() == null ? "Invalid request" : e.getMessage();
+        String code = message.toLowerCase().contains("invalid email or password") ? "INVALID_CREDENTIALS" : "bad_request";
+        return ResponseEntity.badRequest().body(Map.of("error", code, "message", message));
     }
 
     @ExceptionHandler(IllegalStateException.class)

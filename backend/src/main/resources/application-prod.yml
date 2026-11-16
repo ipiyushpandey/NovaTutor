@@ -43,6 +43,12 @@ app:
   admin:
     email: ${ADMIN_EMAIL}
     password: ${ADMIN_PASSWORD}
+  public-url: ${APP_PUBLIC_URL:https://novatutor.onrender.com}
+  mail:
+    from: ${MAIL_FROM:no-reply@novatutor.app}
+    from-name: ${MAIL_FROM_NAME:NovaTutor}
+  google:
+    client-id: ${GOOGLE_CLIENT_ID:}
   jwt:
     secret: ${JWT_SECRET}
     expiration-ms: ${JWT_EXPIRATION:3600000}
@@ -65,11 +71,14 @@ app:
 ai:
   gemini:
     api-key: ${GEMINI_API_KEY}
-    model: ${GEMINI_MODEL:gemini-3.6-flash}
-    fallback-model: ${GEMINI_FALLBACK_MODEL:gemini-3.5-flash-lite}
+    model: ${GEMINI_MODEL:gemini-3.5-flash-lite}
+    fallback-model: ${GEMINI_FALLBACK_MODEL:gemini-3.1-flash-lite}
     max-attempts: ${GEMINI_MAX_ATTEMPTS:1}
     max-output-tokens: ${GEMINI_MAX_OUTPUT_TOKENS:32768}
 management:
+  health:
+    mail:
+      enabled: false
   endpoints:
     web:
       exposure:

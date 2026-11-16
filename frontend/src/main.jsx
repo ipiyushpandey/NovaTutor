@@ -16,6 +16,7 @@ import LottiePlayer from './ui/LottiePlayer.jsx';
 import lottieLogoUrl from './assets/lottie-logo.json?url';
 import BooksScene from './ui/BooksScene.jsx';
 import './ui/books-scene.css';
+import './ui/premium.css';
 import {readWorkspace,writeWorkspace,workspaceKey,subscribeWorkspace,migrateWorkspaceIfNeeded,removeWorkspace} from './persistence/workspaceStore.js';
 import AiMarkdown, {normalizeAiText, mdInlineText} from './AiMarkdown.jsx';
 import {registerWorkspaceFlusher,beginNavigationPersistence} from './persistence/appWorkspace.js';
@@ -494,7 +495,7 @@ function NovaBrain({user,go}){
 
 function App(){
  const [adminDenied,setAdminDenied]=useState(false);
- const [page,setPage]=useState(()=>{const allowed=['login','dashboard','coach','study-room','analytics','courses','mentor','learning-studio','tutor','code','quiz','practice','prepare','chat','knowledge','planner','flashcards','interview','voice','settings','gatecse','career','community','notifications','revision','achievements','dpp','profile','exam','nova-os','nova-brain','onboarding','admin','dsa'];const alias={'gate-cse':'gatecse'};const h0=window.location.hash.replace('#/','');const h=alias[h0]||h0;const saved=localStorage.getItem('nova_page')||'dashboard';const session=readUser();if(!session)return 'login';
+ const [page,setPage]=useState(()=>{const allowed=['login','about','privacy','terms','contact','dashboard','coach','study-room','analytics','courses','mentor','learning-studio','tutor','code','quiz','practice','prepare','chat','knowledge','planner','flashcards','interview','voice','settings','gatecse','career','community','notifications','revision','achievements','dpp','profile','exam','nova-os','nova-brain','onboarding','admin','dsa'];const alias={'gate-cse':'gatecse'};const h0=window.location.hash.replace('#/','');const h=alias[h0]||h0;const saved=localStorage.getItem('nova_page')||'dashboard';const session=readUser();if(!session)return 'login';
  // A stored session with an unfinished profile belongs on onboarding, not on
  // the dashboard. Deciding this in the initializer (instead of in an effect)
  // removes the dashboard→onboarding flash on refresh.
@@ -560,7 +561,7 @@ function App(){
   {id:'learn',label:'Learn',items:[['dashboard','Home',LayoutDashboard],['notifications','Today',Bell],['courses','Courses',BookOpen],['knowledge','Knowledge Hub',FileSearch]]},
   {id:'practice',label:'Practice',items:[['practice','Practice hub',Target],['dsa','DSA Practice',Code2],['exam','Exam Simulator',Trophy],['gatecse','GATE CSE',GraduationCap],['revision','Revision',RotateCcw]]},
   {id:'ai',label:'AI',items:[['learning-studio','AI Teacher',BrainCircuit],['chat','AI Chat',MessageCircle],['nova-brain','Nova Brain',Brain],['mentor','AI Mentor',Sparkles]]},
-  {id:'community',label:'More',items:[['community','Community',Users],['achievements','Achievements',Trophy],['career','Career',Briefcase],...(role==='ADMIN'?[['admin','Admin Panel',WandSparkles]]:[])]},
+  {id:'community',label:'More',items:[['community','Community',Users],['achievements','Achievements',Trophy],['career','Career',Briefcase],['about','About NovaTutor',Lightbulb],...(role==='ADMIN'?[['admin','Admin Panel',WandSparkles]]:[])]},
  ];
  const navActiveGroup=navModel.find(g=>g.items.some(([id])=>id===page))?.id;
  const logout=()=>{persistBeforeNavigation('logout');resetTransientLearningState(user?.id);localStorage.removeItem('ai_user');localStorage.removeItem('nova_page');localStorage.removeItem('nova_nav_stack');setUser(null);setMobile(false);setPage('login');window.location.hash='/login'};
@@ -580,36 +581,306 @@ function App(){
  {/* In-page Back button removed: hash routing + browser Back already provide
      full navigation history, and the sidebar/navbar owns in-app navigation. */}
  <div className="page-transition"><ErrorBoundary key={page}>{adminDenied&&<div className="nv-toast" role="status">Admin area is restricted to administrator accounts.</div>}{page==='dashboard'&&<Dashboard courses={courses} progress={progress} go={go} user={user}/>} {page==='coach'&&<NovaCoach user={user} go={go} courses={courses}/>} {page==='study-room'&&<NovaCoach user={user} go={go} courses={courses} initialTab="community"/>} {page==='analytics'&&<Analytics user={user}/>} {page==='nova-os'&&<NovaBrain user={user} go={go}/>} {page==='nova-brain'&&<NovaBrain user={user} go={go}/>} {page==='practice'&&<PracticeHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='prepare'&&<PrepareHub user={user} go={go}/>} {page==='courses'&&<MyLearningHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='learning-studio'&&<LearningStudio user={user}/>} {page==='tutor'&&<LearningStudio user={user} initialTab="teacher"/>} {page==='code'&&<CodeLab user={user}/>} {page==='quiz'&&<Quiz courses={courses} progress={progress} refresh={load} user={user}/>} {page==='chat'&&<ChatWorkspace user={user}/>} {page==='knowledge'&&<KnowledgeHub user={user}/>}
- {page==='mentor'&&<AdaptiveMentor user={user} courses={courses}/>} {page==='planner'&&<StudyPlanner user={user}/>} {page==='flashcards'&&<Flashcards user={user}/>} {page==='achievements'&&<Achievements user={user} go={go}/>} {page==='profile'&&<AILearningProfile user={user} courses={courses} go={go}/>} {page==='interview'&&<Interviewer user={user}/>} {page==='voice'&&<LearningStudio user={user} initialTab="voice"/>} {page==='dpp'&&<CourseDppIde user={user} courses={courses}/>} {page==='exam'&&<ExamSimulator user={user}/>} {page==='gatecse'&&<GateCse/>} {page==='dsa'&&<DsaPractice user={user} api={api}/>} {page==='career'&&<CareerHub user={user} go={go}/>} {page==='community'&&<CommunityHub user={user} go={go}/>} {page==='notifications'&&<TodayHub user={user} go={go}/>} {page==='revision'&&<RevisionHub user={user} go={go}/>} {page==='settings'&&<SettingsPage user={user} dark={dark} setDark={setDark} logout={logout} switchAccount={switchAccount} onUserUpdate={updateUser} aiStatus={aiStatus}/>} {page==='admin'&&(role==='ADMIN'?<Admin user={user} courses={courses} refreshCourses={load} onBack={()=>go('dashboard')}/>:<AdminLocked go={go}/>)}</ErrorBoundary></div></main></div>
+ {page==='mentor'&&<AdaptiveMentor user={user} courses={courses}/>} {page==='planner'&&<StudyPlanner user={user}/>} {page==='flashcards'&&<Flashcards user={user}/>} {page==='achievements'&&<Achievements user={user} go={go}/>} {page==='profile'&&<AILearningProfile user={user} courses={courses} go={go}/>} {page==='interview'&&<Interviewer user={user}/>} {page==='voice'&&<LearningStudio user={user} initialTab="voice"/>} {page==='dpp'&&<CourseDppIde user={user} courses={courses}/>} {page==='exam'&&<ExamSimulator user={user}/>} {page==='gatecse'&&<GateCse/>} {page==='dsa'&&<DsaPractice user={user} api={api}/>} {page==='career'&&<CareerHub user={user} go={go}/>} {page==='community'&&<CommunityHub user={user} go={go}/>} {page==='notifications'&&<TodayHub user={user} go={go}/>} {page==='revision'&&<RevisionHub user={user} go={go}/>} {page==='settings'&&<SettingsPage user={user} dark={dark} setDark={setDark} logout={logout} switchAccount={switchAccount} onUserUpdate={updateUser} aiStatus={aiStatus}/>} {page==='about'&&<PublicPage page="about" signedIn onBack={()=>go('dashboard')}/>} {page==='privacy'&&<PublicPage page="privacy" signedIn onBack={()=>go('settings')}/>} {page==='terms'&&<PublicPage page="terms" signedIn onBack={()=>go('settings')}/>} {page==='contact'&&<PublicPage page="contact" signedIn onBack={()=>go('dashboard')}/>} {page==='admin'&&(role==='ADMIN'?<Admin user={user} courses={courses} refreshCourses={load} onBack={()=>go('dashboard')}/>:<AdminLocked go={go}/>)}</ErrorBoundary></div></main></div>
 }
-function Auth({onLogin,dark,setDark}){const [login,setLogin]=useState(true),[adminMode,setAdminMode]=useState(false),[form,setForm]=useState({name:'',email:'',password:''}),[err,setErr]=useState(''),[loading,setLoading]=useState(false),[showPass,setShowPass]=useState(false);
-async function submit(e){e.preventDefault();if(loading)return;setErr('');setLoading(true);try{const result=await api('/auth/'+(login?'login':'register'),{method:'POST',body:JSON.stringify(form)});if(adminMode&&result.role!=='ADMIN')throw new Error('This account is not an admin account.');onLogin(result)}catch(x){setErr(x.message||'Could not continue. Check Spring Boot + MySQL and your details.')}finally{setLoading(false)}}
-/* Auth composition: a quiet "study desk" scene (pure CSS, ambient, reduced-motion
-   safe) beside a focused form. Handler + API contract unchanged from V70. */
-return <div className="auth">
+function readHashRoute(){
+ const raw=String(window.location.hash||'').replace(/^#\/?/,'');
+ const [path,query]=raw.split('?');
+ return {path:(path||'').toLowerCase(),params:new URLSearchParams(query||'')};
+}
+
+/* Google Identity Services button. The backend verifies the returned ID token
+   against Google's JWKS; this component never sends an email or identity of
+   its own. It only mounts when the server reports a configured client id, so
+   there is never a dead "Continue with Google" control. */
+function GoogleSignIn({clientId,onCredential,onError}){
+ const hostRef=useRef(null);
+ const credentialRef=useRef(onCredential);
+ const errorRef=useRef(onError);
+ credentialRef.current=onCredential;
+ errorRef.current=onError;
+ useEffect(()=>{
+  if(!clientId||!hostRef.current)return;
+  let cancelled=false;
+  const init=()=>{
+   if(cancelled||!hostRef.current||!window.google?.accounts?.id)return;
+   window.google.accounts.id.initialize({
+    client_id:clientId,
+    auto_select:false,
+    cancel_on_tap_outside:true,
+    callback:response=>{
+     if(response?.credential)credentialRef.current(response.credential);
+     else errorRef.current?.('Google sign-in was cancelled.');
+    }
+   });
+   window.google.accounts.id.renderButton(hostRef.current,{
+    theme:document.documentElement.classList.contains('dark')?'filled_black':'outline',
+    size:'large',width:320,text:'continue_with',shape:'rectangular',logo_alignment:'left'
+   });
+  };
+  if(window.google?.accounts?.id){init();return ()=>{cancelled=true}}
+  const existing=document.getElementById('gsi-client');
+  if(existing){existing.addEventListener('load',init);return ()=>{cancelled=true;existing.removeEventListener('load',init)}}
+  const script=document.createElement('script');
+  script.id='gsi-client';script.src='https://accounts.google.com/gsi/client';script.async=true;script.defer=true;
+  script.onload=init;
+  script.onerror=()=>errorRef.current?.('Google sign-in could not load. Check your connection and try again.');
+  document.head.appendChild(script);
+  return ()=>{cancelled=true};
+ },[clientId]);
+ return <div className="google-signin" ref={hostRef}/>;
+}
+
+function NovaFooter({onNavigate,compact=false}){
+ const links=[['about','About us'],['contact','Contact & support'],['privacy','Privacy policy'],['terms','Terms & conditions']];
+ return <footer className={'nova-footer'+(compact?' nova-footer-compact':'')}>
+  <div className="nova-footer-brand"><BrandMark size={22}/><span><b>NovaTutor</b><small>THE LEARNING WORKSPACE</small></span></div>
+  <nav className="nova-footer-links" aria-label="Company">
+   {links.map(([id,label])=><button key={id} type="button" onClick={()=>onNavigate(id)}>{label}</button>)}
+  </nav>
+  <p className="nova-footer-copy">© {new Date().getFullYear()} NovaTutor. Built for focused, accessible learning.</p>
+ </footer>;
+}
+
+const PUBLIC_CONTENT={
+ about:{
+  eyebrow:'ABOUT NOVATUTOR',
+  title:<>Learning should feel <span>clear, personal and possible.</span></>,
+  intro:'NovaTutor is an independent learning workspace for students preparing for university courses, GATE CSE, placements and self-directed study. It brings lessons, practice, revision, coding and an AI teacher into one calm place.',
+  sections:[
+   ['Why NovaTutor exists','Most study tools optimise for content volume. Students rarely lack material; they lack a clear next step. NovaTutor starts from the learner\'s goal, recent practice and weak concepts, then recommends one useful action instead of an endless catalogue.'],
+   ['The learning problem it solves','Learning is fragmented across notes, videos, PDFs, quizzes and code editors. Progress is hard to see and easy to lose. NovaTutor keeps the learning loop — learn, practice, detect, explain, revise, master — in one workspace, and records real activity instead of inventing streak data.'],
+   ['What you can do today','Structured courses and lessons; adaptive quizzes and daily practice problems; GATE CSE notes and practice; a DSA judge with real execution verdicts; AI Teacher, AI Chat and an adaptive mentor; flashcards, a study planner, revision queues and analytics.'],
+   ['An honest AI tutor','Nova explains, asks and gives feedback, but it is not a replacement for a teacher or an official exam authority. Answers are generated by a language model and can be wrong. NovaTutor keeps the API key server-side, bounds requests, and never fabricates a response when the provider is unavailable.'],
+   ['Our mission','Make high-quality guided learning available to students who cannot afford expensive coaching, without locking their progress behind a paywall. The product is built to run on free-tier infrastructure so it can stay accessible while it grows.']
+  ]
+ },
+ privacy:{
+  eyebrow:'PRIVACY POLICY',
+  title:<>Your data, <span>plainly explained.</span></>,
+  intro:'This policy describes what NovaTutor actually stores today. It is written to be read, not to hide behind legal language.',
+  sections:[
+   ['What we collect','Account details you provide (name, email, password hash), optional learning profile answers, learning activity such as lessons completed, quiz attempts, DSA submissions, flashcards and study sessions, AI conversation content you submit, and basic technical logs needed to operate the service.'],
+   ['How it is used','To sign you in, personalise recommendations, show your progress, operate the AI features you request, secure the platform, and diagnose failures. We do not sell personal data and we do not use it for advertising.'],
+   ['Passwords and tokens','Passwords are stored only as BCrypt hashes. Email verification and password reset tokens are stored as SHA-256 hashes, expire, and can be used once. API keys for AI and email providers remain server-side.'],
+   ['AI processing','When you use an AI feature, the text you submit is sent to the configured AI provider so it can generate a response. Do not submit sensitive personal information. AI responses are not used to train NovaTutor models.'],
+   ['Storage and retention','Data is stored in the application database and, for some interface preferences, in your browser. You can request deletion of your account and learning data through the support channel.'],
+   ['Your choices','You can edit your profile, change your AI language preference, switch appearance, and sign out at any time. Contact support to request export or deletion.']
+  ]
+ },
+ terms:{
+  eyebrow:'TERMS & CONDITIONS',
+  title:<>Fair use of <span>a learning tool.</span></>,
+  intro:'By using NovaTutor you agree to these terms. They exist to keep the platform useful and safe for everyone.',
+  sections:[
+   ['Your account','Provide accurate information, keep your password private, and do not share your account. You are responsible for activity under your account. Accounts may be suspended for abuse or attempts to disrupt the service.'],
+   ['Acceptable use','Do not submit malicious code, attempt to break the sandbox, scrape the service, attack other users, upload illegal content, or use the AI features to generate harmful material. Coding submissions run in an isolated external sandbox and may be rate-limited.'],
+   ['Educational content','Lessons, practice questions and AI answers are study aids. They may contain mistakes. Always verify important facts, exam rules and official syllabus details with an authoritative source.'],
+   ['AI limitations','AI output is probabilistic and can be incomplete or incorrect. NovaTutor does not guarantee any exam result or outcome. Never rely on it for medical, legal or financial decisions.'],
+   ['Availability','The service runs on free-tier infrastructure and may be unavailable during maintenance, provider outages or rate limits. Features can change as the product evolves.'],
+   ['Changes','These terms may be updated as the product changes. Continued use after an update means you accept the revised terms.']
+  ]
+ },
+ contact:{
+  eyebrow:'CONTACT & SUPPORT',
+  title:<>Talk to a <span>real person.</span></>,
+  intro:'NovaTutor is maintained by a small independent team. The fastest way to report a bug, request account deletion, or ask a question is the public issue tracker.',
+  sections:[
+   ['Issue tracker','Open an issue at github.com/ipiyushpandey/NovaTutor/issues. Include what you expected, what happened, and the page you were on. Never paste passwords, tokens or personal data into an issue.'],
+   ['Account and privacy requests','For account deletion or a data request, open an issue titled "Account request" from the email associated with your account. We will confirm ownership before acting.'],
+   ['Security reports','If you believe you found a security vulnerability, report it privately through GitHub security advisories rather than a public issue, and include reproduction steps.'],
+   ['Response expectations','This is a volunteer-maintained project, so responses may take a few days. Clear reports with reproduction steps are handled first.']
+  ]
+ }
+};
+
+function PublicPage({page,onBack,signedIn=false}){
+ const content=PUBLIC_CONTENT[page]||PUBLIC_CONTENT.about;
+ return <div className="public-page">
+  <header className="public-head">
+   <button className="public-brand" onClick={onBack}><BrandMark size={28}/><span><b>NovaTutor</b><small>THE LEARNING WORKSPACE</small></span></button>
+   <button className="secondary compact" onClick={onBack}>{signedIn?'Back to dashboard':'Back to sign in'}</button>
+  </header>
+  <main className="public-main">
+   <span className="eyebrow">{content.eyebrow}</span>
+   <h1>{content.title}</h1>
+   <p className="public-intro">{content.intro}</p>
+   <div className="public-sections">{content.sections.map(([title,body],i)=><section key={title} style={{'--i':i}}><h2>{title}</h2><p>{body}</p></section>)}</div>
+   {page==='contact'&&<a className="primary public-cta" href="https://github.com/ipiyushpandey/NovaTutor/issues" target="_blank" rel="noreferrer">Open the issue tracker</a>}
+  </main>
+  <NovaFooter onNavigate={id=>{window.location.hash='/'+id}}/>
+ </div>;
+}
+
+function Auth({onLogin,dark,setDark}){
+ const [mode,setMode]=useState('login');
+ const [adminMode,setAdminMode]=useState(false);
+ const [form,setForm]=useState({name:'',email:'',password:'',confirm:''});
+ const [err,setErr]=useState('');
+ const [notice,setNotice]=useState('');
+ const [loading,setLoading]=useState(false);
+ const [showPass,setShowPass]=useState(false);
+ const [providers,setProviders]=useState({googleEnabled:false,googleClientId:''});
+ const [pending,setPending]=useState(null);
+ const [token,setToken]=useState('');
+ const [verifyState,setVerifyState]=useState(null);
+ const [publicPage,setPublicPage]=useState(()=>{const r=readHashRoute();return PUBLIC_CONTENT[r.path]?r.path:''});
+
+ useEffect(()=>{
+  api('/auth/providers').then(setProviders).catch(()=>setProviders({googleEnabled:false,googleClientId:''}));
+ },[]);
+
+ useEffect(()=>{
+  const sync=()=>{
+   const route=readHashRoute();
+   if(PUBLIC_CONTENT[route.path]){setPublicPage(route.path);return}
+   setPublicPage('');
+   if(route.path==='verify-email'){
+    const t=route.params.get('token')||'';
+    setToken(t);setMode('verify');setVerifyState(null);setErr('');
+    if(!t){setVerifyState({ok:false,message:'This verification link is missing its token.'});return}
+    api('/auth/verify-email',{method:'POST',body:JSON.stringify({token:t})})
+     .then(r=>setVerifyState({ok:true,message:r?.message||'Your email is verified. You can sign in now.'}))
+     .catch(e=>setVerifyState({ok:false,message:e.message||'This verification link could not be verified.'}));
+    return;
+   }
+   if(route.path==='reset-password'){
+    const t=route.params.get('token')||'';
+    setToken(t);setMode('reset');setErr('');setNotice('');
+    if(!t)setErr('This reset link is missing its token. Request a new one.');
+   }
+  };
+  sync();
+  window.addEventListener('hashchange',sync);
+  return ()=>window.removeEventListener('hashchange',sync);
+ },[]);
+
+ function navigatePublic(id){window.location.hash='/'+id}
+
+ async function submit(e){
+  e.preventDefault();
+  if(loading)return;
+  setErr('');setNotice('');
+  if(mode==='register'&&form.password!==form.confirm){setErr('Passwords do not match.');return}
+  setLoading(true);
+  try{
+   if(mode==='login'){
+    const result=await api('/auth/login',{method:'POST',body:JSON.stringify({email:form.email,password:form.password})});
+    if(adminMode&&result.role!=='ADMIN')throw new Error('This account does not have administrator access.');
+    onLogin(result);
+   }else if(mode==='register'){
+    const result=await api('/auth/register',{method:'POST',body:JSON.stringify({name:form.name,email:form.email,password:form.password})});
+    setPending(result);setMode('pending');
+   }else if(mode==='forgot'){
+    const result=await api('/auth/forgot-password',{method:'POST',body:JSON.stringify({email:form.email})});
+    setNotice(result?.message||'If an account exists for that email, a reset link has been sent.');
+   }else if(mode==='reset'){
+    const result=await api('/auth/reset-password',{method:'POST',body:JSON.stringify({token,password:form.password})});
+    setNotice(result?.message||'Your password has been changed. Sign in with the new password.');
+    setMode('login');setForm(f=>({...f,password:'',confirm:''}));
+   }
+  }catch(x){
+   if(x.code==='EMAIL_UNVERIFIED'){
+    setPending({email:form.email,verificationSent:false,emailDeliveryConfigured:true,message:x.message});
+    setMode('unverified');
+   }else setErr(x.message||'Could not continue. Please try again.');
+  }finally{setLoading(false)}
+ }
+
+ async function resend(){
+  const email=pending?.email||form.email;
+  if(!email||loading)return;
+  setLoading(true);setErr('');setNotice('');
+  try{
+   const r=await api('/auth/resend-verification',{method:'POST',body:JSON.stringify({email})});
+   setNotice(r?.message||'If an unverified account exists for that address, a new link has been sent.');
+  }catch(x){setErr(x.message||'Could not resend the verification email.')}
+  finally{setLoading(false)}
+ }
+
+ async function googleSignIn(credential){
+  if(loading)return;
+  setErr('');setLoading(true);
+  try{
+   const result=await api('/auth/google',{method:'POST',body:JSON.stringify({credential})});
+   onLogin(result);
+  }catch(x){setErr(x.message||'Google sign-in failed. Check that this browser allows Google sign-in, then retry.')}
+  finally{setLoading(false)}
+ }
+
+ if(publicPage) return <PublicPage page={publicPage} onBack={()=>{window.location.hash='/login';setPublicPage('')}}/>;
+
+ const isAuthForm=['login','register','forgot'].includes(mode);
+ const heading=mode==='login'?(adminMode?'Admin sign in':'Welcome back'):mode==='register'?'Create your account':mode==='forgot'?'Reset your password':mode==='pending'?'Check your inbox':mode==='unverified'?'Verify your email':'Choose a new password';
+ const sub=mode==='login'?(adminMode?'Owner access to the operational control center.':'Continue where you left off.'):mode==='register'?'A few details, then confirm your email to activate your workspace.':mode==='forgot'?'Enter your account email and we will send a single-use link.':mode==='pending'?'Email verification keeps accounts secure.':mode==='unverified'?'Your account exists but this address is not confirmed yet.':'Set a new password for your NovaTutor account.';
+
+ return <div className="auth">
  <BooksScene/>
  <form className="auth-form" onSubmit={submit} noValidate>
   <button type="button" className="auth-theme" onClick={()=>setDark(x=>!x)} aria-label={dark?'Switch to bright mode':'Switch to dark mode'}>{dark?'Bright mode':'Dark mode'}</button>
-  <div className="auth-brand"><BrandMark size={30}/><div><b>NovaTutor</b><span>THE LEARNING WORKSPACE</span></div></div>
-  <div className="auth-mode" role="group" aria-label="Account type">
-   <button type="button" className={login&&!adminMode?'selected':''} aria-pressed={login&&!adminMode} onClick={()=>{setLogin(true);setAdminMode(false);setErr('')}}>Student</button>
-   <button type="button" className={login&&adminMode?'selected':''} aria-pressed={login&&adminMode} onClick={()=>{setLogin(true);setAdminMode(true);setForm(f=>({...f,email:f.email||''}));setErr('')}}>Admin</button>
-   <button type="button" className={!login?'selected':''} aria-pressed={!login} onClick={()=>{setLogin(false);setAdminMode(false);setErr('')}}>Create account</button>
-  </div>
-  <h2>{adminMode?'Admin sign in':login?'Welcome back':'Create your account'}</h2>
-  <p className="auth-sub">{adminMode?'Owner access to the operational control center.':login?'Continue where you left off.':'A few details and your workspace is ready.'}</p>
-  {!login&&<label className="auth-label" htmlFor="auth-name">Full name</label>}
-  {!login&&<input id="auth-name" autoComplete="name" placeholder="Your name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/>}
-  <label className="auth-label" htmlFor="auth-email">Email</label>
-  <input id="auth-email" type="email" autoComplete="email" placeholder="you@example.com" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/>
-  <label className="auth-label" htmlFor="auth-pass">Password</label>
-  <div className="auth-pass"><input id="auth-pass" type={showPass?'text':'password'} autoComplete={login?'current-password':'new-password'} placeholder="••••••••" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><button type="button" className="auth-pass-toggle" onClick={()=>setShowPass(s=>!s)} aria-pressed={showPass} aria-label={showPass?'Hide password':'Show password'}>{showPass?'Hide':'Show'}</button></div>
-  {err&&<div className="error" role="alert">{err}</div>}
-  <button className="primary full auth-submit" disabled={loading}>{loading?(login?'Signing in…':'Creating account…'):(login?(adminMode?'Sign in to Admin':'Sign in'):'Create account')}</button>
-  {!adminMode&&<button type="button" className="switch" onClick={()=>{setLogin(!login);setErr('')}}>{login?'New here? Create an account':'Already have an account? Sign in'}</button>}
+  <div className="auth-brand"><BrandMark size={32}/><div><b>NovaTutor</b><span>THE LEARNING WORKSPACE</span></div></div>
 
+  {isAuthForm&&<div className="auth-mode" role="group" aria-label="Account type">
+   <button type="button" className={mode==='login'&&!adminMode?'selected':''} aria-pressed={mode==='login'&&!adminMode} onClick={()=>{setMode('login');setAdminMode(false);setErr('');setNotice('')}}>Student</button>
+   <button type="button" className={mode==='login'&&adminMode?'selected':''} aria-pressed={mode==='login'&&adminMode} onClick={()=>{setMode('login');setAdminMode(true);setErr('');setNotice('')}}>Admin</button>
+   <button type="button" className={mode==='register'?'selected':''} aria-pressed={mode==='register'} onClick={()=>{setMode('register');setAdminMode(false);setErr('');setNotice('')}}>Create account</button>
+  </div>}
+
+  <h2>{heading}</h2>
+  <p className="auth-sub">{sub}</p>
+  {err&&<div className="error" role="alert">{err}</div>}
+  {notice&&<div className="auth-notice" role="status">{notice}</div>}
+
+  {mode==='verify'&&<div className="auth-state">
+   {!verifyState?<><div className="auth-spinner" aria-hidden="true"/><p>Verifying your email address…</p></>
+    :<><div className={'auth-state-icon '+(verifyState.ok?'ok':'bad')}>{verifyState.ok?'✓':'!'}</div><h3>{verifyState.ok?'Email verified':'Verification failed'}</h3><p>{verifyState.message}</p>
+      <button type="button" className="primary full" onClick={()=>{window.location.hash='/login';setMode('login');setErr('');setNotice(verifyState.ok?'Email verified. Sign in to continue.':'')}}>Continue to sign in</button>
+      {!verifyState.ok&&<button type="button" className="switch" onClick={()=>{setMode('unverified');setPending({email:form.email,emailDeliveryConfigured:true});setErr('')}}>Resend verification email</button>}</>}
+  </div>}
+
+  {(mode==='pending'||mode==='unverified')&&<div className="auth-state">
+   <div className="auth-state-icon ok">✉</div>
+   <h3>{mode==='pending'?'Verify your email to activate your account':'Verify your email'}</h3>
+   <p>{pending?.message||'Check your inbox for the verification link. It expires in 24 hours.'}</p>
+   {pending&&pending.emailDeliveryConfigured===false&&<p className="auth-warning">Email delivery is not configured on this server yet. Your account is safe, but verification cannot complete until an administrator sets SMTP credentials.</p>}
+   <button type="button" className="primary full" disabled={loading||!pending?.email} onClick={resend}>{loading?'Sending…':'Resend verification email'}</button>
+   <button type="button" className="switch" onClick={()=>{setMode('login');setErr('');setNotice('')}}>Back to sign in</button>
+  </div>}
+
+  {isAuthForm&&<>
+   {mode==='register'&&<><label className="auth-label" htmlFor="auth-name">Full name</label>
+   <input id="auth-name" autoComplete="name" placeholder="Your name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></>}
+   <label className="auth-label" htmlFor="auth-email">Email</label>
+   <input id="auth-email" type="email" autoComplete="email" placeholder="you@example.com" value={form.email} onChange={e=>setForm({...form,email:e.target.value})} required/>
+   {mode!=='forgot'&&<><label className="auth-label" htmlFor="auth-pass">{mode==='register'?'Create password':'Password'}</label>
+   <div className="auth-pass"><input id="auth-pass" type={showPass?'text':'password'} autoComplete={mode==='login'?'current-password':'new-password'} placeholder="••••••••" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><button type="button" className="auth-pass-toggle" onClick={()=>setShowPass(s=>!s)} aria-pressed={showPass} aria-label={showPass?'Hide password':'Show password'}>{showPass?'Hide':'Show'}</button></div></>}
+   {mode==='register'&&<><label className="auth-label" htmlFor="auth-confirm">Confirm password</label>
+   <input id="auth-confirm" type={showPass?'text':'password'} autoComplete="new-password" placeholder="Repeat your password" value={form.confirm} onChange={e=>setForm({...form,confirm:e.target.value})}/></>}
+   {mode==='login'&&!adminMode&&<button type="button" className="auth-inline-link" onClick={()=>{setMode('forgot');setErr('');setNotice('')}}>Forgot your password?</button>}
+   <button className="primary full auth-submit" disabled={loading}>{loading?(mode==='login'?'Signing in…':mode==='register'?'Creating account…':'Sending…'):(mode==='login'?(adminMode?'Sign in to Admin':'Sign in'):mode==='register'?'Create account':'Send reset link')}</button>
+   {(mode==='login'||mode==='register')&&!adminMode&&providers.googleEnabled&&<>
+    <div className="auth-divider"><span>or</span></div>
+    <GoogleSignIn clientId={providers.googleClientId} onCredential={googleSignIn} onError={setErr}/>
+    <p className="auth-google-note">Google verifies your email address; no separate verification email is needed.</p>
+   </>}
+   {mode==='login'&&!adminMode&&<button type="button" className="switch" onClick={()=>{setMode('register');setErr('')}}>New here? Create an account</button>}
+   {mode==='register'&&<button type="button" className="switch" onClick={()=>{setMode('login');setErr('')}}>Already have an account? Sign in</button>}
+   {mode==='forgot'&&<button type="button" className="switch" onClick={()=>{setMode('login');setErr('');setNotice('')}}>Back to sign in</button>}
+  </>}
+
+  {mode==='reset'&&<>
+   <label className="auth-label" htmlFor="auth-new-pass">New password</label>
+   <div className="auth-pass"><input id="auth-new-pass" type={showPass?'text':'password'} autoComplete="new-password" placeholder="At least 6 characters" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><button type="button" className="auth-pass-toggle" onClick={()=>setShowPass(s=>!s)}>{showPass?'Hide':'Show'}</button></div>
+   <button className="primary full auth-submit" disabled={loading||!token}>{loading?'Updating…':'Update password'}</button>
+   <button type="button" className="switch" onClick={()=>{setMode('login');setErr('');setNotice('')}}>Back to sign in</button>
+  </>}
+
+  <p className="auth-fineprint">By continuing you agree to our <button type="button" onClick={()=>navigatePublic('terms')}>Terms</button> and <button type="button" onClick={()=>navigatePublic('privacy')}>Privacy Policy</button>.</p>
+  <NovaFooter onNavigate={navigatePublic} compact/>
  </form>
-</div>}
+</div>
+}
+
 
 function Onboarding({user,onComplete}){
  const [form,setForm]=useState({name:user.name||'',educationLevel:'B.Tech / College',learningGoal:'',targetExam:'',interests:'',strengths:'',weaknesses:'',learningStyle:'Visual + practical',dailyStudyMinutes:60,preferredAiLanguage:getAiLanguage()});
@@ -1290,9 +1561,11 @@ function coursesSafe(){try{return JSON.parse(localStorage.getItem('nova_courses_
 /* BrandMark — vector product logo. Geometric "N" built from two strokes +
    a corner node: precise, editorial, scales 16–64px, no raster. */
 function BrandMark({size=26}){
- return <svg width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden="true">
-  <rect x="1" y="1" width="30" height="30" rx="9" fill="var(--ink)"/>
-  <path d="M10 22V10l12 12V10" stroke="var(--on-ink)" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"/>
+ return <svg className="brand-mark" width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden="true">
+  <rect x="1" y="1" width="30" height="30" rx="9.5" fill="var(--ink)"/>
+  <path d="M9.4 23.2V10.6a1 1 0 0 1 1.72-.7L21.3 21.6" stroke="var(--on-ink)" strokeWidth="2.55" strokeLinecap="round" strokeLinejoin="round"/>
+  <path d="M22.6 8.8v12.7" stroke="var(--on-ink)" strokeWidth="2.55" strokeLinecap="round"/>
+  <circle cx="24.7" cy="6.9" r="2.1" fill="var(--live)"/>
  </svg>;
 }
 

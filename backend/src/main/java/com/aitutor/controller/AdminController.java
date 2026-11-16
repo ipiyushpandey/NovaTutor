@@ -62,6 +62,8 @@ public class AdminController {
     private final com.aitutor.dsa.DsaProblemStateRepository dsaStates;
     private final com.aitutor.rag.KnowledgeDocumentRepository knowledgeDocs;
     private final com.aitutor.rag.KnowledgeChunkRepository knowledgeChunks;
+    private final com.aitutor.ai.AiMetrics aiMetrics;
+    private final RemoteCodeRunner remoteRunner;
 
     public AdminController(UserRepository users, CourseRepository courses, LessonRepository lessons,
                            ProgressRepository progress, QuizQuestionRepository quizzes,
@@ -73,7 +75,9 @@ public class AdminController {
                            com.aitutor.intelligence.LearningEventRepository learningEvents,
                            com.aitutor.dsa.DsaProblemStateRepository dsaStates,
                            com.aitutor.rag.KnowledgeDocumentRepository knowledgeDocs,
-                           com.aitutor.rag.KnowledgeChunkRepository knowledgeChunks) {
+                           com.aitutor.rag.KnowledgeChunkRepository knowledgeChunks,
+                           com.aitutor.ai.AiMetrics aiMetrics,
+                           RemoteCodeRunner remoteRunner) {
         this.users = users; this.courses = courses; this.lessons = lessons; this.progress = progress;
         this.quizzes = quizzes; this.conversations = conversations; this.messages = messages;
         this.encoder = encoder; this.adminEmail = adminEmail == null ? "" : adminEmail.trim().toLowerCase(); this.jwt = jwt;
@@ -81,6 +85,7 @@ public class AdminController {
         this.legacyGateNotesDir = Paths.get(gateNotesDir).toAbsolutePath().normalize();
         this.auditLogs=auditLogs; this.announcements=announcements; this.meta=meta; this.attempts=attempts; this.communityPosts=communityPosts;
         this.learningEvents=learningEvents; this.dsaStates=dsaStates; this.knowledgeDocs=knowledgeDocs; this.knowledgeChunks=knowledgeChunks;
+        this.aiMetrics=aiMetrics; this.remoteRunner=remoteRunner;
         try { Files.createDirectories(this.legacyGateNotesDir); } catch (Exception e) { throw new IllegalStateException("Could not initialize GATE notes storage", e); }
         migrateLegacyGateNotes();
     }
@@ -156,6 +161,18 @@ public class AdminController {
         if(u.getEmail().equalsIgnoreCase(adminEmail) || Objects.equals(me.getId(),u.getId())) throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Owner account cannot be changed");
         String role=r.role()==null?"STUDENT":r.role().trim().toUpperCase(Locale.ROOT); if(!Set.of("STUDENT","ADMIN").contains(role)) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Unsupported role");
         u.setRole(role); users.save(u); audit(me,"ROLE_CHANGED",String.valueOf(userId),"SUCCESS",role); return Map.of("id",u.getId(),"role",u.getRole());
+    }
+
+    @GetMapping("/ai/usage")
+    public Map<String,Object> aiUsage(@RequestHeader(value="Authorization", required=false) String authorization) {
+        admin(authorization);
+        return aiMetrics.snapshot();
+    }
+
+    @GetMapping("/sandbox/usage")
+    public Map<String,Object> sandboxUsage(@RequestHeader(value="Authorization", required=false) String authorization) {
+        admin(authorization);
+        return remoteRunner.stats();
     }
 
     @GetMapping("/audit-logs")
