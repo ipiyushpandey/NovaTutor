@@ -48,6 +48,14 @@ app:
     expiration-ms: ${JWT_EXPIRATION:3600000}
   code-runner:
     enabled: ${CODE_RUNNER_ENABLED:false}
+    # Free PaaS containers cannot run Docker, so production judges through the
+    # isolated remote runner unless a Docker host is explicitly selected.
+    provider: ${CODE_RUNNER_PROVIDER:remote}
+    remote:
+      url: ${CODE_RUNNER_REMOTE_URL:https://ce.judge0.com}
+      api-key: ${CODE_RUNNER_REMOTE_KEY:}
+      max-code-chars: ${CODE_RUNNER_MAX_CODE_CHARS:100000}
+      memory-limit-kb: ${CODE_RUNNER_MEMORY_KB:262144}
     production-ack: ${CODE_RUNNER_PRODUCTION_ACK:}
     timeout-seconds: ${CODE_RUNNER_TIMEOUT_SECONDS:5}
     memory-mb: ${CODE_RUNNER_MEMORY_MB:256}

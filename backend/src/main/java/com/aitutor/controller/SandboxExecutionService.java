@@ -17,6 +17,10 @@ public class SandboxExecutionService {
     private final Map<String,String> images;
     private final Set<String> preparedImages = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final Semaphore concurrency = new Semaphore(4);
+    private final RemoteCodeRunner remote;
+    private final String provider;
+    private volatile long dockerCheckedAt = 0L;
+    private volatile boolean dockerAvailable = false;
 
     public SandboxExecutionService(@Value("${app.code-runner.enabled:false}") boolean enabled,
                                    @Value("${app.code-runner.timeout-seconds:5}") int timeoutSeconds,
@@ -25,9 +29,13 @@ public class SandboxExecutionService {
                                    @Value("${app.code-runner.python-image:python:3.12-alpine}") String pythonImage,
                                    @Value("${app.code-runner.cpp-image:gcc:14}") String cppImage,
                                    @Value("${app.code-runner.node-image:node:22-alpine}") String nodeImage,
-                                   @Value("${app.code-runner.go-image:golang:1.24-alpine}") String goImage) {
+                                   @Value("${app.code-runner.go-image:golang:1.24-alpine}") String goImage,
+                                   @Value("${app.code-runner.provider:auto}") String provider,
+                                   RemoteCodeRunner remote) {
         this.enabled=enabled; this.timeoutSeconds=Math.max(1,Math.min(15,timeoutSeconds)); this.memoryMb=Math.max(128,Math.min(1024,memoryMb));
         this.images=Map.of("java",javaImage,"python",pythonImage,"c++",cppImage,"c",cppImage,"javascript",nodeImage,"go",goImage);
+        this.provider = provider == null || provider.isBlank() ? "auto" : provider.trim().toLowerCase(Locale.ROOT);
+        this.remote = remote;
     }
 
     public Map<String,Object> execute(String language,String code,String stdin) {
@@ -35,7 +43,10 @@ public class SandboxExecutionService {
         if(!images.containsKey(lang)) throw new IllegalArgumentException("Unsupported execution language: "+language);
         if(code==null||code.isBlank()) throw new IllegalArgumentException("Code is empty");
         if(code.length()>100_000) throw new IllegalArgumentException("Code is too large for the sandbox");
-        if(!enabled) return Map.of("enabled",false,"status","SANDBOX_NOT_ENABLED","message","Code execution is disabled until the Docker sandbox is configured. Static/AI analysis remains available.");
+        if(!enabled) return Map.of("enabled",false,"status","SANDBOX_NOT_ENABLED","message","Code execution is disabled until the sandbox is configured. Static/AI analysis remains available.");
+        // Deployments without a Docker host (free PaaS) execute through the isolated
+        // remote runner instead. The judge contract is identical either way.
+        if (useRemote()) return remote.execute(lang, code, stdin);
         if (!concurrency.tryAcquire()) return Map.of("enabled",true,"status","RUNNER_BUSY","exitCode",-1,"stdout","","stderr","The code execution service is busy. Please retry shortly.");
         Path dir=null;
         try {
@@ -92,6 +103,27 @@ public class SandboxExecutionService {
         } catch(IOException e){return Map.of("enabled",true,"status","RUNNER_UNAVAILABLE","exitCode",-1,"stdout","","stderr","Docker sandbox is unavailable. Start Docker Desktop and make sure the configured runner image can be pulled.","detail",e.getMessage());}
         catch(InterruptedException e){Thread.currentThread().interrupt();return Map.of("enabled",true,"status","INTERRUPTED","exitCode",-1,"stdout","","stderr","Execution was interrupted.");}
         finally{concurrency.release(); if(dir!=null)try{Files.walk(dir).sorted(Comparator.reverseOrder()).forEach(x->{try{Files.deleteIfExists(x);}catch(IOException ignored){}});}catch(IOException ignored){}}
+    }
+
+    /**
+     * Chooses the execution substrate. `remote` always uses the isolated remote
+     * runner, `docker` always uses local containers, and `auto` prefers Docker
+     * and falls back to the remote runner when no Docker daemon is reachable
+     * (the normal case on free PaaS web services).
+     */
+    private boolean useRemote(){
+        if("remote".equals(provider)) return true;
+        if("docker".equals(provider)) return false;
+        return !dockerAvailableCached();
+    }
+
+    private boolean dockerAvailableCached(){
+        long now=System.currentTimeMillis();
+        if(now-dockerCheckedAt<60_000L) return dockerAvailable;
+        try{ ensureDockerReady(); dockerAvailable=true; }
+        catch(Exception e){ dockerAvailable=false; }
+        dockerCheckedAt=now;
+        return dockerAvailable;
     }
 
     /** Best-effort force-remove of a killed run's container. */

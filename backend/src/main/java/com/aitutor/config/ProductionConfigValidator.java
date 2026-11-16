@@ -18,7 +18,8 @@ public class ProductionConfigValidator {
             @Value("${ADMIN_PASSWORD:}") String adminPassword,
             @Value("${CORS_ORIGINS:}") String corsOrigins,
             @Value("${CODE_RUNNER_ENABLED:false}") boolean codeRunnerEnabled,
-            @Value("${CODE_RUNNER_PRODUCTION_ACK:}") String codeRunnerProductionAck) {
+            @Value("${CODE_RUNNER_PRODUCTION_ACK:}") String codeRunnerProductionAck,
+            @Value("${app.code-runner.provider:remote}") String codeRunnerProvider) {
         require("DB_URL", dbUrl);
         require("DB_USERNAME", dbUsername);
         require("DB_PASSWORD", dbPassword);
@@ -36,7 +37,11 @@ public class ProductionConfigValidator {
         if (adminPassword.length() < 12) {
             throw new IllegalStateException("ADMIN_PASSWORD must be at least 12 characters in production");
         }
-        if (codeRunnerEnabled && !"I_UNDERSTAND_SANDBOX_RISK".equals(codeRunnerProductionAck)) {
+        // The acknowledgement guards running containers on the application host.
+        // The remote runner executes submissions in its own isolated sandbox, so
+        // it does not need that acknowledgement.
+        boolean localDocker = "docker".equalsIgnoreCase(codeRunnerProvider == null ? "" : codeRunnerProvider.trim());
+        if (codeRunnerEnabled && localDocker && !"I_UNDERSTAND_SANDBOX_RISK".equals(codeRunnerProductionAck)) {
             throw new IllegalStateException("CODE_RUNNER_PRODUCTION_ACK must equal I_UNDERSTAND_SANDBOX_RISK before enabling the production sandbox");
         }
     }

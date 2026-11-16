@@ -3094,7 +3094,10 @@ nav button.active .nova-icon{filter:none}
 .app-topnav{display:block}
 .app-topnav>aside{display:none!important}
 .main-topnav{margin:0!important;width:100%!important;padding:calc(var(--topbar-h) + 26px) 24px 72px;max-width:var(--content-max);margin-left:auto!important;margin-right:auto!important}
-.topnav{position:fixed;top:0;left:0;right:0;z-index:50;height:var(--topbar-h);background:var(--bg);border-bottom:1px solid var(--border)}
+/* Stacking order (mobile): header 60 > sheet 56 > shade 54 > content.
+   The shade used to sit ABOVE the sheet, so every tap on a menu item hit the
+   backdrop instead of the button — the menu closed and nothing navigated. */
+.topnav{position:fixed;top:0;left:0;right:0;z-index:60;height:var(--topbar-h);background:var(--bg);border-bottom:1px solid var(--border)}
 .topnav-inner{max-width:var(--content-max);height:100%;margin:0 auto;padding:0 24px;display:flex;align-items:center;gap:6px}
 .topnav-brand{display:inline-flex;align-items:center;gap:9px;background:none;border:0;padding:4px 6px 4px 0;cursor:pointer}
 .topnav-brand span{font:600 15.5px var(--font-display);color:var(--text);letter-spacing:-.01em}
@@ -3128,12 +3131,12 @@ nav button.active .nova-icon{filter:none}
 .topnav-account-head b{font:600 13.5px var(--font-display);color:var(--text);display:block}
 .topnav-account-head small{color:var(--muted);font-size:11px}
 /* Mobile: compact header + sheet */
-.nav-shade{position:fixed;inset:0;background:rgba(10,11,14,.45);z-index:55;animation:panel-in 200ms var(--ease-out)}
-.topnav-sheet{position:fixed;top:var(--topbar-h);left:0;right:0;bottom:0;background:var(--bg);z-index:54;overflow:auto;padding:18px 18px 32px;animation:sheet-in 240ms var(--ease-out)}
+.nav-shade{position:fixed;inset:0;background:rgba(10,11,14,.45);z-index:54;overscroll-behavior:contain;animation:panel-in 200ms var(--ease-out)}
+.topnav-sheet{position:fixed;top:var(--topbar-h);left:0;right:0;bottom:0;z-index:56;background:var(--bg);overflow-y:auto;overscroll-behavior:contain;padding:18px 18px 32px;-webkit-overflow-scrolling:touch;animation:sheet-in 240ms var(--ease-out)}
 @keyframes sheet-in{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
 .sheet-group{margin-bottom:18px}
 .sheet-group-label{font:700 10px var(--font-ui);letter-spacing:1.6px;color:var(--muted);margin:0 2px 8px}
-.sheet-item{display:flex;align-items:center;gap:12px;width:100%;border:0;background:transparent;color:var(--text);font:500 15px var(--font-ui);padding:13px 10px;border-radius:var(--r-sm);cursor:pointer;text-align:left}
+.sheet-item{display:flex;align-items:center;gap:12px;width:100%;min-height:46px;border:0;background:transparent;color:var(--text);font:500 15px var(--font-ui);padding:13px 10px;border-radius:var(--r-sm);cursor:pointer;text-align:left;touch-action:manipulation}
 .sheet-item:hover{background:var(--surface-2)}
 .sheet-item.active{background:var(--ink-soft);font-weight:600}
 .sheet-foot{padding-top:14px;border-top:1px solid var(--border);color:var(--muted);font-size:11.5px}

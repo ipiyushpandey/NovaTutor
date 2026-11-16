@@ -118,6 +118,8 @@ public class DsaController {
         m.put("passed", r.passedCount());
         m.put("total", r.totalCount());
         m.put("accepted", r.accepted());
+        m.put("durationMs", r.durationMs());
+        m.put("memoryKb", r.memoryKb());
         m.put("tests", tests);
         return m;
     }

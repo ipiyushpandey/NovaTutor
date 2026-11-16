@@ -364,7 +364,28 @@ public enum DsaLang {
 
     // ------------------------------------------------------------------- C++
     private static String cppHarness(DsaSig sig, String userCode) {
-        String args = String.join(", ", IntStream.range(0, sig.params.size()).mapToObj(i -> cppArg(sig, i)).toList());
+        // Array arguments must be bound to named lvalues: student signatures take
+        // `vector<int>&`, and a temporary returned by rdArr() cannot bind to a
+        // non-const reference (that used to make every C++ submission fail to
+        // compile even when the solution was correct).
+        StringBuilder prep = new StringBuilder();
+        StringBuilder argList = new StringBuilder();
+        for (int i = 0; i < sig.params.size(); i++) {
+            if (i > 0) argList.append(", ");
+            switch (sig.params.get(i)) {
+                case ARRAY -> {
+                    prep.append("auto _a").append(i).append(" = rdArr(parts[").append(i).append("]); ");
+                    argList.append("_a").append(i);
+                }
+                case MATRIX -> {
+                    prep.append("auto _m").append(i).append(" = rdMat(parts[").append(i).append("]); ");
+                    argList.append("_m").append(i);
+                }
+                case STRING -> argList.append("parts[").append(i).append("]");
+                case SCALAR, INT -> argList.append("stoi(parts[").append(i).append("])");
+            }
+        }
+        String args = argList.toString();
         String call = switch (sig.ret) {
             case INT, STRING -> "cout << solve(" + args + ") << endl;";
             case ARRAY -> "ptArr(solve(" + args + "));";
@@ -432,16 +453,7 @@ public enum DsaLang {
             }
             """
             .replace("%USER%", userCode.isBlank() ? "// (empty solution)" : userCode)
-            .replace("%CALL%", call);
-    }
-
-    private static String cppArg(DsaSig sig, int i) {
-        return switch (sig.params.get(i)) {
-            case ARRAY -> "rdArr(parts[" + i + "])";
-            case MATRIX -> "rdMat(parts[" + i + "])";
-            case SCALAR, INT -> "stoi(parts[" + i + "])";
-            case STRING -> "parts[" + i + "]";
-        };
+            .replace("%CALL%", prep + call);
     }
 
     // --------------------------------------------------------------------- C

@@ -494,7 +494,14 @@ function NovaBrain({user,go}){
 
 function App(){
  const [adminDenied,setAdminDenied]=useState(false);
- const [page,setPage]=useState(()=>{const allowed=['login','dashboard','coach','study-room','analytics','courses','mentor','learning-studio','tutor','code','quiz','practice','prepare','chat','knowledge','planner','flashcards','interview','voice','settings','gatecse','career','community','notifications','revision','achievements','dpp','profile','exam','nova-os','nova-brain','onboarding','admin','dsa'];const alias={'gate-cse':'gatecse'};const h0=window.location.hash.replace('#/','');const h=alias[h0]||h0;const saved=localStorage.getItem('nova_page')||'dashboard';const session=readUser();if(!session)return 'login';if(h==='login')return session.role==='ADMIN'?'admin':'dashboard';return allowed.includes(h)?h:(allowed.includes(saved)&&saved!=='login'?saved:'dashboard')});
+ const [page,setPage]=useState(()=>{const allowed=['login','dashboard','coach','study-room','analytics','courses','mentor','learning-studio','tutor','code','quiz','practice','prepare','chat','knowledge','planner','flashcards','interview','voice','settings','gatecse','career','community','notifications','revision','achievements','dpp','profile','exam','nova-os','nova-brain','onboarding','admin','dsa'];const alias={'gate-cse':'gatecse'};const h0=window.location.hash.replace('#/','');const h=alias[h0]||h0;const saved=localStorage.getItem('nova_page')||'dashboard';const session=readUser();if(!session)return 'login';
+ // A stored session with an unfinished profile belongs on onboarding, not on
+ // the dashboard. Deciding this in the initializer (instead of in an effect)
+ // removes the dashboard→onboarding flash on refresh.
+ const needsProfile=String(session.role||'STUDENT').toUpperCase()!=='ADMIN'&&session.profileComplete===false;
+ if(needsProfile)return 'onboarding';
+ if(h==='onboarding'||h==='login')return session.role==='ADMIN'?'admin':'dashboard';
+ return allowed.includes(h)?h:(allowed.includes(saved)&&saved!=='login'?saved:'dashboard')});
  // In-page Back was removed (hash routing + browser Back cover it). The stale
  // nova_nav_stack localStorage key is cleared on logout/switch/login below.
  const [aiStatus,setAiStatus]=useState({configured:false,model:'—'}),[courses,setCourses]=useState([]),[progress,setProgress]=useState([]),[mobile,setMobile]=useState(false),[user,setUser]=useState(readUser);
@@ -512,16 +519,27 @@ function App(){
   if(user?.role!=='ADMIN' && page==='admin'){setPage('dashboard');localStorage.setItem('nova_page','dashboard');window.location.hash='/dashboard'}
  },[user,page]);
  useEffect(()=>{if(user?.id && user?.role!=='ADMIN' && user.profileComplete===false && page!=='onboarding'){setPage('onboarding');localStorage.setItem('nova_page','onboarding');window.location.hash='/onboarding'}},[user?.id,user?.profileComplete,page]);
- useEffect(()=>{if(user?.id){api('/users/'+user.id).then(profile=>{const next={...user,...profile};localStorage.setItem('ai_user',JSON.stringify(next));setUser(next);if(profile.preferredAiLanguage)localStorage.setItem(AI_LANGUAGE_KEY,profile.preferredAiLanguage)}).catch(()=>{})}},[user?.id]);
+ // The /users entity response does not carry the computed profileComplete flag,
+ // so a blind merge wrote `undefined` over a known-true value and bounced
+ // completed users back into onboarding. Only an explicit boolean may override.
+ useEffect(()=>{if(user?.id){api('/users/'+user.id).then(profile=>{if(!profile||typeof profile!=='object')return;const next={...user,...profile};if(typeof profile.profileComplete!=='boolean')next.profileComplete=user.profileComplete;localStorage.setItem('ai_user',JSON.stringify(next));setUser(next);if(profile.preferredAiLanguage)localStorage.setItem(AI_LANGUAGE_KEY,profile.preferredAiLanguage)}).catch(()=>{})}},[user?.id]);
+ // Authoritative bootstrap: one /auth/me round-trip reconciles the stored
+ // session with the server before we trust where the user should land. A
+ // transient network failure keeps the session; only a real 401 (handled in
+ // lib/api.js) signs the user out.
+ useEffect(()=>{if(!user?.token)return;let alive=true;refreshSessionToken().then(ok=>{if(!alive||!ok)return;const fresh=readUser();if(!fresh)return;setUser(fresh);const r=String(fresh.role||'STUDENT').toUpperCase();if(r==='ADMIN'){if(page!=='admin'){setPage('admin');localStorage.setItem('nova_page','admin');window.location.hash='/admin'}return}if(fresh.profileComplete===false){if(page!=='onboarding'){setPage('onboarding');localStorage.setItem('nova_page','onboarding');window.location.hash='/onboarding'}return}if(page==='onboarding'||page==='login'){setPage('dashboard');localStorage.setItem('nova_page','dashboard');window.location.hash='/dashboard'}}).catch(()=>{});return()=>{alive=false}},[user?.token]);
  useEffect(load,[user]); useEffect(()=>{if(user?.id&&page==='dashboard')load()},[page,user?.id]); // Lesson-to-AI-Teacher navigation uses the same central history stack as every other module.
  useEffect(()=>{ // The status probe runs at mount, which can beat backend startup on a
   // cold machine. While unreachable, retry every 15s so the header reflects
   // reality once Spring Boot is up instead of showing a stale warning forever.
+  // /ai/status is authenticated, so probing it while signed out only produced
+  // 401 noise in the console on the login screen.
+  if(!user?.token)return;
   let cancelled=false,timer=null;
   const check=()=>{api('/ai/status').then(s=>{if(!cancelled){setAiStatus(s);if(timer){clearTimeout(timer);timer=null;}}}).catch(()=>{if(!cancelled){setAiStatus({configured:false,model:'backend offline'});timer=setTimeout(check,15000);}})};
   check();
   return()=>{cancelled=true;if(timer)clearTimeout(timer)};
- },[]);
+ },[user?.token]);
  const persistBeforeNavigation=(reason='navigation')=>{
   try{
     beginNavigationPersistence(reason);

@@ -5,9 +5,13 @@ import AiMarkdown from './AiMarkdown.jsx';
 const LANGS=[['java','Java'],['python','Python'],['c++','C++'],['c','C'],['javascript','JavaScript'],['go','Go']];
 const DIFF_COLOR={EASY:'var(--success)',MEDIUM:'var(--warning)',HARD:'var(--danger)'};
 
+// The API returns "Easy"/"Medium"/"Hard" while the filter and colour map use
+// upper-case keys; compare on a normalised value so filters actually match.
+const diffKey=d=>String(d||'').trim().toUpperCase();
 function DiffPill({d}){
-  const c=DIFF_COLOR[d]||'var(--text-2)';
-  return <span className="dsa-pill" style={{color:c}}>{d}</span>;
+  const key=diffKey(d);
+  const c=DIFF_COLOR[key]||'var(--text-2)';
+  return <span className="dsa-pill" style={{color:c}}>{key?key[0]+key.slice(1).toLowerCase():d}</span>;
 }
 function StatusMark({st}){
   if(st==='SOLVED') return <span className="dsa-status" style={{color:'var(--success)'}}><CheckCircle2 size={14}/>Solved</span>;
@@ -56,7 +60,7 @@ export default function DsaPractice({user,api}){
   const filtered=useMemo(()=>{
     const needle=q.trim().toLowerCase();
     return (problems||[]).filter(p=>{
-      if(diff!=='ALL'&&p.difficulty!==diff)return false;
+      if(diff!=='ALL'&&diffKey(p.difficulty)!==diff)return false;
       if(topic!=='ALL'&&p.topic!==topic)return false;
       if(needle&&!(p.title.toLowerCase().includes(needle)||p.slug.includes(needle)||(p.tags||[]).join(',').includes(needle)))return false;
       if(status!=='ALL'){
@@ -333,8 +337,10 @@ function DsaProblemView({api,slug,saved,onBack,onProgress}){
           </div>
           {/* Sandbox failure paths must never dead-end: give the student the
               exact recovery step (mirrors the Code Lab banner hints). */}
-          {result.status==='SANDBOX_NOT_ENABLED'&&<div className="dsa-banner info"><span>Code execution runs in a Docker sandbox. Start Docker Desktop and keep CODE_RUNNER_ENABLED=true, then restart Spring Boot — AI hints and static analysis still work without it.</span></div>}
-          {result.status==='RUNNER_UNAVAILABLE'&&<div className="dsa-banner info"><span>The sandbox runner could not be reached. Make sure Docker Desktop is running and the configured runner images can be pulled, then try again.</span></div>}
+          {result.status==='SANDBOX_NOT_ENABLED'&&<div className="dsa-banner info"><span>Code execution is switched off on this server (CODE_RUNNER_ENABLED). AI hints and static analysis still work without it.</span></div>}
+          {result.status==='RUNNER_UNAVAILABLE'&&<div className="dsa-banner info"><span>The execution service is temporarily unreachable, so your code was not judged. Please try again in a moment.</span></div>}
+          {result.status==='RUNNER_BUSY'&&<div className="dsa-banner info"><span>The judge is handling other submissions. Retry in a few seconds.</span></div>}
+          {(typeof result.durationMs==='number'&&result.durationMs>0)&&<small className="dsa-hidden-note">Judged in {result.durationMs} ms{typeof result.memoryKb==='number'&&result.memoryKb>0?` · ${Math.round(result.memoryKb/1024)} MB peak memory`:''}.</small>}
           <div className="dsa-tests">
             {(result.tests||[]).map(t=>(
               <div className={'dsa-test'+(t.passed?'':' bad')} key={t.index}>

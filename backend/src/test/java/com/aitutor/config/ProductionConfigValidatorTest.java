@@ -12,7 +12,7 @@ class ProductionConfigValidatorTest {
         assertDoesNotThrow(() -> new ProductionConfigValidator(
                 "jdbc:mysql://db:3306/ai_tutor", "novatutor", "strong-db-password", SECRET,
                 "gemini-key", "admin@example.com", "strong-admin-password", "https://app.example.com",
-                false, ""));
+                false, "", "remote"));
     }
 
     @Test
@@ -20,8 +20,21 @@ class ProductionConfigValidatorTest {
         IllegalStateException ex = assertThrows(IllegalStateException.class, () -> new ProductionConfigValidator(
                 "jdbc:mysql://db:3306/ai_tutor", "novatutor", "strong-db-password", SECRET,
                 "gemini-key", "admin@example.com", "strong-admin-password", "https://app.example.com",
-                true, ""));
+                true, "", "docker"));
         assertTrue(ex.getMessage().contains("CODE_RUNNER_PRODUCTION_ACK"));
+    }
+
+    /**
+     * The acknowledgement exists because a local Docker runner executes student
+     * code on the application host. A remote runner executes it elsewhere, so
+     * enabling the judge in production must not require that acknowledgement.
+     */
+    @Test
+    void acceptsRemoteRunnerWithoutSandboxAcknowledgement() {
+        assertDoesNotThrow(() -> new ProductionConfigValidator(
+                "jdbc:mysql://db:3306/ai_tutor", "novatutor", "strong-db-password", SECRET,
+                "gemini-key", "admin@example.com", "strong-admin-password", "https://app.example.com",
+                true, "", "remote"));
     }
 
     @Test
@@ -29,6 +42,6 @@ class ProductionConfigValidatorTest {
         assertThrows(IllegalStateException.class, () -> new ProductionConfigValidator(
                 "jdbc:mysql://db:3306/ai_tutor", "novatutor", "strong-db-password", SECRET,
                 "gemini-key", "admin@example.com", "strong-admin-password", "http://localhost:5173",
-                false, ""));
+                false, "", "remote"));
     }
 }

@@ -15,6 +15,15 @@ import java.util.Map;
  * The generated harness reads every stdin line as one test and prints exactly
  * one output line per test, so a single sandbox execution evaluates the full
  * test suite. Output lines are compared one-by-one against the oracle.
+ *
+ * Verdict correctness notes (V2):
+ *  - Tests are validated against the oracle BEFORE execution, so a malformed
+ *    hidden spec can never shift output-line alignment and fail a correct
+ *    solution.
+ *  - Blank lines are preserved: an expected empty line is a real test result,
+ *    not padding to be discarded.
+ *  - Comparison keeps token boundaries. "1 2" never equals "12", while
+ *    "[1, 2]" and "[1,2]" are both accepted because they are the same array.
  */
 @Service
 public class DsaJudgeService {
@@ -39,120 +48,182 @@ public class DsaJudgeService {
     public record TestResult(int index, boolean sample, String input, String expected,
                              String actual, boolean passed, String note) {}
 
-    public record RunResult(String status,   // PASSED | FAILED | COMPILE_ERROR | RUNTIME_ERROR | SANDBOX_NOT_ENABLED | RUNNER_BUSY | RUNNER_UNAVAILABLE | UNSUPPORTED_LANGUAGE
+    public record RunResult(String status,   // PASSED | FAILED | COMPILE_ERROR | RUNTIME_ERROR | TIMEOUT | SANDBOX_NOT_ENABLED | RUNNER_BUSY | RUNNER_UNAVAILABLE | UNSUPPORTED_LANGUAGE
                             String message,
                             List<TestResult> tests,
                             int passedCount,
                             int totalCount,
-                            boolean accepted) {}
+                            boolean accepted,
+                            long durationMs,
+                            long memoryKb) {
+
+        public RunResult(String status, String message, List<TestResult> tests,
+                         int passedCount, int totalCount, boolean accepted) {
+            this(status, message, tests, passedCount, totalCount, accepted, 0L, 0L);
+        }
+
+        public RunResult(String status, String message, List<TestResult> tests,
+                         int passedCount, int totalCount, boolean accepted, long durationMs) {
+            this(status, message, tests, passedCount, totalCount, accepted, durationMs, 0L);
+        }
+    }
 
     public RunResult run(User user, DsaProblem problem, RunRequest request, boolean recordProgress) {
         DsaLang lang = DsaLang.parse(request.language());
         if (!lang.supports(problem.sig())) {
             return new RunResult("UNSUPPORTED_LANGUAGE",
                     lang.label() + " is not available for this problem shape. Try Java, Python, C++, JavaScript or Go.",
-                    List.of(), 0, 0, false);
+                    List.of(), 0, 0, false, 0);
         }
 
-        List<String[]> tests = collectTests(problem);
+        // Validate every candidate test against the oracle up front. Only tests
+        // the oracle can evaluate are executed, so line N of stdout always
+        // belongs to test N.
+        List<String[]> tests = new ArrayList<>();
+        List<String> expectedAll = new ArrayList<>();
+        for (String[] sample : problem.samples()) {
+            String expected = expectedFor(problem, sample[0]);
+            if (expected == null) continue;
+            tests.add(sample);
+            expectedAll.add(expected);
+        }
+        for (String[] hidden : problem.hiddenTests(HIDDEN_TESTS_PER_RUN)) {
+            String expected = expectedFor(problem, hidden[0]);
+            if (expected == null) continue;
+            tests.add(hidden);
+            expectedAll.add(expected);
+        }
         if (tests.isEmpty()) {
-            return new RunResult("NO_TESTS", "This problem has no tests yet.", List.of(), 0, 0, false);
+            return new RunResult("NO_TESTS", "This problem has no runnable tests yet.", List.of(), 0, 0, false, 0);
         }
 
+        int sampleCount = problem.samples().size();
         String program = lang.harness(problem.sig(), request.code() == null ? "" : request.code());
         StringBuilder stdin = new StringBuilder();
         for (String[] t : tests) stdin.append(t[0]).append('\n');
 
         Map<String, Object> out = sandbox.execute(langLabel(lang), program, stdin.toString());
         String status = String.valueOf(out.get("status"));
-        String stdout = String.valueOf(out.getOrDefault("stdout", ""));
+        long durationMs = out.get("durationMs") instanceof Number n ? n.longValue() : 0L;
+        long memoryKb = out.get("memoryKb") instanceof Number mk ? mk.longValue() : 0L;
 
         if (!Boolean.TRUE.equals(out.get("enabled"))) {
             String msg = String.valueOf(out.getOrDefault("message", "Code execution is not available."));
-            return new RunResult(String.valueOf(out.getOrDefault("status", "SANDBOX_NOT_ENABLED")), msg, List.of(), 0, 0, false);
+            return new RunResult(String.valueOf(out.getOrDefault("status", "SANDBOX_NOT_ENABLED")), msg,
+                    List.of(), 0, 0, false, durationMs);
         }
         if ("RUNNER_BUSY".equals(status)) {
-            return new RunResult("RUNNER_BUSY", "The judge is busy — please retry in a moment.", List.of(), 0, 0, false);
+            return new RunResult("RUNNER_BUSY", "The judge is busy — please retry in a moment.", List.of(), 0, 0, false, durationMs);
         }
         if ("RUNNER_UNAVAILABLE".equals(status)) {
             return new RunResult("RUNNER_UNAVAILABLE",
-                    String.valueOf(out.getOrDefault("stderr", "Docker sandbox is unavailable.")), List.of(), 0, 0, false);
+                    String.valueOf(out.getOrDefault("stderr", "The code execution service is unavailable.")),
+                    List.of(), 0, 0, false, durationMs);
         }
         if ("TIMEOUT".equals(status)) {
-            return new RunResult("TIMEOUT", "Your solution exceeded the judge time limit.", List.of(), 0, 0, false);
+            if (recordProgress && user != null) record(user, problem, lang, 0, tests.size(), false);
+            return new RunResult("TIMEOUT", "Time limit exceeded — your program ran longer than the judge allows.", List.of(), 0, tests.size(), false, durationMs);
+        }
+        if ("COMPILE_ERROR".equals(status)) {
+            String stderr = String.valueOf(out.getOrDefault("stderr", ""));
+            if (recordProgress && user != null) record(user, problem, lang, 0, tests.size(), false);
+            return new RunResult("COMPILE_ERROR", firstMeaningful(stderr, lang), List.of(), 0, tests.size(), false, durationMs);
         }
 
-        // One output line per test, in order. Missing lines mean the program
-        // crashed or produced a compile error before finishing.
-        List<String> lines = outputLines(stdout);
+        List<String> lines = outputLines(String.valueOf(out.getOrDefault("stdout", "")));
         int exitCode = out.get("exitCode") instanceof Integer i ? i : 0;
         String stderr = String.valueOf(out.getOrDefault("stderr", ""));
+
+        // No output at all and a non-zero exit: the program never produced a
+        // verdict (link error, crash before first print).
+        if (lines.isEmpty() && exitCode != 0) {
+            if (recordProgress && user != null) record(user, problem, lang, 0, tests.size(), false);
+            return new RunResult("RUNTIME_ERROR", firstMeaningful(stderr, lang), List.of(), 0, tests.size(), false, durationMs);
+        }
 
         List<TestResult> results = new ArrayList<>();
         int passed = 0;
         for (int i = 0; i < tests.size(); i++) {
             String[] t = tests.get(i);
-            boolean sample = i < problem.samples().size();
-            String expected;
-            try {
-                expected = problem.expectedFor(t[0]);
-            } catch (RuntimeException e) {
-                continue; // malformed hidden spec line, skip
-            }
-            String actual = i < lines.size() ? lines.get(i) : "";
-            if ("RUNTIME_ERROR".equals(status) && i == lines.size()) {
-                // program died here: remaining tests all fail with the runtime note
-                results.add(new TestResult(i, sample, pretty(problem, t), expected, "", false,
-                        stderr.isBlank() ? "Runtime error" : stderr));
-                continue;
-            }
-            boolean ok = normalize(actual).equals(normalize(expected));
+            boolean sample = i < sampleCount;
+            String expected = expectedAll.get(i);
+            boolean produced = i < lines.size();
+            String actual = produced ? lines.get(i) : "";
+            boolean runtimeFailure = "ERROR".equals(actual.trim());
+            boolean ok = produced && !runtimeFailure && outputsMatch(actual, expected);
             if (ok) passed++;
-            results.add(new TestResult(i, sample, pretty(problem, t), expected, actual, ok,
-                    ok ? null : ("ERROR".equals(actual) ? "Runtime error on this test" : null)));
-        }
-
-        // Heuristic: compile failure → gcc/javac nonzero exit and no output lines at all.
-        if (lines.isEmpty() && exitCode != 0) {
-            String msg = stderr == null || stderr.isBlank()
-                    ? "Your code did not compile. Check the language syntax (the judge compiled it as " + lang.label() + ")."
-                    : firstMeaningful(stderr);
-            if (recordProgress && user != null) record(user, problem, lang, 0, tests.size(), false);
-            return new RunResult("COMPILE_ERROR", msg, results, 0, tests.size(), false);
+            String note = null;
+            if (!ok) {
+                if (!produced) note = "No output produced for this test (the program stopped early or crashed).";
+                else if (runtimeFailure) note = "Runtime error on this test.";
+                else if (!sample) note = "Hidden test failed — check edge cases.";
+            }
+            results.add(new TestResult(i, sample, pretty(problem, t), expected, actual, ok, note));
         }
 
         boolean accepted = passed == tests.size();
         if (recordProgress && user != null) record(user, problem, lang, passed, tests.size(), accepted);
-        return new RunResult(accepted ? "PASSED" : "FAILED",
-                accepted ? "All " + tests.size() + " tests passed." : passed + " of " + tests.size() + " tests passed.",
-                results, passed, tests.size(), accepted);
+        String message = accepted
+                ? "All " + tests.size() + " tests passed."
+                : passed + " of " + tests.size() + " tests passed.";
+        return new RunResult(accepted ? "PASSED" : "FAILED", message, results, passed, tests.size(), accepted, durationMs, memoryKb);
     }
 
-    private List<String[]> collectTests(DsaProblem p) {
-        List<String[]> all = new ArrayList<>(p.samples());
-        for (String[] h : p.hiddenTests(HIDDEN_TESTS_PER_RUN)) {
-            try {
-                p.expectedFor(h[0]);
-                all.add(h);
-            } catch (RuntimeException ignored) {
-                // malformed hidden spec — never sent to users
-            }
+    private static String expectedFor(DsaProblem p, String rawLine) {
+        try {
+            return p.expectedFor(rawLine);
+        } catch (RuntimeException e) {
+            return null; // malformed test spec — never executed, never revealed
         }
-        return all;
     }
 
+    /**
+     * Splits program output into one entry per test.
+     *
+     * A single trailing newline is stripped (println adds one); interior blank
+     * lines are kept because an empty expected answer is a legitimate result.
+     */
     private static List<String> outputLines(String stdout) {
         List<String> out = new ArrayList<>();
-        for (String l : stdout.split("\n", -1)) {
-            String t = l.trim();
-            if (!t.isEmpty()) out.add(t);
-        }
+        String s = stdout == null ? "" : stdout.replace("\r\n", "\n").replace('\r', '\n');
+        if (s.endsWith("\n")) s = s.substring(0, s.length() - 1);
+        if (s.isEmpty()) return out;
+        for (String l : s.split("\n", -1)) out.add(l);
         return out;
     }
 
-    private static String normalize(String s) {
-        if (s == null) return "";
-        return s.trim().replaceAll("\\s+", "");
+    /**
+     * Output comparison that understands NovaTutor's canonical answer format.
+     *
+     * Structured answers (numbers, arrays, matrices) ignore all whitespace so
+     * that "[1, 2]" and "[1,2]" match. Free-text answers only collapse repeated
+     * whitespace, so "a b" never matches "ab".
+     */
+    static boolean outputsMatch(String actual, String expected) {
+        String a = actual == null ? "" : actual.trim();
+        String e = expected == null ? "" : expected.trim();
+        if (a.equals(e)) return true;
+        if (a.isEmpty() || e.isEmpty()) return false;
+        if (isStructured(e) && isStructured(a)) return structured(a).equals(structured(e));
+        return collapse(a).equals(collapse(e));
+    }
+
+    /** Numbers, arrays and matrices: digits, signs, commas, semicolons, brackets. */
+    private static boolean isStructured(String s) {
+        return s.matches("^[0-9eE+\\-.,;\\[\\]\\s]+$");
+    }
+
+    /**
+     * Removes whitespace only where it is cosmetic — next to structural
+     * punctuation. Whitespace between two values separates tokens, so it must
+     * survive: "1 2" is not "12".
+     */
+    private static String structured(String s) {
+        return s.trim().replaceAll("\\s*([\\[\\],;])\\s*", "$1");
+    }
+
+    private static String collapse(String s) {
+        return s.trim().replaceAll("\\s+", " ");
     }
 
     private static String pretty(DsaProblem p, String[] t) {
@@ -163,7 +234,10 @@ public class DsaJudgeService {
         }
     }
 
-    private static String firstMeaningful(String stderr) {
+    private static String firstMeaningful(String stderr, DsaLang lang) {
+        if (stderr == null || stderr.isBlank()) {
+            return "Your code did not compile. Check the syntax for " + lang.label() + ".";
+        }
         String[] parts = stderr.split("\n");
         for (String p : parts) {
             String t = p.trim();
