@@ -44,6 +44,7 @@ Rejected on current facts (checked November 2026):
 | `backend/src/main/resources/application-prod.yml` | `ddl-auto: ${JPA_DDL_AUTO:validate}` | Managed DBs start empty; first deploy uses `update` to create the schema, later deploys `validate`. |
 | `backend/src/main/resources/application-prod.yml` | `app.seed.enabled: ${APP_SEED_ENABLED:false}` | Lets the first deploy seed the 13 courses / 105-lesson curriculum and quiz bank on an empty schema. The seeder never wipes existing data. |
 | `render.yaml` (new) | Blueprint for backend + static frontend | Declarative infra; secrets referenced with `sync: false`. |
+| `deploy/backend.Dockerfile` | Creates a writable `/app/gate-notes`, sets `GATE_NOTES_DIR` | The app creates that directory at startup as an unprivileged user. |
 
 Nothing else in the application, UI, security config or business logic was changed.
 
@@ -64,19 +65,26 @@ Nothing else in the application, UI, security config or business logic was chang
 
 The `prod` profile refuses to boot if any of these are missing, if `JWT_SECRET` is under 32 bytes, if the admin password is under 12 characters, or if `CORS_ORIGINS` contains a localhost origin. That validator is intentional and was left in place.
 
-## First deployment
+## Deployed environment
 
-1. Create a Render account with GitHub (this also grants access to `ipiyushpandey/NovaTutor`).
-2. Create a TiDB Cloud Starter cluster, database `ai_tutor`, and a database user.
-3. Put the values into `deploy/secrets.env` (gitignored) — see `deploy/secrets.env.example`.
-4. Deploy the backend from `render.yaml` (Render → New → Blueprint) or with `deploy/render-deploy.sh`.
-5. Build the frontend with `VITE_API_URL=https://<backend-host>/api` and deploy the static site.
-6. Set `CORS_ORIGINS` to the deployed frontend origin and redeploy the backend.
-7. After the first successful boot, set `JPA_DDL_AUTO=validate` and `APP_SEED_ENABLED=false`, then redeploy.
+| Item | Value |
+| --- | --- |
+| Public frontend | https://novatutor.onrender.com |
+| Public backend API | https://novatutor-api.onrender.com |
+| Health / readiness | https://novatutor-api.onrender.com/actuator/health |
+| Frontend service | `srv-dbth426tlv9c73fc68b0` (static site) |
+| Backend service | `srv-dbth3son74is73btgai0` (Docker web service, free) |
+| Database | TiDB Cloud Serverless Starter, `gateway01.ap-southeast-1.prod.aws.tidbcloud.com:4000`, database `ai_tutor` |
+| Owner workspace | `tea-dbtgmodckfvc73eqmh30` |
+| Deployed commit | `1a61886` |
+
+Seeded content: 13 courses, 1365 lessons (13 × 105), 1260 quiz questions, 1 owner account.
+
+`deploy/secrets.env` holds every credential (gitignored, mode 600). The owner/admin login is `ADMIN_EMAIL` + `ADMIN_PASSWORD` from that file.
 
 ## Redeploying after a GitHub push
 
-`render.yaml` sets `autoDeploy: true` for both services, so a push to `main` rebuilds and redeploys automatically:
+A push to `main` is the normal workflow:
 
 ```bash
 git add -A
@@ -84,7 +92,17 @@ git commit -m "your change"
 git push origin main
 ```
 
-Backend changes take a few minutes (Maven build inside Docker). Frontend changes rebuild in well under a minute. To deploy without a push: Render dashboard → service → **Manual Deploy → Deploy latest commit**.
+Pushes build and deploy both services. If a push does not produce a new deploy, the Render GitHub App is not wired to the repo yet — either fix that in Render → **Account Settings → GitHub**, or deploy immediately from the dashboard with **Manual Deploy → Deploy latest commit**.
+
+Backend changes take 4–6 minutes (Maven build inside Docker). Frontend changes rebuild in about a minute.
+
+## Deployment notes and gotchas
+
+- **`publishPath`, not `staticPublishPath`.** The Render API field for a static site's output directory is `publishPath`. A `PATCH` on `serviceDetails` replaces the whole object, so always resend `buildCommand` with it — omitting it silently publishes an empty site.
+- **Hash routing.** The frontend routes with `#/login`, `#/dashboard`, so no server-side SPA rewrite is required; every deep link resolves to `/`. The `routes` rewrite in `render.yaml` is optional hardening.
+- **Writable directory.** `AdminController` creates the GATE notes directory in its constructor. The image runs as UID 10001, so the Dockerfile creates `/app/gate-notes` with that owner and sets `GATE_NOTES_DIR`. Without this the container fails at startup with `Could not initialize GATE notes storage`.
+- **Schema init.** The TiDB schema was created once with `JPA_DDL_AUTO=update` and then switched to `validate`. Never use `create`/`create-drop` here.
+- **Environment variables** are managed in Render (service → Environment). Rotating `JWT_SECRET` signs every user out; rotating `ADMIN_PASSWORD` only affects the next login.
 
 ## Accessing NovaTutor from any device
 
