@@ -78,8 +78,8 @@ async function api(path,opt={},_retry=false){
   if(opt.method&&/^(POST|PUT|PATCH)$/i.test(opt.method))window.dispatchEvent(new Event('nova:learning-updated'));
   return parsedResult
  }catch(e){
-  if(e.name==='AbortError') throw new Error('Request timed out. Is Spring Boot running on port 8080?');
-  if(e instanceof TypeError && /fetch/i.test(e.message||'')) throw new Error('Cannot reach NovaTutor backend. Start Spring Boot on port 8080, then reload this page.');
+  if(e.name==='AbortError') throw new Error('The request timed out. Check your connection and try again.');
+  if(e instanceof TypeError && /fetch/i.test(e.message||'')) throw new Error('Cannot reach NovaTutor right now. Check your connection and try again.');
   throw e;
  }finally{clearTimeout(timeout)}
 }
