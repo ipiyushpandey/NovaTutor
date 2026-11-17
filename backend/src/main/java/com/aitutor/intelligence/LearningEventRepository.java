@@ -14,6 +14,9 @@ public interface LearningEventRepository extends JpaRepository<LearningEvent,Lon
     List<LearningEvent> findTop8ByUserIdOrderByCreatedAtDesc(Long userId);
     List<LearningEvent> findTop5ByUserIdAndTypeOrderByCreatedAtDesc(Long userId, String type);
     List<LearningEvent> findByUserIdOrderByCreatedAtAsc(Long userId);
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.data.jpa.repository.Query("delete from LearningEvent e where e.user.id = :userId")
+    void deleteByUserId(@org.springframework.data.repository.query.Param("userId") Long userId);
     long countByUserIdAndType(Long userId,String type);
     long countByUserIdAndTypeAndScoreGreaterThanEqual(Long userId,String type,Integer score);
     Optional<LearningEvent> findByUserIdAndDedupeKey(Long userId,String dedupeKey);

@@ -64,6 +64,7 @@ public class AdminController {
     private final com.aitutor.rag.KnowledgeChunkRepository knowledgeChunks;
     private final com.aitutor.ai.AiMetrics aiMetrics;
     private final RemoteCodeRunner remoteRunner;
+    private final com.aitutor.service.UserDataCleanupService userCleanup;
 
     public AdminController(UserRepository users, CourseRepository courses, LessonRepository lessons,
                            ProgressRepository progress, QuizQuestionRepository quizzes,
@@ -77,7 +78,8 @@ public class AdminController {
                            com.aitutor.rag.KnowledgeDocumentRepository knowledgeDocs,
                            com.aitutor.rag.KnowledgeChunkRepository knowledgeChunks,
                            com.aitutor.ai.AiMetrics aiMetrics,
-                           RemoteCodeRunner remoteRunner) {
+                           RemoteCodeRunner remoteRunner,
+                           com.aitutor.service.UserDataCleanupService userCleanup) {
         this.users = users; this.courses = courses; this.lessons = lessons; this.progress = progress;
         this.quizzes = quizzes; this.conversations = conversations; this.messages = messages;
         this.encoder = encoder; this.adminEmail = adminEmail == null ? "" : adminEmail.trim().toLowerCase(); this.jwt = jwt;
@@ -85,7 +87,7 @@ public class AdminController {
         this.legacyGateNotesDir = Paths.get(gateNotesDir).toAbsolutePath().normalize();
         this.auditLogs=auditLogs; this.announcements=announcements; this.meta=meta; this.attempts=attempts; this.communityPosts=communityPosts;
         this.learningEvents=learningEvents; this.dsaStates=dsaStates; this.knowledgeDocs=knowledgeDocs; this.knowledgeChunks=knowledgeChunks;
-        this.aiMetrics=aiMetrics; this.remoteRunner=remoteRunner;
+        this.aiMetrics=aiMetrics; this.remoteRunner=remoteRunner; this.userCleanup=userCleanup;
         try { Files.createDirectories(this.legacyGateNotesDir); } catch (Exception e) { throw new IllegalStateException("Could not initialize GATE notes storage", e); }
         migrateLegacyGateNotes();
     }
@@ -114,9 +116,11 @@ public class AdminController {
     public Map<String,Object> dashboard(@RequestHeader(value="Authorization", required=false) String authorization){
         User me=admin(authorization);
         long publishedCourses=courses.findAll().stream().filter(Course::isPublished).count();
-        long activeUsers=users.findAll().stream().filter(User::isActive).count();
-        long blockedUsers=users.findAll().stream().filter(User::isBlocked).count();
-        return Map.of("users",users.count(),"activeUsers",activeUsers,"blockedUsers",blockedUsers,"courses",courses.count(),"publishedCourses",publishedCourses,"lessons",lessons.count(),"questions",quizzes.count(),"attempts",attempts.count(),"auditEvents",auditLogs.count(),"adminEmail",me.getEmail());
+        // Guests are disposable sessions, not platform accounts; counting them
+        // would inflate the owner dashboard every time someone browses.
+        long activeUsers=users.countByRoleNotAndActiveTrue("GUEST");
+        long blockedUsers=users.countByRoleNotAndBlockedTrue("GUEST");
+        return Map.of("users",users.countByRoleNot("GUEST"),"activeUsers",activeUsers,"blockedUsers",blockedUsers,"courses",courses.count(),"publishedCourses",publishedCourses,"lessons",lessons.count(),"questions",quizzes.count(),"attempts",attempts.count(),"auditEvents",auditLogs.count(),"adminEmail",me.getEmail());
     }
 
     @GetMapping("/overview")
@@ -129,7 +133,7 @@ public class AdminController {
     public Map<String,Object> monitor(@RequestHeader(value="Authorization", required=false) String authorization) {
         admin(authorization);
         List<UserView> recent = users.findAll(org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "createdAt"))
-                .stream().limit(8).map(u -> new UserView(u.getId(), u.getName(), u.getEmail(), u.getRole(), u.getCreatedAt(), u.isActive(), u.isBlocked())).toList();
+                .stream().filter(u -> !"GUEST".equalsIgnoreCase(u.getRole())).limit(8).map(u -> new UserView(u.getId(), u.getName(), u.getEmail(), u.getRole(), u.getCreatedAt(), u.isActive(), u.isBlocked(), u.isEmailVerified())).toList();
         List<Map<String,Object>> curriculum = courses.findAll().stream().map(c -> {
             Map<String,Object> row = new LinkedHashMap<>();
             row.put("id", c.getId()); row.put("title", c.getTitle()); row.put("level", c.getLevel());
@@ -143,7 +147,30 @@ public class AdminController {
     public List<UserView> userList(@RequestHeader(value="Authorization", required=false) String authorization) {
         admin(authorization);
         return users.findAll(org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.ASC, "name"))
-                .stream().map(u -> new UserView(u.getId(), u.getName(), u.getEmail(), u.getRole(), u.getCreatedAt(), u.isActive(), u.isBlocked())).toList();
+                .stream().filter(u -> !"GUEST".equalsIgnoreCase(u.getRole())).map(u -> new UserView(u.getId(), u.getName(), u.getEmail(), u.getRole(), u.getCreatedAt(), u.isActive(), u.isBlocked(), u.isEmailVerified())).toList();
+    }
+
+    /**
+     * Manual verification for the support path used when email delivery is
+     * unavailable. The administrator has verified ownership out of band; the
+     * action is auditable and never grants ADMIN.
+     */
+    @PostMapping("/users/{userId}/verify-email")
+    public Map<String,Object> verifyUserEmail(@RequestHeader(value = "Authorization", required = false) String authorization,
+                                              @PathVariable Long userId) {
+        User me = admin(authorization);
+        User u = users.findById(userId).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
+        boolean already = u.isEmailVerified();
+        if (!already) {
+            u.setEmailVerified(true);
+            u.setVerificationTokenHash(null);
+            u.setVerificationExpiresAt(null);
+            u.setVerificationSentAt(null);
+            users.save(u);
+        }
+        audit(me, "EMAIL_VERIFIED_MANUALLY", String.valueOf(userId), "SUCCESS",
+                already ? "Already verified" : "Verified by administrator after an out-of-band ownership check.");
+        return Map.of("id", u.getId(), "emailVerified", true, "alreadyVerified", already);
     }
 
     @PatchMapping("/users/{userId}/status")
@@ -409,7 +436,9 @@ public class AdminController {
         User u = users.findById(userId).orElseThrow(() -> new IllegalArgumentException("Student not found"));
         if ("ADMIN".equalsIgnoreCase(u.getRole())) throw new IllegalArgumentException("Admin password cannot be reset from student management");
         if (r.newPassword() == null || r.newPassword().length() < 6) throw new IllegalArgumentException("Password must be at least 6 characters");
-        u.setPassword(encoder.encode(r.newPassword())); users.save(u); audit(admin(authorization),"PASSWORD_RESET",String.valueOf(userId),"SUCCESS",null);
+        if (r.newPassword().length() > 128) throw new IllegalArgumentException("Password is too long");
+        u.setPassword(encoder.encode(r.newPassword())); users.save(u);
+        audit(admin(authorization),"PASSWORD_RESET",String.valueOf(userId),"SUCCESS","Set by an administrator for account recovery; existing sessions remain valid until expiry.");
         return Map.of("updated", true, "userId", userId);
     }
 
@@ -421,34 +450,49 @@ public class AdminController {
         if (Objects.equals(me.getId(), u.getId()) || "ADMIN".equalsIgnoreCase(u.getRole()) || u.getEmail().equalsIgnoreCase(adminEmail)) {
             throw new IllegalArgumentException("The owner/admin account cannot be deleted here");
         }
-        for (ChatConversation c : conversations.findByUserIdOrderByUpdatedAtDesc(userId)) {
-            messages.deleteAllInBatch(messages.findByConversationIdOrderByCreatedAtAsc(c.getId()));
-            conversations.delete(c);
-        }
-        progress.deleteByUserId(userId);
-        // Sweep the remaining per-user rows so no orphans survive (they would break
-        // re-registration with the same email via FK/unique constraints and skew
-        // leaderboard/analytics queries).
-        learningEvents.deleteInBatch(learningEvents.findByUserIdOrderByCreatedAtAsc(userId));
-        attempts.deleteInBatch(attempts.findByUserId(userId));
-        dsaStates.deleteByUserId(userId);
-        communityPosts.deleteInBatch(communityPosts.findByUserId(userId));
-        // Delete knowledge chunks BEFORE their documents, then the documents
-        // themselves. (Previously only the chunks were removed and the document
-        // rows were left behind, so users who had uploaded PDFs failed deletion
-        // with a FK violation.)
-        knowledgeDocs.findByOwnerId(userId).forEach(doc -> {
-            knowledgeChunks.deleteAllInBatch(knowledgeChunks.findAllByDocumentIdOrderByChunkIndex(doc.id));
-            knowledgeDocs.delete(doc);
-        });
-        users.delete(u); audit(me,"USER_DELETED",String.valueOf(userId),"SUCCESS",u.getEmail());
+        String email = u.getEmail();
+        // One shared cascade for admin and guest deletion. Every user-owned table
+        // is cleared before the user row, so no foreign key can abort deletion.
+        userCleanup.deleteUserAndData(u);
+        audit(me,"USER_DELETED",String.valueOf(userId),"SUCCESS",email);
         return Map.of("deleted", true, "userId", userId);
     }
 
-    public record UserView(Long id,String name,String email,String role, LocalDateTime createdAt, boolean active, boolean blocked) {}
+    /**
+     * All-or-nothing bulk deletion for the admin user table. Protected records
+     * are reported and skipped; if any real deletion fails the transaction rolls
+     * back, so the response can never claim records were removed when they were not.
+     */
+    @PostMapping("/users/bulk-delete")
+    @Transactional
+    public Map<String,Object> bulkDeleteUsers(@RequestHeader(value="Authorization", required=false) String authorization,
+                                              @RequestBody BulkDeleteRequest r) {
+        User me = admin(authorization);
+        List<Long> ids = r == null || r.ids() == null ? List.of() : r.ids().stream().filter(Objects::nonNull).distinct().limit(100).toList();
+        if (ids.isEmpty()) throw new IllegalArgumentException("Select at least one student");
+        List<Long> deleted = new ArrayList<>();
+        List<Map<String,Object>> skipped = new ArrayList<>();
+        for (Long id : ids) {
+            Optional<User> found = users.findById(id);
+            if (found.isEmpty()) { skipped.add(Map.of("id", id, "reason", "not found")); continue; }
+            User u = found.get();
+            if (Objects.equals(me.getId(), u.getId()) || "ADMIN".equalsIgnoreCase(u.getRole())
+                    || u.getEmail().equalsIgnoreCase(adminEmail)) {
+                skipped.add(Map.of("id", id, "reason", "protected account")); continue;
+            }
+            String email = u.getEmail();
+            userCleanup.deleteUserAndData(u);
+            deleted.add(id);
+            audit(me, "USER_DELETED", String.valueOf(id), "SUCCESS", email + " (bulk)");
+        }
+        return Map.of("deleted", deleted, "deletedCount", deleted.size(), "skipped", skipped);
+    }
+
+    public record UserView(Long id,String name,String email,String role, LocalDateTime createdAt, boolean active, boolean blocked, boolean emailVerified) {}
     public record CourseRequest(String title,String description,String level,String icon) {}
     public record LessonRequest(String title,String topic,String content) {}
     public record ResetPasswordRequest(String newPassword) {}
+    public record BulkDeleteRequest(List<Long> ids) {}
     public record UserStatusRequest(Boolean active, Boolean blocked) {}
     public record RoleRequest(String role) {}
     public record AnnouncementRequest(String title,String message,String target,boolean published) {}

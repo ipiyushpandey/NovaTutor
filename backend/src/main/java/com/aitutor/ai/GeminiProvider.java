@@ -147,6 +147,7 @@ public class GeminiProvider implements AiProvider {
         }
 
         boolean emitted = false;
+        String finishReason = "";
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
@@ -154,7 +155,10 @@ public class GeminiProvider implements AiProvider {
                 String data = line.substring(5).trim();
                 if (data.isBlank() || "[DONE]".equals(data)) continue;
                 JsonNode root = objectMapper.readTree(data);
-                JsonNode parts = root.path("candidates").path(0).path("content").path("parts");
+                JsonNode candidate = root.path("candidates").path(0);
+                String reason = candidate.path("finishReason").asText("");
+                if (!reason.isBlank()) finishReason = reason;
+                JsonNode parts = candidate.path("content").path("parts");
                 if (!parts.isArray()) continue;
                 for (JsonNode part : parts) {
                     String text = part.path("text").asText("");
@@ -166,6 +170,11 @@ public class GeminiProvider implements AiProvider {
             }
         }
         if (!emitted) throw new IllegalStateException("Gemini returned no text");
+        // Surface provider-side truncation instead of presenting a partial answer
+        // as if it were complete. The client already preserves streamed chunks.
+        if (Set.of("MAX_TOKENS", "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII").contains(finishReason)) {
+            throw new IllegalStateException("Gemini stopped before completing the answer (" + finishReason + ")");
+        }
     }
 
     private List<String> buildModelChain() {

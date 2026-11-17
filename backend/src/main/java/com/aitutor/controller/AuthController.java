@@ -7,6 +7,7 @@ import com.aitutor.security.JwtService;
 import com.aitutor.service.AuthService;
 import com.aitutor.service.EmailVerificationService;
 import com.aitutor.service.GoogleIdTokenVerifier;
+import com.aitutor.service.GuestService;
 import com.aitutor.service.MailService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Email;
@@ -26,16 +27,18 @@ public class AuthController {
     private final EmailVerificationService verification;
     private final GoogleIdTokenVerifier google;
     private final MailService mail;
+    private final GuestService guests;
 
     public AuthController(AuthService a, JwtService j, AuditLogRepository audit,
-                          EmailVerificationService verification, GoogleIdTokenVerifier google, MailService mail) {
+                          EmailVerificationService verification, GoogleIdTokenVerifier google, MailService mail,
+                          GuestService guests) {
         this.auth = a; this.jwt = j; this.audit = audit;
-        this.verification = verification; this.google = google; this.mail = mail;
+        this.verification = verification; this.google = google; this.mail = mail; this.guests = guests;
     }
 
     record Req(@NotBlank @Size(max=100) String name, @NotBlank @Email @Size(max=254) String email,
                @Size(min=6, max=128) String password) {}
-    record Login(@NotBlank @Email String email, @NotBlank String password) {}
+    record Login(@NotBlank @Email String email, @NotBlank String password, String portal) {}
     record VerifyReq(@NotBlank @Size(max=200) String token) {}
     record EmailReq(@NotBlank @Email @Size(max=254) String email) {}
     record ResetReq(@NotBlank @Size(max=200) String token, @Size(min=6, max=128) String password) {}
@@ -69,6 +72,18 @@ public class AuthController {
     public Res login(@Valid @RequestBody Login r) {
         AuthService.LoginOutcome outcome = auth.login(r.email(), r.password());
         User u = outcome.user();
+        // Portal separation is enforced server-side: the student form must not
+        // mint an admin session, and the admin form must not accept students.
+        String portal = r.portal() == null ? "" : r.portal().trim().toLowerCase(java.util.Locale.ROOT);
+        if ("student".equals(portal) && "ADMIN".equalsIgnoreCase(u.getRole())) {
+            audit.save(new AuditLog(u.getEmail(), "STUDENT_PORTAL_ADMIN_REJECTED", "auth", "DENIED", null));
+            throw new ApiException(HttpStatus.FORBIDDEN, "PORTAL_MISMATCH",
+                    "Administrator accounts must use the Admin sign-in.");
+        }
+        if ("admin".equals(portal) && !"ADMIN".equalsIgnoreCase(u.getRole())) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "PORTAL_MISMATCH",
+                    "This account does not have administrator access.");
+        }
         if ("ADMIN".equalsIgnoreCase(u.getRole())) {
             audit.save(new AuditLog(u.getEmail(), "ADMIN_LOGIN", "auth", "SUCCESS", null));
         }
@@ -77,6 +92,32 @@ public class AuthController {
                     "Owner password hash resynchronised from the configured ADMIN_PASSWORD."));
         }
         return response(u);
+    }
+
+    /**
+     * Creates a unique disposable student session. No shared credentials, no
+     * email verification bypass for real accounts, and every data row is keyed
+     * by this guest's own user id. Admin APIs still reject the GUEST role.
+     */
+    @PostMapping("/guest")
+    public Res guest() {
+        User u = guests.create();
+        return response(u);
+    }
+
+    @DeleteMapping("/guest")
+    public Map<String,Object> endGuest(@RequestHeader(value = "Authorization", required = false) String authorization) {
+        if (authorization == null || !authorization.startsWith("Bearer ")) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Not signed in");
+        }
+        User u;
+        try { u = auth.find(jwt.email(authorization.substring(7))); }
+        catch (io.jsonwebtoken.JwtException e) { throw new ApiException(HttpStatus.UNAUTHORIZED, "SESSION_EXPIRED", "Your session has expired."); }
+        if (!GuestService.ROLE.equalsIgnoreCase(u.getRole())) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "NOT_GUEST", "Only guest sessions can be ended this way.");
+        }
+        guests.end(u);
+        return Map.of("ended", true);
     }
 
     @GetMapping("/me")
@@ -167,6 +208,10 @@ public class AuthController {
     public Res google(@Valid @RequestBody GoogleReq r) {
         GoogleIdTokenVerifier.GoogleUser identity = google.verify(r.credential());
         User u = auth.googleLogin(identity.email(), identity.subject(), identity.name());
+        if ("ADMIN".equalsIgnoreCase(u.getRole())) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "PORTAL_MISMATCH",
+                    "Administrator accounts must use the Admin sign-in.");
+        }
         audit.save(new AuditLog(u.getEmail(), "GOOGLE_LOGIN", "auth", "SUCCESS", null));
         return response(u);
     }

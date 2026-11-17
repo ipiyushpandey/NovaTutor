@@ -14,6 +14,7 @@ import java.util.Map;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(GlobalExceptionHandler.class);
     /** Deliberate API failures carry a stable code the frontend can branch on. */
     @ExceptionHandler(ApiException.class)
     ResponseEntity<Map<String,String>> apiException(ApiException e) {
@@ -81,6 +82,9 @@ public class GlobalExceptionHandler {
     /** Last-resort handler: never leak stack traces or internal messages. */
     @ExceptionHandler(Exception.class)
     ResponseEntity<Map<String,String>> unexpected(Exception e) {
+        // Keep the client message generic, but leave an operator-visible cause in
+        // server logs so failures such as a foreign-key abort are diagnosable.
+        log.error("Unhandled request error", e);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(Map.of("error", "internal_error", "message", "Something went wrong. Please try again."));
     }

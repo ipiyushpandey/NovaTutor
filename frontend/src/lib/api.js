@@ -28,8 +28,10 @@ async function refreshSessionToken(){
  if(!current?.token)return false;
  if(sessionRefreshPromise)return sessionRefreshPromise;
  sessionRefreshPromise=(async()=>{
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),15000);
   try{
-   const r=await fetch(API+'/auth/me',{headers:{Authorization:`Bearer ${current.token}`}});
+   const r=await fetch(API+'/auth/me',{headers:{Authorization:`Bearer ${current.token}`},signal:controller.signal});
    if(!r.ok)return false;
    const fresh=await r.json();
    const next={...current,...fresh,token:fresh.token||current.token,role:String(fresh.role||current.role||'STUDENT').toUpperCase()};
@@ -37,7 +39,7 @@ async function refreshSessionToken(){
    window.dispatchEvent(new Event('nova:session-refreshed'));
    return true;
   }catch{return false}
-  finally{sessionRefreshPromise=null}
+  finally{clearTimeout(timeout);sessionRefreshPromise=null}
  })();
  return sessionRefreshPromise;
 }
@@ -113,14 +115,8 @@ async function apiStream(path,opt={},onChunk){
   const reader=r.body.getReader();
   const decoder=new TextDecoder();
   let buffer='';
-  while(true){
-   const {value,done}=await reader.read();
-   if(done)break;
-   resetIdleTimer();
-   buffer+=decoder.decode(value,{stream:true});
-   const events=buffer.split(/\r?\n\r?\n/);
-   buffer=events.pop()||'';
-   for(const event of events){
+  let sawDone=false;
+  const consume=(event)=>{
     const lines=event.split(/\r?\n/);
     // SSE "data:" payload: strip ONLY the field prefix. Spring's SseEmitter
     // writes "data:" with NO separator space, so any leading space in the
@@ -128,12 +124,28 @@ async function apiStream(path,opt={},onChunk){
     // " the"). trimStart() here ate those spaces and concatenated words like
     // "toHTML"/"arediving".
     const data=lines.filter(x=>x.startsWith('data:')).map(x=>x.slice(5)).join('\n');
-    if(!data)continue;
-    if(data==='done')continue;
+    if(!data)return;
+    if(data==='done'){sawDone=true;return}
     if(data==='AI request failed. Please try again.')throw new Error(data);
     onChunk(data);
-   }
+  };
+  while(true){
+   const {value,done}=await reader.read();
+   if(done)break;
+   resetIdleTimer();
+   buffer+=decoder.decode(value,{stream:true});
+   const events=buffer.split(/\r?\n\r?\n/);
+   buffer=events.pop()||'';
+   for(const event of events)consume(event);
   }
+  // Flush a multi-byte character split across the final network chunk and
+  // process a final SSE event that arrived without its trailing blank line.
+  buffer+=decoder.decode();
+  if(buffer.trim())consume(buffer);
+  // A closed socket without the server's done event means the answer may be
+  // partial. Keep what arrived and mark the interruption instead of pretending
+  // the response completed normally.
+  if(!sawDone)throw new Error('The AI stream ended before completion. You can retry to continue.');
  }catch(e){
   if(e.name==='AbortError')throw new Error('AI request timed out. Please try again.');
   throw e;

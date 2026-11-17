@@ -41,6 +41,56 @@ public class QuizController {
         return selected.stream().map(q -> new Question(q.getId(),q.getQuestion(),List.of(q.getOptionA(),q.getOptionB(),q.getOptionC(),q.getOptionD()),q.getDifficulty())).toList();
     }
 
+    /**
+     * Wrong-answer revision. Only questions the student actually answered
+     * incorrectly are eligible; anything answered correctly (in any attempt)
+     * is excluded, and unanswered questions are never guessed as wrong.
+     * Canonical text dedupe protects against duplicate rows in old databases.
+     */
+    @GetMapping("/course/{courseId}/revision")
+    List<Question> revision(@PathVariable Long courseId, Authentication authentication) {
+        courses.findById(courseId).orElseThrow();
+        User user = authenticatedUser.require(authentication);
+        Set<Long> wrong = new LinkedHashSet<>();
+        Set<Long> correct = new HashSet<>();
+        for (QuizAttempt attempt : attempts.findByUserId(user.getId())) {
+            if (attempt.getCourse() == null || !courseId.equals(attempt.getCourse().getId())) continue;
+            for (String raw : Objects.toString(attempt.getWrongQuestionIds(), "").split(",")) {
+                try { if (!raw.isBlank()) wrong.add(Long.valueOf(raw.trim())); } catch (NumberFormatException ignored) { }
+            }
+        }
+        // Correct answers are tracked from the per-question learning events, which
+        // include every graded question (including attempts whose wrong list is old).
+        events.findByUserIdOrderByCreatedAtAsc(user.getId()).stream()
+                .filter(e -> "QUIZ_QUESTION".equals(e.getType()) && e.getScore() != null && e.getScore() >= 100)
+                .forEach(e -> {
+                    String details = Objects.toString(e.getDetails(), "");
+                    int at = details.indexOf("questionId=");
+                    if (at < 0) return;
+                    String digits = details.substring(at + 11).split("[^0-9]", 2)[0];
+                    try { if (!digits.isBlank()) correct.add(Long.valueOf(digits)); } catch (NumberFormatException ignored) { }
+                });
+        Map<Long, QuizQuestion> available = repo.findByCourseIdOrderByIdAsc(courseId).stream()
+                .collect(Collectors.toMap(QuizQuestion::getId, Function.identity(), (a, b) -> a));
+        Map<String, QuizQuestion> unique = new LinkedHashMap<>();
+        for (Long id : wrong) {
+            if (correct.contains(id)) continue;
+            QuizQuestion q = available.get(id);
+            if (q == null) continue;
+            String key = canonical(q.getQuestion());
+            if (!key.isBlank()) unique.putIfAbsent(key, q);
+        }
+        List<QuizQuestion> selected = new ArrayList<>(unique.values());
+        Collections.shuffle(selected);
+        if (selected.size() > QUIZ_SIZE) selected = new ArrayList<>(selected.subList(0, QUIZ_SIZE));
+        return selected.stream().map(q -> new Question(q.getId(), q.getQuestion(),
+                List.of(q.getOptionA(), q.getOptionB(), q.getOptionC(), q.getOptionD()), q.getDifficulty())).toList();
+    }
+
+    private static String canonical(String text) {
+        return text == null ? "" : text.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+    }
+
     @PostMapping("/course/{courseId}/submit")
     Result submit(@PathVariable Long courseId,@RequestBody Submit s, Authentication authentication){
         Course course=courses.findById(courseId).orElseThrow();
@@ -58,7 +108,9 @@ public class QuizController {
             if(ok) correct++; else wrong.add(id);
             String topic=q.getTopic();
             if(topic==null||topic.isBlank()){ topic=conceptFromQuestion(q.getQuestion(),course.getTitle()); q.setTopic(topic); repo.save(q); }
-            eventService.record(user,"QUIZ_QUESTION",course.getTitle(),topic,ok?100:0,0,"questionId="+id+";difficulty="+Objects.toString(q.getDifficulty(),"Mixed"),"QUIZ_QUESTION:"+user.getId()+":"+id+":"+System.currentTimeMillis()/60000);
+            eventService.record(user,"QUIZ_QUESTION",course.getTitle(),topic,ok?100:0,0,"questionId="+id+";difficulty="+Objects.toString(q.getDifficulty(),"Mixed"),// Include the outcome so a correct retry in the same minute is not swallowed by
+            // the wrong attempt's dedupe key. Question revision depends on this signal.
+            "QUIZ_QUESTION:"+user.getId()+":"+id+":"+(ok?"1":"0")+":"+System.currentTimeMillis()/60000);
         }
         int total=questionIds.size();
         int score=total==0?0:(int)Math.round(correct*100.0/total);

@@ -131,6 +131,59 @@ test.describe('authenticated experience', () => {
     await expect(page.getByRole('heading', { name: /Email verification is unavailable/i })).toHaveCount(0);
     await noHorizontalOverflow(page);
   });
+
+  test('browser Back restores the previous page and scroll position', async ({ page, request }) => {
+    // A disposable, profile-complete guest gives this navigation test a stable
+    // signed-in shell without mutating the shared E2E student.
+    const created = await request.post('/api/auth/guest');
+    const guest = await created.json();
+    const headers = { Authorization: `Bearer ${guest.token}` };
+    await request.put(`/api/users/${guest.id}`, { headers, data: {
+      name: 'Guest Navigator', learningGoal: 'Navigation regression', interests: 'Routes',
+      weaknesses: 'Scroll restoration', learningStyle: 'Visual + practical'
+    }});
+    try {
+      await page.addInitScript(user => {
+        localStorage.setItem('ai_user', JSON.stringify({ ...user, profileComplete: true }));
+        localStorage.setItem('nova_page', 'dashboard');
+      }, guest);
+      await page.goto('/#/dashboard');
+      await expect(page.locator('.course-card').first()).toBeVisible({ timeout: 20_000 });
+      await page.evaluate(() => window.scrollTo(0, 420));
+      expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(100);
+      await page.locator('.course-card').first().click();
+      await expect(page).toHaveURL(/#\/courses/, { timeout: 15_000 });
+      await page.goBack();
+      await expect(page).toHaveURL(/#\/dashboard/);
+      await expect(page.locator('.course-card').first()).toBeVisible({ timeout: 20_000 });
+      await expect.poll(() => page.evaluate(() => window.scrollY), { timeout: 8_000 }).toBeGreaterThan(100);
+    } finally {
+      await request.delete('/api/auth/guest', { headers });
+    }
+  });
+});
+
+test.describe('guest + portal security', () => {
+  test('guest mode starts an isolated session and cannot open Admin', async ({ page }) => {
+    await page.goto('/#/login');
+    await page.getByRole('button', { name: 'Continue as guest' }).click();
+    await expect(page).toHaveURL(/#\/onboarding/, { timeout: 25_000 });
+    await page.reload();
+    await expect(page).toHaveURL(/#\/onboarding/, { timeout: 25_000 });
+    await page.goto('/#/admin');
+    await expect(page.locator('.admin-center')).toHaveCount(0);
+    await expect(page).not.toHaveURL(/#\/admin/);
+  });
+
+  test('admin credentials are rejected by the student portal', async ({ page }) => {
+    test.skip(!ADMIN.email || !ADMIN.password, 'E2E_ADMIN_EMAIL/E2E_ADMIN_PASSWORD not provided');
+    await page.goto('/#/login');
+    await page.locator('#auth-email').fill(ADMIN.email);
+    await page.locator('#auth-pass').fill(ADMIN.password);
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText(/Administrator accounts must use the Admin sign-in/i, { timeout: 20_000 });
+    await expect(page).not.toHaveURL(/#\/dashboard/);
+  });
 });
 
 test.describe('admin workspace', () => {
@@ -142,6 +195,16 @@ test.describe('admin workspace', () => {
     await page.locator('#auth-email').fill(ADMIN.email);
     await page.locator('#auth-pass').fill(ADMIN.password);
     await page.getByRole('button', { name: 'Sign in to Admin' }).click();
+    // Admin authentication no longer forces the control center; Home is the landing page.
+    await expect(page).toHaveURL(/#\/dashboard/, { timeout: 30_000 });
+    await expect(page.locator('.admin-center')).toHaveCount(0);
+    if (testInfo.project.name === 'mobile') {
+      await page.getByRole('button', { name: 'Open navigation' }).click();
+      await page.locator('.topnav-sheet').getByRole('button', { name: 'Admin Panel' }).click();
+    } else {
+      await page.locator('.topnav-menu-btn').filter({ hasText: 'More' }).click();
+      await page.getByRole('menuitem', { name: 'Admin Panel' }).click();
+    }
     await expect(page.locator('.admin-center')).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole('heading', { name: /NovaTutor Admin/i })).toBeVisible();
 
@@ -160,6 +223,90 @@ test.describe('admin workspace', () => {
       await expect(page.getByRole('button', { name: 'Admin sections menu' })).toBeHidden();
       await page.locator('#admin-nav').getByRole('button', { name: 'Users' }).click();
       await expect(page.getByRole('heading', { name: 'User Management' })).toBeVisible();
+    }
+  });
+
+  test('admin workspace stays within supported widths without false vertical scroll', async ({ page, request }) => {
+    const response = await request.post('/api/auth/login', { data: {
+      email: ADMIN.email, password: ADMIN.password, portal: 'admin'
+    }});
+    expect(response.ok()).toBeTruthy();
+    const session = await response.json();
+    await page.addInitScript(user => {
+      localStorage.setItem('ai_user', JSON.stringify(user));
+      localStorage.setItem('nova_page', 'admin');
+    }, session);
+    await page.goto('/#/admin');
+    await expect(page.locator('.admin-center')).toBeVisible({ timeout: 30_000 });
+    const widths = [320, 360, 375, 390, 414, 430, 768, 1024, 1280, 1440];
+    for (const width of widths) {
+      await page.setViewportSize({ width, height: width < 600 ? 740 : 900 });
+      await page.waitForTimeout(120);
+      const metrics = await page.evaluate(() => {
+        const root = document.querySelector('.admin-center');
+        return {
+          viewport: window.innerWidth,
+          documentWidth: document.documentElement.scrollWidth,
+          shellWidth: root ? root.scrollWidth : 0,
+          shellClient: root ? root.clientWidth : 0,
+          shellScrollHeight: root ? root.scrollHeight : 0,
+          shellHeight: root ? root.clientHeight : 0,
+          blankTail: root ? (() => {
+            const content = [...root.children].filter(el => !el.classList.contains('ac-nav') && !el.classList.contains('ac-nav-backdrop'));
+            const bottom = content.reduce((max, el) => Math.max(max, el.getBoundingClientRect().bottom + root.scrollTop), 0);
+            return Math.max(0, Math.round(root.scrollHeight - bottom));
+          })() : 0
+        };
+      });
+      expect(metrics.documentWidth, `document overflow at ${width}px`).toBeLessThanOrEqual(metrics.viewport + 1);
+      expect(metrics.shellWidth, `admin overflow at ${width}px`).toBeLessThanOrEqual(metrics.shellClient + 1);
+      // Content may legitimately be taller than the viewport; only a large empty
+      // tail after the last real section counts as false vertical scrolling.
+      expect(metrics.blankTail, `excess blank tail at ${width}px`).toBeLessThan(200);
+    }
+    // The user table (verification badges, bulk controls, many actions) is the
+    // densest screen, so check it at the narrowest supported width too.
+    await page.setViewportSize({ width: 320, height: 740 });
+    await page.getByRole('button', { name: 'Admin sections menu' }).click();
+    await page.locator('#admin-nav').getByRole('button', { name: 'Users' }).click();
+    await expect(page.getByRole('heading', { name: 'User Management' })).toBeVisible();
+    const usersMetrics = await page.evaluate(() => ({
+      viewport: window.innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      shellWidth: document.querySelector('.admin-center')?.scrollWidth || 0,
+      shellClient: document.querySelector('.admin-center')?.clientWidth || 0
+    }));
+    expect(usersMetrics.documentWidth).toBeLessThanOrEqual(usersMetrics.viewport + 1);
+    expect(usersMetrics.shellWidth).toBeLessThanOrEqual(usersMetrics.shellClient + 1);
+  });
+});
+
+test.describe('appearance + account menu', () => {
+  test('theme moves to Settings and persists across reload', async ({ page, request }) => {
+    const created = await request.post('/api/auth/guest');
+    const guest = await created.json();
+    const headers = { Authorization: `Bearer ${guest.token}` };
+    await request.put(`/api/users/${guest.id}`, { headers, data: {
+      name: 'Theme Guest', learningGoal: 'Theme check', interests: 'UI',
+      weaknesses: 'Contrast', learningStyle: 'Visual + practical'
+    }});
+    try {
+      await page.addInitScript(user => localStorage.setItem('ai_user', JSON.stringify({ ...user, profileComplete: true })), guest);
+      await page.goto('/#/settings');
+      await expect(page.locator('.topnav-icon-btn[aria-label*="appearance"]')).toHaveCount(0);
+      await page.getByRole('button', { name: /Dark/ }).first().click();
+      await expect(page.locator('html')).toHaveClass(/dark/);
+      expect(await page.evaluate(() => localStorage.getItem('nova_theme'))).toBe('dark');
+      await page.reload();
+      await expect(page.locator('html')).toHaveClass(/dark/);
+      const avatar = page.getByRole('button', { name: 'Account menu' });
+      await avatar.click();
+      await expect(page.getByRole('menuitem', { name: 'Settings' })).toBeVisible();
+      await expect(page.getByRole('menuitem', { name: 'Log out' })).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('menuitem', { name: 'Log out' })).toBeHidden();
+    } finally {
+      await request.delete('/api/auth/guest', { headers });
     }
   });
 });

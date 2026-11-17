@@ -501,7 +501,7 @@ function App(){
  // removes the dashboard→onboarding flash on refresh.
  const needsProfile=String(session.role||'STUDENT').toUpperCase()!=='ADMIN'&&session.profileComplete===false;
  if(needsProfile)return 'onboarding';
- if(h==='onboarding'||h==='login')return session.role==='ADMIN'?'admin':'dashboard';
+   if(h==='onboarding'||h==='login')return 'dashboard';
  return allowed.includes(h)?h:(allowed.includes(saved)&&saved!=='login'?saved:'dashboard')});
  // In-page Back was removed (hash routing + browser Back cover it). The stale
  // nova_nav_stack localStorage key is cleared on logout/switch/login below.
@@ -528,7 +528,7 @@ function App(){
  // session with the server before we trust where the user should land. A
  // transient network failure keeps the session; only a real 401 (handled in
  // lib/api.js) signs the user out.
- useEffect(()=>{if(!user?.token)return;let alive=true;refreshSessionToken().then(ok=>{if(!alive||!ok)return;const fresh=readUser();if(!fresh)return;setUser(fresh);const r=String(fresh.role||'STUDENT').toUpperCase();if(r==='ADMIN'){if(page!=='admin'){setPage('admin');localStorage.setItem('nova_page','admin');window.location.hash='/admin'}return}if(fresh.profileComplete===false){if(page!=='onboarding'){setPage('onboarding');localStorage.setItem('nova_page','onboarding');window.location.hash='/onboarding'}return}if(page==='onboarding'||page==='login'){setPage('dashboard');localStorage.setItem('nova_page','dashboard');window.location.hash='/dashboard'}}).catch(()=>{});return()=>{alive=false}},[user?.token]);
+ useEffect(()=>{if(!user?.token)return;let alive=true;refreshSessionToken().then(ok=>{if(!alive||!ok)return;const fresh=readUser();if(!fresh)return;setUser(fresh);if(String(fresh.role||'STUDENT').toUpperCase()!=='ADMIN'&&fresh.profileComplete===false){if(page!=='onboarding'){setPage('onboarding');localStorage.setItem('nova_page','onboarding');window.location.hash='/onboarding'}return}if(page==='onboarding'||page==='login'){setPage('dashboard');localStorage.setItem('nova_page','dashboard');window.location.hash='/dashboard'}}).catch(()=>{});return()=>{alive=false}},[user?.token]);
  useEffect(load,[user]); useEffect(()=>{if(user?.id&&page==='dashboard')load()},[page,user?.id]); // Lesson-to-AI-Teacher navigation uses the same central history stack as every other module.
  useEffect(()=>{ // The status probe runs at mount, which can beat backend startup on a
   // cold machine. While unreachable, retry every 15s so the header reflects
@@ -547,7 +547,22 @@ function App(){
     window.dispatchEvent(new Event('nova:persist-before-navigation'));
   }catch{}
  };
- const go=id=>{if(!user)return;if(id==='admin'&&role!=='ADMIN')return;const legacyStudio={tutor:'teacher',notes:'teacher',voice:'voice'};const target=legacyStudio[id]?'learning-studio':id;if(legacyStudio[id])localStorage.setItem('nova_learning_studio_tab',legacyStudio[id]);if(target!==page){persistBeforeNavigation();}setPage(target);localStorage.setItem('nova_page',target);window.location.hash='/'+target;setMobile(false)};
+ const go=id=>{if(!user)return;if(id==='admin'&&role!=='ADMIN')return;const legacyStudio={tutor:'teacher',notes:'teacher',voice:'voice'};const target=legacyStudio[id]?'learning-studio':id;if(legacyStudio[id])localStorage.setItem('nova_learning_studio_tab',legacyStudio[id]);if(target!==page){persistBeforeNavigation();sessionStorage.setItem('nova_scroll_'+target,'0');}setPage(target);localStorage.setItem('nova_page',target);if(window.location.hash!=='/'+target)window.location.hash='/'+target;setMobile(false)};
+ /* Scroll restoration: every route keeps its own position; a deliberate new
+    navigation starts at the top, while browser Back re-enters at the saved
+    position. This runs after the route has rendered so the page has height. */
+ useEffect(()=>{
+  let frame=0;
+  const save=()=>{if(frame)return;frame=requestAnimationFrame(()=>{frame=0;sessionStorage.setItem('nova_scroll_'+page,String(window.scrollY||0))})};
+  window.addEventListener('scroll',save,{passive:true});
+  return()=>{window.removeEventListener('scroll',save);if(frame)cancelAnimationFrame(frame)};
+ },[page]);
+ useEffect(()=>{
+  const saved=Number(sessionStorage.getItem('nova_scroll_'+page));
+  const top=Number.isFinite(saved)?saved:0;
+  const id=requestAnimationFrame(()=>window.scrollTo({top,left:0,behavior:'auto'}));
+  return()=>cancelAnimationFrame(id);
+ },[page]);
  useEffect(()=>{const f=()=>go('tutor');window.addEventListener('nova-go-tutor',f);return()=>window.removeEventListener('nova-go-tutor',f)},[page]);
  useEffect(()=>{if(!adminDenied)return;const t=setTimeout(()=>setAdminDenied(false),4200);return()=>clearTimeout(t)},[adminDenied]);
  useEffect(()=>{const onHash=()=>{const session=readUser();if(!session){setPage('login');return}const allowed=['dashboard','coach','study-room','analytics','courses','mentor','learning-studio','tutor','code','quiz','practice','prepare','chat','knowledge','planner','flashcards','interview','voice','settings','gatecse','career','community','notifications','revision','achievements','dpp','profile','exam','nova-os','nova-brain','onboarding','admin','dsa'];const alias={'gate-cse':'gatecse'};const h0=window.location.hash.replace('#/','');const normalized0=alias[h0]||h0;const legacyStudio={tutor:'teacher',notes:'teacher',voice:'voice'};if(legacyStudio[normalized0])localStorage.setItem('nova_learning_studio_tab',legacyStudio[normalized0]);const normalized=legacyStudio[normalized0]?'learning-studio':normalized0;const h=normalized==='login'?'dashboard':(allowed.includes(normalized)?normalized:'dashboard');if(h==='admin'&&String(session.role||'STUDENT').toUpperCase()!=='ADMIN'){setPage('dashboard');window.location.hash='/dashboard';setAdminDenied(true);return}if(h!==page)persistBeforeNavigation();setPage(h);localStorage.setItem('nova_page',h)};window.addEventListener('hashchange',onHash);if(!window.location.hash)window.location.hash='/'+page;return()=>window.removeEventListener('hashchange',onHash)},[page,user?.role]);
@@ -564,10 +579,10 @@ function App(){
   {id:'community',label:'More',items:[['community','Community',Users],['achievements','Achievements',Trophy],['career','Career',Briefcase],['about','About NovaTutor',Lightbulb],...(role==='ADMIN'?[['admin','Admin Panel',WandSparkles]]:[])]},
  ];
  const navActiveGroup=navModel.find(g=>g.items.some(([id])=>id===page))?.id;
- const logout=()=>{persistBeforeNavigation('logout');resetTransientLearningState(user?.id);localStorage.removeItem('ai_user');localStorage.removeItem('nova_page');localStorage.removeItem('nova_nav_stack');setUser(null);setMobile(false);setPage('login');window.location.hash='/login'};
- const switchAccount=()=>{persistBeforeNavigation('switch-account');resetTransientLearningState(user?.id);localStorage.removeItem('ai_user');localStorage.removeItem('nova_page');localStorage.removeItem('nova_nav_stack');setUser(null);setMobile(false);setPage('login');window.location.hash='/login'};
+ const logout=()=>{persistBeforeNavigation('logout');if(role==='GUEST')api('/auth/guest',{method:'DELETE'}).catch(()=>{});resetTransientLearningState(user?.id);localStorage.removeItem('ai_user');localStorage.removeItem('nova_page');localStorage.removeItem('nova_nav_stack');setUser(null);setMobile(false);setPage('login');window.location.hash='/login'};
+ const switchAccount=()=>{persistBeforeNavigation('switch-account');if(role==='GUEST')api('/auth/guest',{method:'DELETE'}).catch(()=>{});resetTransientLearningState(user?.id);localStorage.removeItem('ai_user');localStorage.removeItem('nova_page');localStorage.removeItem('nova_nav_stack');setUser(null);setMobile(false);setPage('login');window.location.hash='/login'};
  const updateUser=next=>{const normalized={...(user||{}),...(next||{}),role:String(next?.role||user?.role||'STUDENT').toUpperCase()};localStorage.setItem('ai_user',JSON.stringify(normalized));setUser(normalized)};
- if(!user)return <Auth onLogin={u=>{const next={...u,role:String(u.role||'STUDENT').toUpperCase()};resetTransientLearningState(next.id);localStorage.removeItem('nova_nav_stack');localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page',next.role==='ADMIN'?'admin':(next.profileComplete===false?'onboarding':'dashboard'));setUser(next);window.location.hash=next.role==='ADMIN'?'/admin':(next.profileComplete===false?'/onboarding':'/dashboard')}} dark={dark} setDark={setDark}/>;
+ if(!user)return <Auth onLogin={u=>{const next={...u,role:String(u.role||'STUDENT').toUpperCase()};resetTransientLearningState(next.id);localStorage.removeItem('nova_nav_stack');const needsProfile=next.role!=='ADMIN'&&next.profileComplete===false;localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page',needsProfile?'onboarding':'dashboard');setUser(next);window.location.hash=needsProfile?'/onboarding':'/dashboard'}} dark={dark} setDark={setDark}/>;
  const renderNavItem=([id,label,I])=><button className={page===id?'active':''} onClick={()=>go(id)} key={id}><I size={18}/>{label}{id==='admin'&&role==='ADMIN'?<span className="nav-badge">OWNER</span>:null}</button>;
  const renderNavGroups=()=>navGroups.map(g=><div className="nav-group" key={g.label}><div className="nav-section-title">{g.label}</div><nav className="main-nav" aria-label={g.label.toLowerCase()}>{g.items.map(renderNavItem)}</nav></div>);
  return <div className="app app-topnav">
@@ -765,8 +780,7 @@ function Auth({onLogin,dark,setDark}){
   setLoading(true);
   try{
    if(mode==='login'){
-    const result=await api('/auth/login',{method:'POST',body:JSON.stringify({email:form.email,password:form.password})});
-    if(adminMode&&result.role!=='ADMIN')throw new Error('This account does not have administrator access.');
+    const result=await api('/auth/login',{method:'POST',body:JSON.stringify({email:form.email,password:form.password,portal:adminMode?'admin':'student'}),timeoutMs:25000});
     onLogin(result);
    }else if(mode==='register'){
     const result=await api('/auth/register',{method:'POST',body:JSON.stringify({name:form.name,email:form.email,password:form.password})});
@@ -803,6 +817,16 @@ function Auth({onLogin,dark,setDark}){
   finally{setLoading(false)}
  }
 
+ async function startGuest(){
+  if(loading)return;
+  setErr('');setNotice('');setLoading(true);
+  try{
+   const result=await api('/auth/guest',{method:'POST',timeoutMs:25000});
+   onLogin({...result,profileComplete:false});
+  }catch(x){setErr(x.message||'Guest mode could not start. Please try again.')}
+  finally{setLoading(false)}
+ }
+
  async function googleSignIn(credential){
   if(loading)return;
   setErr('');setLoading(true);
@@ -835,8 +859,13 @@ function Auth({onLogin,dark,setDark}){
 
   <h2>{heading}</h2>
   <p className="auth-sub">{sub}</p>
-  {err&&<div className="error" role="alert">{err}</div>}
+     {err&&<div className="error" role="alert">{err}</div>}
   {notice&&<div className="auth-notice" role="status">{notice}</div>}
+  {mode==='forgot'&&deliveryUnavailable&&<div className="auth-warning" role="status">
+    <b>Password reset by email is unavailable.</b>
+    <span>This server cannot send email yet. Ask an administrator to reset your password from the admin panel, or contact support with your account email.</span>
+    <button type="button" className="auth-inline-link" onClick={()=>navigatePublic('contact')}>Contact support</button>
+  </div>}
 
   {mode==='verify'&&<div className="auth-state">
    {!verifyState?<><div className="auth-spinner" aria-hidden="true"/><p>Verifying your email address…</p></>
@@ -851,7 +880,7 @@ function Auth({onLogin,dark,setDark}){
    <p>{deliveryUnavailable?'Your email address is not confirmed yet. This server cannot send the verification email right now, so the account stays locked until email delivery is configured.':(pending?.message||'Check your inbox for the verification link. It expires in 24 hours.')}</p>
    {deliveryUnavailable&&<div className="auth-warning" role="status">
      <b>Email verification is temporarily unavailable.</b>
-     <span>Your account is safe, but this server cannot send email yet, so the account stays locked until an administrator configures email delivery.</span>
+     <span>Your account is safe, but this server cannot send email yet. An administrator can verify your account manually from the admin panel; contact support with your account email.</span>
      <button type="button" className="auth-inline-link" onClick={()=>navigatePublic('contact')}>Contact support</button>
    </div>}
    <button type="button" className="primary full" disabled={loading||!pending?.email||deliveryUnavailable} onClick={resend}>{loading?'Sending…':'Resend verification email'}</button>
@@ -869,13 +898,18 @@ function Auth({onLogin,dark,setDark}){
    {mode==='register'&&<><label className="auth-label" htmlFor="auth-confirm">Confirm password</label>
    <input id="auth-confirm" type={showPass?'text':'password'} autoComplete="new-password" placeholder="Repeat your password" value={form.confirm} onChange={e=>setForm({...form,confirm:e.target.value})}/></>}
    {mode==='login'&&!adminMode&&<button type="button" className="auth-inline-link" onClick={()=>{setMode('forgot');setErr('');setNotice('')}}>Forgot your password?</button>}
-   <button className="primary full auth-submit" disabled={loading}>{loading?(mode==='login'?'Signing in…':mode==='register'?'Creating account…':'Sending…'):(mode==='login'?(adminMode?'Sign in to Admin':'Sign in'):mode==='register'?'Create account':'Send reset link')}</button>
+   <button className="primary full auth-submit" disabled={loading||(mode==='forgot'&&deliveryUnavailable)}>{loading?(mode==='login'?'Signing in…':mode==='register'?'Creating account…':'Sending…'):(mode==='login'?(adminMode?'Sign in to Admin':'Sign in'):mode==='register'?'Create account':deliveryUnavailable?'Email delivery unavailable':'Send reset link')}</button>
    {(mode==='login'||mode==='register')&&!adminMode&&providers.googleEnabled&&<>
     <div className="auth-divider"><span>or</span></div>
     <GoogleSignIn clientId={providers.googleClientId} onCredential={googleSignIn} onError={setErr}/>
     <p className="auth-google-note">Google verifies your email address; no separate verification email is needed.</p>
    </>}
-   {mode==='login'&&!adminMode&&<button type="button" className="switch" onClick={()=>{setMode('register');setErr('')}}>New here? Create an account</button>}
+   {mode==='login'&&!adminMode&&<>
+    <div className="auth-divider"><span>or</span></div>
+    <button type="button" className="secondary full auth-guest" onClick={startGuest} disabled={loading}>Continue as guest</button>
+    <p className="auth-note">Guest mode uses a private temporary session. Progress is isolated to this browser session and is deleted after 24 hours.</p>
+    <button type="button" className="switch" onClick={()=>{setMode('register');setErr('')}}>New here? Create an account</button>
+   </>}
    {mode==='register'&&<button type="button" className="switch" onClick={()=>{setMode('login');setErr('')}}>Already have an account? Sign in</button>}
    {mode==='forgot'&&<button type="button" className="switch" onClick={()=>{setMode('login');setErr('');setNotice('')}}>Back to sign in</button>}
   </>}
@@ -1084,9 +1118,9 @@ function MasterySnapshot({user,go}){
 
 
 function Stat({n,t}){return <div className="stat"><b>{n}</b><span>{t}</span></div>}
-function CourseCard({c,p,go,i}){const percent=Math.round(p?.percent||0);return <div className="course-card"><div className={'course-icon i'+i}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:percent+'%'}}/></div><div className="course-foot"><small>{percent}% complete • {c.totalLessons} lessons</small><button onClick={()=>go('courses')}>Open <ChevronRight size={13}/></button></div></div>}
+function CourseCard({c,p,go,i}){const percent=Math.round(p?.percent||0);const open=()=>{localStorage.setItem('nova_open_course',String(c.id));go('courses')};return <div className="course-card" onClick={open} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open()}}} role="button" tabIndex={0}><div className={'course-icon i'+i}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:percent+'%'}}/></div><div className="course-foot"><small>{percent}% complete • {c.totalLessons} lessons</small><button onClick={e=>{e.stopPropagation();open()}}>Open <ChevronRight size={13}/></button></div></div>}
 function Courses({courses,progress,refresh,user}){
- const [selected,setSelected]=useState(null),[detail,setDetail]=useState(null),[error,setError]=useState(''),[query,setQuery]=useState(''),[level,setLevel]=useState('All');
+ const [selected,setSelected]=useState(()=>{const v=localStorage.getItem('nova_open_course');localStorage.removeItem('nova_open_course');return v?Number(v):null;}),[detail,setDetail]=useState(null),[error,setError]=useState(''),[query,setQuery]=useState(''),[level,setLevel]=useState('All');
  useModulePersistence(user?.id,'courses',{selected,query,level},{selected:x=>setSelected(x||null),query:x=>setQuery(x||''),level:x=>setLevel(x||'All')});
  const visible=courses.filter(c=>(!query||c.title.toLowerCase().includes(query.toLowerCase())||c.description?.toLowerCase().includes(query.toLowerCase()))&&(level==='All'||c.level===level));
  useEffect(()=>{
@@ -1355,30 +1389,37 @@ function Quiz({courses,refresh,user}){
  const setResult=React.useCallback(value=>setQuiz(s=>({...s,result:typeof value==='function'?value(s.result):value})),[setQuiz]);
  const [loading,setLoading]=useState(false),[error,setError]=useState('');
  useEffect(()=>{if(!courseId&&courses.length)setCourseId(courses[0].id)},[courses,courseId]);
- const start=async()=>{if(!courseId)return;setLoading(true);setError('');setResult(null);setAnswers({});try{
+ const canonicalQuestion=value=>String(value||'').trim().replace(/\s+/g,' ').toLowerCase();
+ const uniqueQuestions=list=>{const seen=new Set();return list.filter(q=>{const key=canonicalQuestion(q?.question)||String(q?.id);if(!key||seen.has(key))return false;seen.add(key);return true})};
+ const start=async(mode='fresh')=>{if(!courseId)return;setLoading(true);setError('');setResult(null);setAnswers({});try{
  const seed=Date.now()+Math.floor(Math.random()*1000000);
- const q=await api('/quizzes/course/'+courseId+'?seed='+seed);
- let safe=Array.isArray(q)?q.filter(x=>x&&x.id!=null&&Array.isArray(x.options)):[],
-     seenKey=`nova_quiz_seen_${user?.id||'guest'}_${courseId}`,
-     seen=(()=>{try{return JSON.parse(localStorage.getItem(seenKey)||'[]')}catch{return[]}})(),
-     unseen=safe.filter(x=>!seen.includes(String(x.id)));
- if(unseen.length<Math.min(10,safe.length)){
-   // If the available pool is nearly exhausted, start a fresh cycle rather than repeating a few questions.
-   seen=[]; unseen=safe.slice();
+ const q=await api('/quizzes/course/'+courseId+(mode==='revision'?'/revision':'')+'?seed='+seed);
+ let safe=uniqueQuestions(Array.isArray(q)?q.filter(x=>x&&x.id!=null&&Array.isArray(x.options)):[]), selected;
+ if(mode==='revision'){
+  selected=safe.slice(0,20);
+  if(!selected.length)setError('No unique previously incorrect questions are available for this course. Unanswered questions are not treated as wrong. Start a fresh quiz instead.');
+ }else{
+  const seenKey=`nova_quiz_seen_${user?.id||'guest'}_${courseId}`;
+  let seen=(()=>{try{return JSON.parse(localStorage.getItem(seenKey)||'[]')}catch{return[]}})();
+  let unseen=safe.filter(x=>!seen.includes(String(x.id)));
+  if(unseen.length<Math.min(10,safe.length)){
+    // If the available pool is nearly exhausted, start a fresh cycle rather than repeating a few questions.
+    seen=[]; unseen=safe.slice();
+  }
+  unseen=unseen.sort(()=>Math.random()-.5);
+  selected=unseen.slice(0,Math.min(10,unseen.length));
+  localStorage.setItem(seenKey,JSON.stringify([...seen,...selected.map(x=>String(x.id))]));
+  if(!selected.length)setError('No new quiz questions are available for this course yet.');
  }
- unseen=unseen.sort(()=>Math.random()-.5);
- const selected=unseen.slice(0,Math.min(10,unseen.length));
- localStorage.setItem(seenKey,JSON.stringify([...seen,...selected.map(x=>String(x.id))]));
- setQuestions(selected);
- if(!selected.length)setError('No new quiz questions are available for this course yet.');}catch(e){setQuestions([]);setError(e.message||'Quiz could not load.')}finally{setLoading(false)}};
+ setQuestions(selected);}catch(e){setQuestions([]);setError(e.message||'Quiz could not load.')}finally{setLoading(false)}};
  const submit=async()=>{if(!questions.length)return;const unanswered=questions.filter(q=>answers[q.id]===undefined);if(unanswered.length){setError(`Please answer all ${unanswered.length} remaining question${unanswered.length===1?'':'s'} before submitting.`);return}setLoading(true);setError('');try{const r=await api('/quizzes/course/'+courseId+'/submit',{method:'POST',body:JSON.stringify({userId:user.id,answers:Object.entries(answers).map(([questionId,selectedOption])=>({questionId:Number(questionId),selectedOption:Number(selectedOption)}))})});setResult(r);refresh?.();window.dispatchEvent(new Event('nova:learning-updated'));}catch(e){setError(e.message||'Quiz submission failed.')}finally{setLoading(false)}};
  const reset=()=>{setQuestions([]);setAnswers({});setResult(null);setError('')};
  return <><div className="page-title"><span className="eyebrow">ASSESSMENT</span><h1>Smart <span>Quiz.</span></h1><p>Test your understanding, get a score and use mistakes as your revision map.</p></div>
-  <div className="quiz-toolbar"><select aria-label="Course" value={courseId} onChange={e=>{setCourseId(e.target.value);reset()}} disabled={!courses.length||loading}><option value="">Select a course</option>{courses.map(c=><option key={c.id} value={c.id}>{c.title}</option>)}</select><button className="primary" onClick={start} disabled={!courseId||loading}>{loading?'Loading…':questions.length?'Reload quiz':'Start quiz'} <PlayCircle size={15}/></button></div>
+  <div className="quiz-toolbar"><select aria-label="Course" value={courseId} onChange={e=>{setCourseId(e.target.value);reset()}} disabled={!courses.length||loading}><option value="">Select a course</option>{courses.map(c=><option key={c.id} value={c.id}>{c.title}</option>)}</select><button className="primary" onClick={()=>start('fresh')} disabled={!courseId||loading}>{loading?'Loading…':questions.length?'Reload quiz':'Start quiz'} <PlayCircle size={15}/></button><button className="secondary" onClick={()=>start('revision')} disabled={!courseId||loading}>Revise mistakes</button></div>
   {error&&<div className="error settings-error" role="alert">{error}</div>}
   {!questions.length&&!result&&!error&&<div className="empty quiz-empty"><Target size={55}/><b>Ready for a knowledge check?</b><span>Choose a course and start a quiz. Your answers stay on this page until you submit.</span></div>}
   {questions.length>0&&!result&&<div className="quiz-list">{questions.map((q,i)=><div className="quiz-q" key={q.id}><span>QUESTION {i+1} • {q.difficulty||'Mixed'}</span><h3>{q.question||'Question unavailable'}</h3>{(q.options||[]).map((o,j)=><label className={answers[q.id]===j?'chosen':''} key={j}><input type="radio" name={'q'+q.id} checked={answers[q.id]===j} onChange={()=>setAnswers(a=>({...a,[q.id]:j}))}/>{o}</label>)}</div>)}<button className="primary" onClick={submit} disabled={loading}>{loading?'Submitting…':'Submit quiz'} <CheckCircle2 size={15}/></button></div>}
-  {result&&<div className="result-card"><div className="result-ring">{Number(result.score)||0}%</div><h2>{result.message||'Quiz complete!'}</h2><p>{result.correct??0} correct out of {result.total??questions.length}</p><button className="primary" onClick={reset}><RotateCcw size={14}/> Try another quiz</button></div>}
+  {result&&<div className="result-card"><div className="result-ring">{Number(result.score)||0}%</div><h2>{result.message||'Quiz complete!'}</h2><p>{result.correct??0} correct out of {result.total??questions.length}</p><div className="result-actions"><button className="primary" onClick={()=>start('revision')} disabled={loading}><Target size={14}/> Revise mistakes</button><button className="secondary" onClick={reset}><RotateCcw size={14}/> Fresh quiz</button></div></div>}
  </>;
 }
 
@@ -1535,14 +1576,12 @@ function TopNav({user,role,page,go,dark,setDark,navModel,activeGroup,mobile,setM
    </nav>}
    <div className="topnav-right">
     {!vp&&<GlobalSearch courses={coursesSafe()} go={go}/>}
-    <button className="topnav-icon-btn" aria-label={dark?'Switch to light appearance':'Switch to dark appearance'} title={dark?'Light appearance':'Dark appearance'} onClick={()=>setDark(x=>!x)}>{dark?<Sun size={17}/>:<Moon size={17}/>}</button>
     {!vp&&<button className={'topnav-icon-btn'+(page==='notifications'?' has-badge':'')} aria-label="Today's plan" title="Today's plan" onClick={()=>go('notifications')}><Bell size={17}/></button>}
     <div className="topnav-account">
      <button className={'topnav-avatar'+(accountOpen?' open':'')} aria-expanded={accountOpen} aria-haspopup="true" aria-label="Account menu" onClick={()=>setAccountOpen(x=>!x)}>{initial}</button>
      {accountOpen&&<div className="topnav-panel account-panel" role="menu">
-      <div className="topnav-account-head"><b>{user.name}</b><small>{role==='ADMIN'?'Administrator':'Student'}</small></div>
+      <div className="topnav-account-head"><b>{user.name}</b><small>{role==='ADMIN'?'Administrator':role==='GUEST'?'Guest session':'Student'}</small></div>
       <button role="menuitem" className="topnav-item" onClick={()=>navigate('settings')}><span className="topnav-item-icon"><UserRound size={16}/></span>Settings</button>
-      <button role="menuitem" className="topnav-item" onClick={()=>navigate('profile')}><span className="topnav-item-icon"><Brain size={16}/></span>Learning profile</button>
       <button role="menuitem" className="topnav-item danger" onClick={logout}><span className="topnav-item-icon"><LogOut size={16}/></span>Log out</button>
      </div>}
     </div>

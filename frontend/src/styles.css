@@ -3141,7 +3141,7 @@ nav button.active .nova-icon{filter:none}
 .sheet-item.active{background:var(--ink-soft);font-weight:600}
 .sheet-foot{padding-top:14px;border-top:1px solid var(--border);color:var(--muted);font-size:11.5px}
 @media(min-width:961px){.topnav-sheet,.nav-shade{display:none}}
-@media(max-width:960px){.topnav-menus,.topnav .topnav-panel{display:none}.topnav-inner{padding:0 14px}}
+@media(max-width:960px){.topnav-menus{display:none}.topnav-inner{padding:0 14px}}
 @media(prefers-reduced-motion:reduce){.topnav-panel,.topnav-sheet,.nav-shade{animation:none}}
 /* Legacy in-page header (search/welcome row) is retired with the sidebar */
 .main-topnav>header{display:none!important}
