@@ -205,7 +205,14 @@
    and document-level horizontal overflow. Rows now wrap by breakpoint, long
    emails collapse instead of forcing width, and the overlay owns scrolling. */
 body.admin-open{overflow:hidden!important}
-.admin-center{width:100%!important;max-width:100%!important;overflow-x:hidden!important;overflow-y:auto!important}
+/* The page-entrance animation leaves a transform on the transition wrapper and
+   its direct child. A transformed ancestor becomes the containing block for
+   the fixed admin shell, pushing its 100vh viewport below the real window and
+   hiding the bottom of the panel. Admin owns the viewport, so no page
+   transform may remain while it is mounted. */
+body.admin-open .page-transition,
+body.admin-open .page-transition>*{animation:none!important;transform:none!important}
+.admin-center{width:100%!important;max-width:100%!important;height:100dvh!important;overflow-x:hidden!important;overflow-y:auto!important;overscroll-behavior:contain}
 .admin-center>.ac-grid,.admin-center>.ac-stats,.admin-center .ac-panel,.admin-center .ac-table,.admin-center .ac-row,.admin-center .ac-bulkbar{min-width:0!important;max-width:100%}
 .ac-row{grid-template-columns:36px minmax(0,1fr) auto auto auto auto!important}
 .ac-row>div{min-width:0}

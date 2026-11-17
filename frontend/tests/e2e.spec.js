@@ -152,7 +152,11 @@ test.describe('authenticated experience', () => {
       await page.evaluate(() => window.scrollTo(0, 420));
       expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(100);
       await page.locator('.course-card').first().click();
-      await expect(page).toHaveURL(/#\/courses/, { timeout: 15_000 });
+      // Home opens the specific course directly; the My Learning catalog is not
+      // mounted as an intermediate screen.
+      await expect(page).toHaveURL(/#\/course\/\d+/, { timeout: 15_000 });
+      await expect(page.locator('.lesson-layout')).toBeVisible({ timeout: 20_000 });
+      await expect(page.locator('.page-title h1')).not.toHaveText(/My Learning/i);
       await page.goBack();
       await expect(page).toHaveURL(/#\/dashboard/);
       await expect(page.locator('.course-card').first()).toBeVisible({ timeout: 20_000 });
@@ -200,8 +204,12 @@ test.describe('admin workspace', () => {
     await expect(page.locator('.admin-center')).toHaveCount(0);
     if (testInfo.project.name === 'mobile') {
       await page.getByRole('button', { name: 'Open navigation' }).click();
+      await expect(page.locator('.topnav-sheet .sheet-item').first()).toBeVisible();
       await page.locator('.topnav-sheet').getByRole('button', { name: 'Admin Panel' }).click();
     } else {
+      // The active section's sub-navigation is open on first render.
+      await expect(page.getByRole('button', { name: 'Learn', exact: true })).toHaveAttribute('aria-expanded', 'true');
+      await expect(page.locator('.topnav-panel').first()).toBeVisible();
       await page.locator('.topnav-menu-btn').filter({ hasText: 'More' }).click();
       await page.getByRole('menuitem', { name: 'Admin Panel' }).click();
     }
@@ -270,6 +278,26 @@ test.describe('admin workspace', () => {
     await page.getByRole('button', { name: 'Admin sections menu' }).click();
     await page.locator('#admin-nav').getByRole('button', { name: 'Users' }).click();
     await expect(page.getByRole('heading', { name: 'User Management' })).toBeVisible();
+    const bottomMetrics = await page.evaluate(() => {
+      const root = document.querySelector('.admin-center');
+      root.style.scrollBehavior = 'auto';
+      root.scrollTop = root.scrollHeight;
+      const content = [...root.children].filter(el => !el.classList.contains('ac-nav') && !el.classList.contains('ac-nav-backdrop') && !el.classList.contains('ac-nav-toggle'));
+      const last = content[content.length - 1];
+      return {
+        viewport: window.innerHeight,
+        shellBottom: root.getBoundingClientRect().bottom,
+        lastBottom: last.getBoundingClientRect().bottom,
+        scrollTop: root.scrollTop,
+        maxScroll: root.scrollHeight - root.clientHeight
+      };
+    });
+    // The admin shell must sit in the real viewport and its final section must
+    // be fully reachable above the bottom edge after scrolling.
+    expect(bottomMetrics.shellBottom).toBeLessThanOrEqual(bottomMetrics.viewport + 1);
+    expect(bottomMetrics.lastBottom).toBeLessThanOrEqual(bottomMetrics.viewport + 1);
+    expect(bottomMetrics.maxScroll).toBeGreaterThan(0);
+    expect(bottomMetrics.scrollTop).toBeGreaterThanOrEqual(bottomMetrics.maxScroll - 1);
     const usersMetrics = await page.evaluate(() => ({
       viewport: window.innerWidth,
       documentWidth: document.documentElement.scrollWidth,

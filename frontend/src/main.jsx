@@ -495,14 +495,16 @@ function NovaBrain({user,go}){
 
 function App(){
  const [adminDenied,setAdminDenied]=useState(false);
- const [page,setPage]=useState(()=>{const allowed=['login','about','privacy','terms','contact','dashboard','coach','study-room','analytics','courses','mentor','learning-studio','tutor','code','quiz','practice','prepare','chat','knowledge','planner','flashcards','interview','voice','settings','gatecse','career','community','notifications','revision','achievements','dpp','profile','exam','nova-os','nova-brain','onboarding','admin','dsa'];const alias={'gate-cse':'gatecse'};const h0=window.location.hash.replace('#/','');const h=alias[h0]||h0;const saved=localStorage.getItem('nova_page')||'dashboard';const session=readUser();if(!session)return 'login';
+ const [page,setPage]=useState(()=>{const allowed=['login','about','privacy','terms','contact','dashboard','coach','study-room','analytics','courses','course','mentor','learning-studio','tutor','code','quiz','practice','prepare','chat','knowledge','planner','flashcards','interview','voice','settings','gatecse','career','community','notifications','revision','achievements','dpp','profile','exam','nova-os','nova-brain','onboarding','admin','dsa'];const alias={'gate-cse':'gatecse'}; const h0=window.location.hash.replace('#/','');const routeCourse=courseIdFromHash();const h=routeCourse?'course':(alias[h0]||h0);const saved=localStorage.getItem('nova_page')||'dashboard';const session=readUser();if(!session)return 'login';
  // A stored session with an unfinished profile belongs on onboarding, not on
  // the dashboard. Deciding this in the initializer (instead of in an effect)
  // removes the dashboard→onboarding flash on refresh.
  const needsProfile=String(session.role||'STUDENT').toUpperCase()!=='ADMIN'&&session.profileComplete===false;
  if(needsProfile)return 'onboarding';
    if(h==='onboarding'||h==='login')return 'dashboard';
+ if(h==='course'&&!routeCourse)return 'dashboard';
  return allowed.includes(h)?h:(allowed.includes(saved)&&saved!=='login'?saved:'dashboard')});
+ const [courseId,setCourseId]=useState(()=>courseIdFromHash());
  // In-page Back was removed (hash routing + browser Back cover it). The stale
  // nova_nav_stack localStorage key is cleared on logout/switch/login below.
  const [aiStatus,setAiStatus]=useState({configured:false,model:'—'}),[courses,setCourses]=useState([]),[progress,setProgress]=useState([]),[mobile,setMobile]=useState(false),[user,setUser]=useState(readUser);
@@ -547,6 +549,7 @@ function App(){
     window.dispatchEvent(new Event('nova:persist-before-navigation'));
   }catch{}
  };
+ const openCourse=id=>{if(!user||!id)return;if(page!=='course'||String(courseId)!==String(id)){persistBeforeNavigation();sessionStorage.setItem('nova_scroll_course','0')}setCourseId(Number(id));setPage('course');localStorage.setItem('nova_page','course');const hash='/course/'+id;if(window.location.hash!==hash)window.location.hash=hash;setMobile(false)};
  const go=id=>{if(!user)return;if(id==='admin'&&role!=='ADMIN')return;const legacyStudio={tutor:'teacher',notes:'teacher',voice:'voice'};const target=legacyStudio[id]?'learning-studio':id;if(legacyStudio[id])localStorage.setItem('nova_learning_studio_tab',legacyStudio[id]);if(target!==page){persistBeforeNavigation();sessionStorage.setItem('nova_scroll_'+target,'0');}setPage(target);localStorage.setItem('nova_page',target);if(window.location.hash!=='/'+target)window.location.hash='/'+target;setMobile(false)};
  /* Scroll restoration: every route keeps its own position; a deliberate new
     navigation starts at the top, while browser Back re-enters at the saved
@@ -560,13 +563,19 @@ function App(){
  useEffect(()=>{
   const saved=Number(sessionStorage.getItem('nova_scroll_'+page));
   const top=Number.isFinite(saved)?saved:0;
-  const id=requestAnimationFrame(()=>window.scrollTo({top,left:0,behavior:'auto'}));
-  return()=>cancelAnimationFrame(id);
+  let cancelled=false,frame=0,timer=0,tries=0;
+  // Cards and other async sections add height after the first paint. If the
+  // target is not reachable yet, retry briefly instead of leaving Back at 0.
+  const apply=()=>{if(cancelled)return;window.scrollTo({top,left:0,behavior:'auto'});if(Math.abs(window.scrollY-top)>2&&tries++<20)timer=setTimeout(apply,40)};
+  frame=requestAnimationFrame(apply);
+  return()=>{cancelled=true;cancelAnimationFrame(frame);clearTimeout(timer)};
  },[page]);
  useEffect(()=>{const f=()=>go('tutor');window.addEventListener('nova-go-tutor',f);return()=>window.removeEventListener('nova-go-tutor',f)},[page]);
  useEffect(()=>{if(!adminDenied)return;const t=setTimeout(()=>setAdminDenied(false),4200);return()=>clearTimeout(t)},[adminDenied]);
- useEffect(()=>{const onHash=()=>{const session=readUser();if(!session){setPage('login');return}const allowed=['dashboard','coach','study-room','analytics','courses','mentor','learning-studio','tutor','code','quiz','practice','prepare','chat','knowledge','planner','flashcards','interview','voice','settings','gatecse','career','community','notifications','revision','achievements','dpp','profile','exam','nova-os','nova-brain','onboarding','admin','dsa'];const alias={'gate-cse':'gatecse'};const h0=window.location.hash.replace('#/','');const normalized0=alias[h0]||h0;const legacyStudio={tutor:'teacher',notes:'teacher',voice:'voice'};if(legacyStudio[normalized0])localStorage.setItem('nova_learning_studio_tab',legacyStudio[normalized0]);const normalized=legacyStudio[normalized0]?'learning-studio':normalized0;const h=normalized==='login'?'dashboard':(allowed.includes(normalized)?normalized:'dashboard');if(h==='admin'&&String(session.role||'STUDENT').toUpperCase()!=='ADMIN'){setPage('dashboard');window.location.hash='/dashboard';setAdminDenied(true);return}if(h!==page)persistBeforeNavigation();setPage(h);localStorage.setItem('nova_page',h)};window.addEventListener('hashchange',onHash);if(!window.location.hash)window.location.hash='/'+page;return()=>window.removeEventListener('hashchange',onHash)},[page,user?.role]);
- useEffect(()=>{if(user&&page==='login'){const r=String(user.role||'STUDENT').toUpperCase();setPage(r==='ADMIN'?'admin':'dashboard');window.location.hash=r==='ADMIN'?'/admin':'/dashboard'}},[user,page]);
+ useEffect(()=>{const onHash=()=>{const session=readUser();if(!session){setPage('login');return}const allowed=['dashboard','coach','study-room','analytics','courses','course','mentor','learning-studio','tutor','code','quiz','practice','prepare','chat','knowledge','planner','flashcards','interview','voice','settings','gatecse','career','community','notifications','revision','achievements','dpp','profile','exam','nova-os','nova-brain','onboarding','admin','dsa'];const alias={'gate-cse':'gatecse'};const h0=window.location.hash.replace('#/','');const routeCourse=courseIdFromHash();const normalized0=routeCourse?'course':(alias[h0]||h0);const legacyStudio={tutor:'teacher',notes:'teacher',voice:'voice'};if(legacyStudio[normalized0])localStorage.setItem('nova_learning_studio_tab',legacyStudio[normalized0]);const normalized=legacyStudio[normalized0]?'learning-studio':normalized0;const h=normalized==='login'?'dashboard':(allowed.includes(normalized)?normalized:'dashboard');if(routeCourse)setCourseId(routeCourse);if(h==='admin'&&String(session.role||'STUDENT').toUpperCase()!=='ADMIN'){setPage('dashboard');window.location.hash='/dashboard';setAdminDenied(true);return}if(h!==page)persistBeforeNavigation();setPage(h);localStorage.setItem('nova_page',h)};window.addEventListener('hashchange',onHash);if(!window.location.hash)window.location.hash='/'+page;return()=>window.removeEventListener('hashchange',onHash)},[page,user?.role]);
+ // A successful sign-in always starts on Home. Admin Panel is reached only by
+ // the explicit navigation item, so this fallback must never route to /admin.
+ useEffect(()=>{if(user&&page==='login'){const r=String(user.role||'STUDENT').toUpperCase();const target=r!=='ADMIN'&&user.profileComplete===false?'onboarding':'dashboard';setPage(target);localStorage.setItem('nova_page',target);window.location.hash='/'+target}},[user,page]);
  const role=String(user?.role||'STUDENT').toUpperCase();
  if(page==='onboarding') return <Onboarding user={user} onComplete={next=>{localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page','dashboard');setUser(next);setPage('dashboard');window.location.hash='/dashboard'}}/>;
  /* Global navigation model. Desktop renders Learn/Practice/AI/Community as
@@ -582,7 +591,7 @@ function App(){
  const logout=()=>{persistBeforeNavigation('logout');if(role==='GUEST')api('/auth/guest',{method:'DELETE'}).catch(()=>{});resetTransientLearningState(user?.id);localStorage.removeItem('ai_user');localStorage.removeItem('nova_page');localStorage.removeItem('nova_nav_stack');setUser(null);setMobile(false);setPage('login');window.location.hash='/login'};
  const switchAccount=()=>{persistBeforeNavigation('switch-account');if(role==='GUEST')api('/auth/guest',{method:'DELETE'}).catch(()=>{});resetTransientLearningState(user?.id);localStorage.removeItem('ai_user');localStorage.removeItem('nova_page');localStorage.removeItem('nova_nav_stack');setUser(null);setMobile(false);setPage('login');window.location.hash='/login'};
  const updateUser=next=>{const normalized={...(user||{}),...(next||{}),role:String(next?.role||user?.role||'STUDENT').toUpperCase()};localStorage.setItem('ai_user',JSON.stringify(normalized));setUser(normalized)};
- if(!user)return <Auth onLogin={u=>{const next={...u,role:String(u.role||'STUDENT').toUpperCase()};resetTransientLearningState(next.id);localStorage.removeItem('nova_nav_stack');const needsProfile=next.role!=='ADMIN'&&next.profileComplete===false;localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page',needsProfile?'onboarding':'dashboard');setUser(next);window.location.hash=needsProfile?'/onboarding':'/dashboard'}} dark={dark} setDark={setDark}/>;
+ if(!user)return <Auth onLogin={u=>{const next={...u,role:String(u.role||'STUDENT').toUpperCase()};resetTransientLearningState(next.id);localStorage.removeItem('nova_nav_stack');const needsProfile=next.role!=='ADMIN'&&next.profileComplete===false;const target=needsProfile?'onboarding':'dashboard';localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page',target);setUser(next);setPage(target);window.location.hash='/'+target}} dark={dark} setDark={setDark}/>;
  const renderNavItem=([id,label,I])=><button className={page===id?'active':''} onClick={()=>go(id)} key={id}><I size={18}/>{label}{id==='admin'&&role==='ADMIN'?<span className="nav-badge">OWNER</span>:null}</button>;
  const renderNavGroups=()=>navGroups.map(g=><div className="nav-group" key={g.label}><div className="nav-section-title">{g.label}</div><nav className="main-nav" aria-label={g.label.toLowerCase()}>{g.items.map(renderNavItem)}</nav></div>);
  return <div className="app app-topnav">
@@ -595,13 +604,20 @@ function App(){
  <main className="main-topnav">
  {/* In-page Back button removed: hash routing + browser Back already provide
      full navigation history, and the sidebar/navbar owns in-app navigation. */}
- <div className="page-transition"><ErrorBoundary key={page}>{adminDenied&&<div className="nv-toast" role="status">Admin area is restricted to administrator accounts.</div>}{page==='dashboard'&&<Dashboard courses={courses} progress={progress} go={go} user={user}/>} {page==='coach'&&<NovaCoach user={user} go={go} courses={courses}/>} {page==='study-room'&&<NovaCoach user={user} go={go} courses={courses} initialTab="community"/>} {page==='analytics'&&<Analytics user={user}/>} {page==='nova-os'&&<NovaBrain user={user} go={go}/>} {page==='nova-brain'&&<NovaBrain user={user} go={go}/>} {page==='practice'&&<PracticeHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='prepare'&&<PrepareHub user={user} go={go}/>} {page==='courses'&&<MyLearningHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='learning-studio'&&<LearningStudio user={user}/>} {page==='tutor'&&<LearningStudio user={user} initialTab="teacher"/>} {page==='code'&&<CodeLab user={user}/>} {page==='quiz'&&<Quiz courses={courses} progress={progress} refresh={load} user={user}/>} {page==='chat'&&<ChatWorkspace user={user}/>} {page==='knowledge'&&<KnowledgeHub user={user}/>}
+ <div className="page-transition"><ErrorBoundary key={page}>{adminDenied&&<div className="nv-toast" role="status">Admin area is restricted to administrator accounts.</div>}{page==='dashboard'&&<Dashboard courses={courses} progress={progress} go={go} openCourse={openCourse} user={user}/>} {page==='course'&&<CoursePage courseId={courseId} courses={courses} progress={progress} refresh={load} onBack={()=>go('dashboard')}/>} {page==='coach'&&<NovaCoach user={user} go={go} courses={courses}/>} {page==='study-room'&&<NovaCoach user={user} go={go} courses={courses} initialTab="community"/>} {page==='analytics'&&<Analytics user={user}/>} {page==='nova-os'&&<NovaBrain user={user} go={go}/>} {page==='nova-brain'&&<NovaBrain user={user} go={go}/>} {page==='practice'&&<PracticeHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='prepare'&&<PrepareHub user={user} go={go}/>} {page==='courses'&&<MyLearningHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='learning-studio'&&<LearningStudio user={user}/>} {page==='tutor'&&<LearningStudio user={user} initialTab="teacher"/>} {page==='code'&&<CodeLab user={user}/>} {page==='quiz'&&<Quiz courses={courses} progress={progress} refresh={load} user={user}/>} {page==='chat'&&<ChatWorkspace user={user}/>} {page==='knowledge'&&<KnowledgeHub user={user}/>}
  {page==='mentor'&&<AdaptiveMentor user={user} courses={courses}/>} {page==='planner'&&<StudyPlanner user={user}/>} {page==='flashcards'&&<Flashcards user={user}/>} {page==='achievements'&&<Achievements user={user} go={go}/>} {page==='profile'&&<AILearningProfile user={user} courses={courses} go={go}/>} {page==='interview'&&<Interviewer user={user}/>} {page==='voice'&&<LearningStudio user={user} initialTab="voice"/>} {page==='dpp'&&<CourseDppIde user={user} courses={courses}/>} {page==='exam'&&<ExamSimulator user={user}/>} {page==='gatecse'&&<GateCse/>} {page==='dsa'&&<DsaPractice user={user} api={api}/>} {page==='career'&&<CareerHub user={user} go={go}/>} {page==='community'&&<CommunityHub user={user} go={go}/>} {page==='notifications'&&<TodayHub user={user} go={go}/>} {page==='revision'&&<RevisionHub user={user} go={go}/>} {page==='settings'&&<SettingsPage user={user} dark={dark} setDark={setDark} logout={logout} switchAccount={switchAccount} onUserUpdate={updateUser} aiStatus={aiStatus}/>} {page==='about'&&<PublicPage page="about" signedIn onBack={()=>go('dashboard')}/>} {page==='privacy'&&<PublicPage page="privacy" signedIn onBack={()=>go('settings')}/>} {page==='terms'&&<PublicPage page="terms" signedIn onBack={()=>go('settings')}/>} {page==='contact'&&<PublicPage page="contact" signedIn onBack={()=>go('dashboard')}/>} {page==='admin'&&(role==='ADMIN'?<Admin user={user} courses={courses} refreshCourses={load} onBack={()=>go('dashboard')}/>:<AdminLocked go={go}/>)}</ErrorBoundary></div></main></div>
 }
 function readHashRoute(){
  const raw=String(window.location.hash||'').replace(/^#\/?/,'');
  const [path,query]=raw.split('?');
  return {path:(path||'').toLowerCase(),params:new URLSearchParams(query||'')};
+}
+
+/* Direct course routes ("#/course/12") let Home open the requested course's
+   lectures without mounting the My Learning catalog first. */
+function courseIdFromHash(){
+ const match=String(window.location.hash||'').replace(/^#\//,'').match(/^course\/(\d+)$/);
+ return match?Number(match[1]):null;
 }
 
 /* Google Identity Services button. The backend verifies the returned ID token
@@ -1055,7 +1071,7 @@ function GlobalSearch({courses,go}){
  return <div className="global-search"><div className="global-search-input"><FileSearch size={16}/><input value={q} onFocus={()=>setOpen(true)} onChange={e=>{setQ(e.target.value);setOpen(true)}} onKeyDown={e=>{if(e.key==='Escape'){setOpen(false);setQ('')}if(e.key==='Enter'&&results[0]){go(results[0].id);setOpen(false);setQ('')}}} placeholder="Search NovaTutor…" aria-label="Search NovaTutor"/>{q&&<button onClick={()=>{setQ('');setOpen(false)}} aria-label="Clear search">×</button>}</div>{open&&term&&<div className="global-search-results">{results.length?results.map(r=><button key={r.id+r.label} onClick={()=>{go(r.id);setOpen(false);setQ('')}}><span className="search-kind">{r.kind}</span><b>{r.label}</b><ChevronRight size={13}/></button>):<div className="search-empty">No matching NovaTutor module or course.</div>}</div>}</div>
 }
 
-function Dashboard({courses,progress,go,user}){const [live,setLive]=useState(null),[liveProgress,setLiveProgress]=useState(progress||[]);const currentProgress=liveProgress.length?liveProgress:progress;
+function Dashboard({courses,progress,go,openCourse,user}){const [live,setLive]=useState(null),[liveProgress,setLiveProgress]=useState(progress||[]);const currentProgress=liveProgress.length?liveProgress:progress;
  /* Dashboard composition (redesign): a calm morning strip, one Continue band
     for the course in progress, a Today block, then secondary sections on
     scroll. Same data hooks as before — presentation only. */
@@ -1092,7 +1108,7 @@ function Dashboard({courses,progress,go,user}){const [live,setLive]=useState(nul
   <IntelligenceSnapshot user={user} go={go}/>
   <MasterySnapshot user={user} go={go}/>
   <div className="section-head"><div><span className="eyebrow">YOUR PATH</span><h3>Continue learning</h3></div><button className="text-btn" onClick={()=>go('courses')}>View all</button></div>
-  <div className="course-grid">{visible.map((c,i)=><CourseCard key={c.id} c={c} p={currentProgress.find(x=>x.courseId===c.id)} go={go} i={i}/>)}{!visible.length&&<div className="empty course-grid-empty"><BookOpen size={28}/><b>No courses to show yet.</b><span>Your library appears here as soon as the catalog is available. The full catalog stays reachable from My Learning.</span><button className="secondary" onClick={()=>go('courses')}>Open My Learning</button></div>}</div>
+  <div className="course-grid">{visible.map((c,i)=><CourseCard key={c.id} c={c} p={currentProgress.find(x=>x.courseId===c.id)} openCourse={openCourse} i={i}/>)}{!visible.length&&<div className="empty course-grid-empty"><BookOpen size={28}/><b>No courses to show yet.</b><span>Your library appears here as soon as the catalog is available. The full catalog stays reachable from My Learning.</span><button className="secondary" onClick={()=>go('courses')}>Open My Learning</button></div>}</div>
  </>}
 function IntelligenceSnapshot({user,go}){
  const [data,setData]=useState(null);
@@ -1118,7 +1134,15 @@ function MasterySnapshot({user,go}){
 
 
 function Stat({n,t}){return <div className="stat"><b>{n}</b><span>{t}</span></div>}
-function CourseCard({c,p,go,i}){const percent=Math.round(p?.percent||0);const open=()=>{localStorage.setItem('nova_open_course',String(c.id));go('courses')};return <div className="course-card" onClick={open} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open()}}} role="button" tabIndex={0}><div className={'course-icon i'+i}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:percent+'%'}}/></div><div className="course-foot"><small>{percent}% complete • {c.totalLessons} lessons</small><button onClick={e=>{e.stopPropagation();open()}}>Open <ChevronRight size={13}/></button></div></div>}
+function CourseCard({c,p,openCourse,i}){const percent=Math.round(p?.percent||0);const open=()=>openCourse(c.id);return <div className="course-card" onClick={open} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open()}}} role="button" tabIndex={0}><div className={'course-icon i'+i}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:percent+'%'}}/></div><div className="course-foot"><small>{percent}% complete • {c.totalLessons} lessons</small><button onClick={e=>{e.stopPropagation();open()}}>Open <ChevronRight size={13}/></button></div></div>}
+function CoursePage({courseId,courses,progress,refresh,onBack}){
+ const [detail,setDetail]=useState(null),[error,setError]=useState('');
+ const summary=courses.find(c=>String(c.id)===String(courseId));
+ useEffect(()=>{if(!courseId)return;let alive=true;setDetail(null);setError('');api('/courses/'+courseId).then(d=>{if(alive)setDetail(d)}).catch(e=>{if(alive)setError(e.message||'Could not load course.')});return()=>{alive=false}},[courseId]);
+ if(error)return <div className="page-crash"><RefreshCw size={40}/><h2>Course could not load</h2><p>{error}</p><button className="secondary" onClick={onBack}>Back to Home</button></div>;
+ if(!detail)return <><div className="page-title"><span className="eyebrow">COURSE</span><h1>{summary?.title||'Opening course…'}</h1><p>Loading lectures for this course.</p></div><div className="lesson-layout"><div className="panel skeleton-card"/><div className="panel skeleton-card"/></div></>;
+ return <CourseDetail detail={detail} progress={progress.find(x=>x.courseId===detail.course.id)} refresh={refresh} back={onBack}/>;
+}
 function Courses({courses,progress,refresh,user}){
  const [selected,setSelected]=useState(()=>{const v=localStorage.getItem('nova_open_course');localStorage.removeItem('nova_open_course');return v?Number(v):null;}),[detail,setDetail]=useState(null),[error,setError]=useState(''),[query,setQuery]=useState(''),[level,setLevel]=useState('All');
  useModulePersistence(user?.id,'courses',{selected,query,level},{selected:x=>setSelected(x||null),query:x=>setQuery(x||''),level:x=>setLevel(x||'All')});
@@ -1536,9 +1560,12 @@ createRoot(document.getElementById('root')).render(<ErrorBoundary><App/></ErrorB
    interactive elements. No AI status, no refresh, no technical controls.
    ===================================================================== */
 function TopNav({user,role,page,go,dark,setDark,navModel,activeGroup,mobile,setMobile,vp,logout,aiConfigured}){
- const [openMenu,setOpenMenu]=useState(null);
+ // The current section's sub-navigation is open on first render. Clicking the
+ // trigger or outside still closes it, and mobile keeps its compact sheet.
+ const [openMenu,setOpenMenu]=useState(activeGroup||null);
  const [accountOpen,setAccountOpen]=useState(false);
  const rootRef=useRef(null);
+ const firstPage=useRef(page);
  useEffect(()=>{
   const close=e=>{if(rootRef.current&&!rootRef.current.contains(e.target)){setOpenMenu(null);setAccountOpen(false)}};
   const esc=e=>{if(e.key==='Escape'){setOpenMenu(null);setAccountOpen(false)}};
@@ -1546,10 +1573,10 @@ function TopNav({user,role,page,go,dark,setDark,navModel,activeGroup,mobile,setM
   document.addEventListener('keydown',esc);
   return()=>{document.removeEventListener('pointerdown',close);document.removeEventListener('keydown',esc)};
  },[]);
- useEffect(()=>{setOpenMenu(null);setAccountOpen(false);setMobile(false)},[page]);
+ useEffect(()=>{if(firstPage.current===page)return;firstPage.current=page;setOpenMenu(null);setAccountOpen(false);setMobile(false)},[page]);
  const navigate=id=>{setOpenMenu(null);setAccountOpen(false);setMobile(false);go(id)};
  const initial=user.name?.[0]?.toUpperCase()||'U';
- return <header className="topnav" ref={rootRef}>
+ return <header className={'topnav'+(openMenu&&!vp?' subnav-open':'')} ref={rootRef}>
   <div className="topnav-inner">
    <button className="topnav-brand" onClick={()=>navigate('dashboard')} aria-label="NovaTutor home">
     <BrandMark size={26}/><span>NovaTutor</span>
