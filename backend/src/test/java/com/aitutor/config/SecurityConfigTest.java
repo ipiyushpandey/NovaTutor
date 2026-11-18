@@ -1,69 +1,68 @@
 package com.aitutor.config;
 
+import com.aitutor.entity.User;
 import com.aitutor.repository.UserRepository;
-import com.aitutor.security.JwtAuthenticationFilter;
 import com.aitutor.security.JwtService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.MockMvc;
 
-import java.util.Map;
-
-import static org.junit.jupiter.api.Assertions.*;
+import static org.hamcrest.Matchers.containsString;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
  * Security regression: unauthenticated access must be 401 (not 403/500),
  * protected endpoints must reject anonymous callers, and public endpoints stay open.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest
+@AutoConfigureMockMvc
+@ActiveProfiles("test")
 class SecurityConfigTest {
 
-    @Autowired TestRestTemplate rest;
+    @Autowired MockMvc mvc;
     @Autowired PasswordEncoder encoder;
     @Autowired UserRepository users;
     @Autowired JwtService jwt;
 
     @Test
-    void anonymousProtectedEndpointsReturn401() {
+    void anonymousProtectedEndpointsReturn401() throws Exception {
         for (String path : new String[]{
                 "/api/auth/me", "/api/dsa/stats", "/api/dsa/problems",
                 "/api/progress/1", "/api/analytics/1", "/api/admin/users",
                 "/api/community/posts", "/api/users/leaderboard"}) {
-            ResponseEntity<String> r = rest.getForEntity(path, String.class);
-            assertEquals(HttpStatus.UNAUTHORIZED, r.getStatusCode(), path + " should be 401");
+            mvc.perform(get(path))
+                    .andExpect(status().isUnauthorized());
         }
     }
 
     @Test
-    void publicEndpointsStayOpen() {
-        assertEquals(HttpStatus.OK, rest.getForEntity("/actuator/health", String.class).getStatusCode());
-        assertEquals(HttpStatus.OK, rest.getForEntity("/api/health", String.class).getStatusCode());
-        assertEquals(HttpStatus.OK, rest.getForEntity("/api/courses", String.class).getStatusCode());
+    void publicEndpointsStayOpen() throws Exception {
+        mvc.perform(get("/actuator/health")).andExpect(status().isOk());
+        mvc.perform(get("/api/health")).andExpect(status().isOk());
+        mvc.perform(get("/api/courses")).andExpect(status().isOk());
     }
 
     @Test
-    void validTokenReachesProtectedEndpoint() {
+    void validTokenReachesProtectedEndpoint() throws Exception {
         String email = "sec-test-" + System.currentTimeMillis() + "@test.local";
-        users.save(new com.aitutor.entity.User("Sec Test", email, encoder.encode("test123456")));
+        User u = new User("Sec Test", email, encoder.encode("test123456"));
+        u.setEmailVerified(true);
+        users.save(u);
         String token = jwt.token(email);
-        var headers = new org.springframework.http.HttpHeaders();
-        headers.setBearerAuth(token);
-        ResponseEntity<String> r = rest.exchange("/api/dsa/stats", org.springframework.http.HttpMethod.GET,
-                new org.springframework.http.HttpEntity<>(headers), String.class);
-        assertEquals(HttpStatus.OK, r.getStatusCode());
-        assertTrue(r.getBody().contains("328"));
+        mvc.perform(get("/api/dsa/stats").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("328")));
     }
 
     @Test
-    void garbageTokenIsRejected() {
-        var headers = new org.springframework.http.HttpHeaders();
-        headers.setBearerAuth("not-a-real-token");
-        ResponseEntity<String> r = rest.exchange("/api/dsa/stats", org.springframework.http.HttpMethod.GET,
-                new org.springframework.http.HttpEntity<>(headers), String.class);
-        assertEquals(HttpStatus.UNAUTHORIZED, r.getStatusCode());
+    void garbageTokenIsRejected() throws Exception {
+        mvc.perform(get("/api/dsa/stats").header("Authorization", "Bearer not-a-real-token"))
+                .andExpect(status().isUnauthorized());
     }
 }
