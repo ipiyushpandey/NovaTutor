@@ -13,7 +13,7 @@ OUT="deploy/secrets.env"
 [ -f "$OUT" ] || cp deploy/secrets.env.example "$OUT"
 chmod 600 "$OUT" 2>/dev/null || true
 
-current() { grep -E "^$1=" "$OUT" 2>/dev/null | head -1 | cut -d= -f2- ; }
+current() { (grep -E "^$1=" "$OUT" 2>/dev/null || true) | head -1 | cut -d= -f2- ; }
 
 # Read a value with hidden input (passwords/keys are never echoed).
 # If a current default is provided, pressing Enter preserves it safely.

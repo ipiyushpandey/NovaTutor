@@ -69,7 +69,7 @@ public class ProductionConfigValidator {
         if (!rateLimitEnabled) {
             throw new IllegalStateException("app.rate-limit.enabled must remain true in production");
         }
-        if (trustProxy && "framework".equalsIgnoreCase(forwardHeadersStrategy == null ? "" : forwardHeadersStrategy.trim())) {
+        if ("framework".equalsIgnoreCase(forwardHeadersStrategy == null ? "" : forwardHeadersStrategy.trim())) {
             throw new IllegalStateException(
                     "server.forward-headers-strategy=framework strips X-Forwarded-For and trusts spoofable leftmost IPs; use native with trusted internal-proxies");
         }

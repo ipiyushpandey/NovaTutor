@@ -62,12 +62,18 @@ class ProductionConfigValidatorTest {
     }
 
     @Test
-    void rejectsFrameworkForwardHeadersWhenTrustProxyIsEnabled() {
-        IllegalStateException ex = assertThrows(IllegalStateException.class, () -> new ProductionConfigValidator(
+    void rejectsFrameworkForwardHeadersRegardlessOfTrustProxy() {
+        IllegalStateException ex1 = assertThrows(IllegalStateException.class, () -> new ProductionConfigValidator(
                 "jdbc:mysql://db:3306/ai_tutor", "novatutor", "strong-db-password", SECRET,
                 "gemini-key", "admin@example.com", "strong-admin-password", "https://app.example.com",
                 false, "", "remote", "framework", true, true));
-        assertTrue(ex.getMessage().contains("forward-headers-strategy"));
+        assertTrue(ex1.getMessage().contains("forward-headers-strategy"));
+
+        IllegalStateException ex2 = assertThrows(IllegalStateException.class, () -> new ProductionConfigValidator(
+                "jdbc:mysql://db:3306/ai_tutor", "novatutor", "strong-db-password", SECRET,
+                "gemini-key", "admin@example.com", "strong-admin-password", "https://app.example.com",
+                false, "", "remote", "framework", true, false));
+        assertTrue(ex2.getMessage().contains("forward-headers-strategy"));
     }
 
     @Test

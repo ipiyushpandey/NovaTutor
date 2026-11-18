@@ -24,16 +24,22 @@ public class AiController {
     private final List<AiProvider> providers;
     private final AiMetrics metrics;
     /** Strictly bounded pool and queue: rejects overflow with 503 instead of exhausting heap/threads. */
-    private final ExecutorService streamExecutor = new ThreadPoolExecutor(
-            4, 16, 60L, TimeUnit.SECONDS,
-            new ArrayBlockingQueue<>(32),
-            r -> { Thread t = new Thread(r, "nova-ai-stream"); t.setDaemon(true); return t; },
-            new ThreadPoolExecutor.AbortPolicy());
+    private final ExecutorService streamExecutor;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public AiController(AiService a, List<AiProvider> providers, AiMetrics metrics) {
+        this(a, providers, metrics, new ThreadPoolExecutor(
+                4, 16, 60L, TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(32),
+                r -> { Thread t = new Thread(r, "nova-ai-stream"); t.setDaemon(true); return t; },
+                new ThreadPoolExecutor.AbortPolicy()));
+    }
+
+    AiController(AiService a, List<AiProvider> providers, AiMetrics metrics, ExecutorService streamExecutor) {
         this.ai = a;
         this.providers = providers;
         this.metrics = metrics;
+        this.streamExecutor = streamExecutor;
     }
 
     @PreDestroy

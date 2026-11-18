@@ -109,9 +109,13 @@ public class AdaptiveController {
     @PostMapping("/{userId}/ai-question")
     public Question aiQuestion(@PathVariable Long userId, Authentication authentication) {
         authenticatedUser.requireSame(authentication,userId);
+        boolean admin = authenticatedUser.isAdmin(authentication);
         User u=users.findById(userId).orElseThrow();
         List<QuizAttempt> recent=attempts.findTop200ByUserIdOrderBySubmittedAtDesc(userId).stream().limit(50).toList();
-        String subject=recent.stream().filter(a->a.getCourse()!=null).map(a->a.getCourse().getTitle()).findFirst()
+        String subject=recent.stream()
+                .filter(a->a.getCourse()!=null && (admin || a.getCourse().isPublished()))
+                .map(a->a.getCourse().getTitle())
+                .findFirst()
                 .orElseGet(()->courses.findAll().stream().filter(Course::isPublished).map(Course::getTitle).findFirst().orElse("Computer Science"));
         String level=adaptiveLevel(recent);
         String prompt="Generate ONE original, non-trivial exam-style MCQ for a computer-science learner. Subject: "+subject+". Difficulty: "+level+". "
@@ -155,34 +159,67 @@ public class AdaptiveController {
     @Transactional
     public Map<String,Object> shown(@PathVariable Long userId,@RequestBody Map<String,Object> body, Authentication authentication){
         authenticatedUser.requireSame(authentication,userId);
+        boolean admin = authenticatedUser.isAdmin(authentication);
         User u=users.findById(userId).orElseThrow();
-        Object ids=body.get("questionIds");
+        LocalDate todayIst = LocalDate.now(ZoneId.of("Asia/Kolkata"));
+        Object ids=body == null ? null : body.get("questionIds");
+        int recorded = 0;
         if(ids instanceof List<?> list){
+            int processed = 0;
             for(Object id:list){
+                if (++processed > 20) break;
                 try{
                     Long qid=Long.valueOf(String.valueOf(id));
                     if (qid <= 0) continue;
                     QuizQuestion q=questions.findById(qid).orElse(null);
-                    if(q!=null) events.save(new LearningEvent(u,"ADAPTIVE_SHOWN",q.getCourse()==null?null:q.getCourse().getTitle(),"Adaptive practice",null,0,"questionId="+qid));
+                    if(q==null || q.getCourse()==null || (!admin && !q.getCourse().isPublished())) continue;
+                    boolean inserted = eventService.recordIfAbsent(
+                            u, "ADAPTIVE_SHOWN", q.getCourse().getTitle(), "Adaptive practice",
+                            null, 0, "questionId=" + qid,
+                            "ADAPTIVE_SHOWN:" + u.getId() + ":" + qid + ":" + todayIst);
+                    if (inserted) recorded++;
                 }catch(Exception ignored){}
             }
         }
-        return Map.of("success",true);
+        return Map.of("success",true,"recorded",recorded);
     }
 
     @PostMapping("/{userId}/revision-complete")
     @Transactional
     public Map<String,Object> revisionComplete(@PathVariable Long userId,@RequestBody Map<String,Object> body, Authentication authentication){
         authenticatedUser.requireSame(authentication,userId);
+        boolean admin = authenticatedUser.isAdmin(authentication);
         User u=users.findById(userId).orElseThrow();
-        String subject=String.valueOf(body.getOrDefault("subject",""));
-        String topic=String.valueOf(body.getOrDefault("topic","Quiz mastery"));
-        LocalDate todayIst = LocalDate.now(ZoneId.of("Asia/Kolkata"));
-        eventService.record(u,"REVISION_COMPLETED",subject,topic,100,0,"Student marked this revision as reviewed.",
-                "REVISION_COMPLETED:"+u.getId()+":"+subject+":"+topic+":"+todayIst);
+        String subject = body == null ? "" : String.valueOf(body.getOrDefault("subject","")).trim();
+        String topic = body == null ? "Quiz mastery" : String.valueOf(body.getOrDefault("topic","Quiz mastery")).trim();
+        if (subject.isBlank() || subject.length() > 120) {
+            throw new IllegalArgumentException("A valid course subject is required for revision completion");
+        }
+        if (topic.isBlank()) topic = "Quiz mastery";
+        if (topic.length() > 180) topic = topic.substring(0, 180);
+        String subjectLower = subject.toLowerCase(Locale.ROOT);
+        boolean validSubject = admin || courses.findAll().stream()
+                .filter(Course::isPublished)
+                .anyMatch(c -> c.getTitle() != null && c.getTitle().trim().toLowerCase(Locale.ROOT).equals(subjectLower));
+        if (!validSubject) {
+            throw new IllegalArgumentException("Revision subject must match an available published course");
+        }
+        ZoneId ist = ZoneId.of("Asia/Kolkata");
+        LocalDate todayIst = LocalDate.now(ist);
+        LocalDateTime startOfToday = todayIst.atStartOfDay(ist).withZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime();
+        long todayRevisions = events.countByUserIdAndTypeInAndCreatedAtGreaterThanEqual(
+                userId, List.of("REVISION_COMPLETED"), startOfToday);
+        boolean saved = false;
+        boolean capped = todayRevisions >= 3;
+        if (!capped) {
+            saved = eventService.recordIfAbsent(
+                    u, "REVISION_COMPLETED", subject, topic, 100, 0,
+                    "Student marked this revision as reviewed.",
+                    "REVISION_COMPLETED:" + u.getId() + ":" + subjectLower + ":" + topic.toLowerCase(Locale.ROOT) + ":" + todayIst);
+        }
         int accuracy=0;
         List<QuizAttempt> subjectAttempts=attempts.findTop200ByUserIdOrderBySubmittedAtDesc(userId).stream()
-                .filter(a->a.getCourse()!=null && Objects.equals(a.getCourse().getTitle(),subject)).toList();
+                .filter(a->a.getCourse()!=null && (admin || a.getCourse().isPublished()) && Objects.equals(a.getCourse().getTitle(),subject)).toList();
         if(!subjectAttempts.isEmpty()){
             int total=subjectAttempts.stream().mapToInt(QuizAttempt::getTotal).sum();
             int correct=subjectAttempts.stream().mapToInt(QuizAttempt::getCorrect).sum();
@@ -190,7 +227,7 @@ public class AdaptiveController {
         }
         int interval=reviewInterval(accuracy,0);
         String nextReview=todayIst.plusDays(interval).toString();
-        return Map.of("success",true,"message","Revision recorded. Nova will schedule the next review from this session.","interval",interval+" day"+(interval==1?"":"s"),"nextReview",nextReview);
+        return Map.of("success",true,"saved",saved,"capped",capped,"message",capped?"Daily revision XP cap reached. Review schedule updated.":"Revision recorded. Nova will schedule the next review from this session.","interval",interval+" day"+(interval==1?"":"s"),"nextReview",nextReview);
     }
 
     @PostMapping("/{userId}/answer")

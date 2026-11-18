@@ -15,8 +15,8 @@ import java.util.stream.*;
 @RestController
 @RequestMapping("/api/intelligence")
 public class IntelligenceController {
- private final LearningEventRepository events; private final QuizAttemptRepository attempts; private final UserRepository users; private final AuthenticatedUser authenticatedUser; private final LearningEventService eventService; private final LearningEventAnalyticsService analytics;
- public IntelligenceController(LearningEventRepository e,QuizAttemptRepository a,UserRepository u, AuthenticatedUser au, LearningEventService eventService, LearningEventAnalyticsService analytics){events=e;attempts=a;users=u;authenticatedUser=au;this.eventService=eventService;this.analytics=analytics;}
+ private final LearningEventRepository events; private final QuizAttemptRepository attempts; private final UserRepository users; private final CourseRepository courses; private final AuthenticatedUser authenticatedUser; private final LearningEventService eventService; private final LearningEventAnalyticsService analytics;
+ public IntelligenceController(LearningEventRepository e,QuizAttemptRepository a,UserRepository u, CourseRepository courses, AuthenticatedUser au, LearningEventService eventService, LearningEventAnalyticsService analytics){events=e;attempts=a;users=u;this.courses=courses;authenticatedUser=au;this.eventService=eventService;this.analytics=analytics;}
  public record EventRequest(String type,String subject,String topic,Integer score,Integer durationSeconds,String details){}
  public record WeakArea(String subject,String topic,int attempts,int correct,int accuracy,String reason){}
  public record Recommendation(String type,String title,String description,String action,String target){ }
@@ -26,25 +26,47 @@ public class IntelligenceController {
  @PostMapping("/{userId}/events")
  public Map<String,Object> event(@PathVariable Long userId,@RequestBody EventRequest req, Authentication authentication){
    authenticatedUser.requireSame(authentication,userId);
+   boolean admin = authenticatedUser.isAdmin(authentication);
    User u=users.findById(userId).orElseThrow();
    if(req==null||req.type()==null||req.type().isBlank()) throw new IllegalArgumentException("Learning event type is required");
+   if(req.score()!=null && (req.score()<0 || req.score()>100)) throw new IllegalArgumentException("Score must be between 0 and 100");
+   if(req.durationSeconds()!=null && req.durationSeconds()<0) throw new IllegalArgumentException("Duration cannot be negative");
    String type=req.type().trim().toUpperCase(Locale.ROOT);
    if(!Set.of("DPP_COMPLETED","STUDY_SPRINT_COMPLETED","STUDY_SESSION_COMPLETED").contains(type)) throw new IllegalArgumentException("Unsupported client learning event type");
+   String cleanedSubject = clean(req.subject(), 120);
+   String cleanedTopic = clean(req.topic(), 180);
+   ZoneId ist = ZoneId.of("Asia/Kolkata");
+   LocalDateTime startOfToday = LocalDate.now(ist).atStartOfDay(ist).withZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime();
    if (Set.of("STUDY_SPRINT_COMPLETED", "STUDY_SESSION_COMPLETED").contains(type)) {
-     LocalDate todayIst = LocalDate.now(ZoneId.of("Asia/Kolkata"));
-     long todaySelfReported = events.findTop200ByUserIdOrderByCreatedAtDesc(userId).stream()
-             .filter(e -> Set.of("STUDY_SPRINT_COMPLETED", "STUDY_SESSION_COMPLETED").contains(e.getType()))
-             .filter(e -> e.getCreatedAt() != null && e.getCreatedAt().atZone(ZoneId.systemDefault()).withZoneSameInstant(ZoneId.of("Asia/Kolkata")).toLocalDate().equals(todayIst))
-             .count();
+     long todaySelfReported = events.countByUserIdAndTypeInAndCreatedAtGreaterThanEqual(
+             userId, List.of("STUDY_SPRINT_COMPLETED", "STUDY_SESSION_COMPLETED"), startOfToday);
      if (todaySelfReported >= 6) {
+       return Map.of("saved", false, "type", type, "capped", true);
+     }
+   } else if ("DPP_COMPLETED".equals(type)) {
+     if (cleanedSubject == null) {
+       throw new IllegalArgumentException("Course subject is required for DPP completion");
+     }
+     String subLower = cleanedSubject.toLowerCase(Locale.ROOT);
+     boolean validDppSubject = admin
+             || "course practice".equals(subLower)
+             || courses.findAll().stream()
+                .filter(Course::isPublished)
+                .anyMatch(c -> c.getTitle() != null && c.getTitle().trim().toLowerCase(Locale.ROOT).equals(subLower));
+     if (!validDppSubject) {
+       throw new IllegalArgumentException("DPP subject must match an available published course");
+     }
+     long todayDpp = events.countByUserIdAndTypeInAndCreatedAtGreaterThanEqual(
+             userId, List.of("DPP_COMPLETED"), startOfToday);
+     if (todayDpp >= 4) {
        return Map.of("saved", false, "type", type, "capped", true);
      }
    }
    String details=clean(req.details(),1000);
-   int score=req.score()==null?0:Math.max(0,Math.min(100,req.score()));
-   String dedupeKey=eventDedupeKey(type, u.getId(), req.subject(), req.topic(), details);
-   eventService.record(u,type,clean(req.subject(),120),clean(req.topic(),180),score,safeDuration(req.durationSeconds()),details,dedupeKey);
-   return Map.of("saved",true,"type",type);
+   int score=req.score()==null?0:req.score();
+   String dedupeKey=eventDedupeKey(type, u.getId(), cleanedSubject, cleanedTopic, details);
+   boolean saved = eventService.recordIfAbsent(u,type,cleanedSubject,cleanedTopic,score,safeDuration(req.durationSeconds()),details,dedupeKey);
+   return Map.of("saved",saved,"type",type,"duplicate",!saved);
  }
  @GetMapping("/{userId}") @Transactional(readOnly=true)
  public MemoryView memory(@PathVariable Long userId, Authentication authentication){

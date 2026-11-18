@@ -19,6 +19,7 @@ public interface LearningEventRepository extends JpaRepository<LearningEvent,Lon
     void deleteByUserId(@org.springframework.data.repository.query.Param("userId") Long userId);
     long countByUserIdAndType(Long userId,String type);
     long countByUserIdAndTypeAndScoreGreaterThanEqual(Long userId,String type,Integer score);
+    long countByUserIdAndTypeInAndCreatedAtGreaterThanEqual(Long userId, Collection<String> types, LocalDateTime since);
     Optional<LearningEvent> findByUserIdAndDedupeKey(Long userId,String dedupeKey);
 
     @Modifying

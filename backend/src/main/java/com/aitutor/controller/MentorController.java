@@ -32,18 +32,24 @@ public class MentorController {
     private final UserRepository users;
     private final AuthenticatedUser authenticatedUser;
     /** Strictly bounded pool and queue: rejects overflow with 503 instead of exhausting heap/threads. */
-    private final ExecutorService streamExecutor = new ThreadPoolExecutor(
-            4, 16, 60L, TimeUnit.SECONDS,
-            new ArrayBlockingQueue<>(32),
-            r -> { Thread t = new Thread(r, "nova-mentor-stream"); t.setDaemon(true); return t; },
-            new ThreadPoolExecutor.AbortPolicy());
+    private final ExecutorService streamExecutor;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public MentorController(AiService ai, LessonRepository lessons, ProgressRepository progress, UserRepository users, AuthenticatedUser authenticatedUser) {
+        this(ai, lessons, progress, users, authenticatedUser, new ThreadPoolExecutor(
+                4, 16, 60L, TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(32),
+                r -> { Thread t = new Thread(r, "nova-mentor-stream"); t.setDaemon(true); return t; },
+                new ThreadPoolExecutor.AbortPolicy()));
+    }
+
+    MentorController(AiService ai, LessonRepository lessons, ProgressRepository progress, UserRepository users, AuthenticatedUser authenticatedUser, ExecutorService streamExecutor) {
         this.ai = ai;
         this.lessons = lessons;
         this.progress = progress;
         this.users = users;
         this.authenticatedUser = authenticatedUser;
+        this.streamExecutor = streamExecutor;
     }
 
     @PreDestroy

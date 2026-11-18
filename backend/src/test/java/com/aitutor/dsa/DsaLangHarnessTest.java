@@ -122,6 +122,7 @@ class DsaLangHarnessTest {
         String goCode = """
                 package main
                 import "sort"
+                import str "strings"
                 import (
                     "fmt"
                     "math"
@@ -129,6 +130,7 @@ class DsaLangHarnessTest {
                 )
                 func solve(nums []int) int {
                     sort.Ints(nums)
+                    _ = str.TrimSpace("x")
                     return int(math.Abs(float64(len(nums))))
                 }
                 """;
@@ -139,10 +141,12 @@ class DsaLangHarnessTest {
         String topBlock = gh.substring(0, importBlockEnd + 1);
         String userSection = gh.substring(userStart);
         assertTrue(topBlock.contains("\"sort\""), "User single import must be hoisted");
+        assertTrue(topBlock.contains("str \"strings\""), "Multi-char Go import alias must be hoisted");
         assertTrue(topBlock.contains("\"math\""), "User block import must be hoisted");
         // Deduplicated: "fmt" must appear only once in the import block
         assertEquals(topBlock.indexOf("\"fmt\""), topBlock.lastIndexOf("\"fmt\""), "Duplicate fmt import must be deduplicated");
         assertFalse(userSection.contains("import \"sort\""), "Hoisted imports must be removed from user body");
+        assertFalse(userSection.contains("import str \"strings\""), "Hoisted aliased import must be removed from user body");
         assertFalse(userSection.contains("import ("), "Hoisted import blocks must be removed from user body");
     }
 

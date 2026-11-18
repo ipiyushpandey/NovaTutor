@@ -250,16 +250,16 @@ public class SandboxExecutionService {
                 "--memory",memoryMb+"m","--memory-swap",memoryMb+"m",
                 "--pids-limit","64","--ulimit","nofile=256:256",
                 "--security-opt","no-new-privileges","--cap-drop","ALL",
-                "--read-only","--tmpfs","/tmp:rw,nosuid,size=64m",
+                "--read-only","--tmpfs","/tmp:rw,nosuid,mode=1777,size=64m",
                 "-e","HOME=/tmp","-e","GOCACHE=/tmp/.cache","-e","GOPATH=/tmp/go",
                 "-v",mount+":/workspace:ro","-w","/tmp",image));
         switch(lang){
-            case "java"->base.addAll(List.of("sh","-lc","javac -d /tmp /workspace/Main.java || exit 99; exec java -cp /tmp Main"));
+            case "java"->base.addAll(List.of("sh","-c","javac -d /tmp /workspace/Main.java || exit 99; exec java -cp /tmp Main"));
             case "python"->base.addAll(List.of("python","/workspace/main.py"));
             case "javascript"->base.addAll(List.of("node","/workspace/main.js"));
-            case "go"->base.addAll(List.of("sh","-lc","go build -o /tmp/a.out /workspace/main.go || exit 99; exec /tmp/a.out"));
-            case "c++"->base.addAll(List.of("sh","-lc","g++ -std=c++20 -O2 /workspace/main.c -o /tmp/a.out || exit 99; exec /tmp/a.out"));
-            default->base.addAll(List.of("sh","-lc","gcc -std=c17 -O2 /workspace/main.c -o /tmp/a.out || exit 99; exec /tmp/a.out"));
+            case "go"->base.addAll(List.of("sh","-c","go build -o /tmp/a.out /workspace/main.go || exit 99; exec /tmp/a.out"));
+            case "c++"->base.addAll(List.of("sh","-c","g++ -std=c++20 -O2 /workspace/main.c -o /tmp/a.out || exit 99; exec /tmp/a.out"));
+            default->base.addAll(List.of("sh","-c","gcc -std=c17 -O2 /workspace/main.c -o /tmp/a.out || exit 99; exec /tmp/a.out"));
         }
         return base;
     }

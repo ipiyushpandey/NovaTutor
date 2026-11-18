@@ -43,6 +43,9 @@ class Wave2BackendFunctionalTest {
     @Autowired CourseRepository courses;
     @Autowired LessonRepository lessons;
     @Autowired QuizAttemptRepository attempts;
+    @Autowired com.aitutor.quiz.QuizQuestionRepository quizQuestions;
+    @Autowired com.aitutor.intelligence.LearningEventRepository learningEvents;
+    @Autowired com.fasterxml.jackson.databind.ObjectMapper objectMapper;
     @Autowired PasswordEncoder encoder;
     @Autowired JwtService jwt;
 
@@ -270,14 +273,238 @@ class Wave2BackendFunctionalTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error", is("CODE_TOO_LARGE")));
 
-        // Verify Docker sandbox command enforces non-root user, read-only workspace, Go cache in /tmp, and compile exit code 99
+        // Verify Docker sandbox command enforces non-root user, read-only workspace, Go cache in /tmp, non-login sh -c, and compile exit code 99
         SandboxExecutionService svc = new SandboxExecutionService(
                 true, 5, 256, "eclipse-temurin:21-jdk", "python:3.12-alpine", "gcc:14", "node:22-alpine",
                 "golang:1.24-alpine", "docker", null);
+        for (String lang : java.util.List.of("java", "go", "c++", "c")) {
+            var cmd = svc.command(lang, "main." + (lang.equals("java") ? "java" : lang.equals("go") ? "go" : "c"), java.nio.file.Path.of("/tmp/demo"));
+            assertTrue(cmd.contains("--user") && cmd.contains("65534:65534"), lang + ": Docker must run as non-root user");
+            assertTrue(cmd.contains("/tmp:rw,nosuid,mode=1777,size=64m"), lang + ": tmpfs must declare mode=1777");
+            assertTrue(cmd.stream().anyMatch(s -> s.endsWith(":/workspace:ro")), lang + ": Workspace mount must be read-only");
+            assertTrue(cmd.contains("-c"), lang + ": must invoke non-login sh -c so image PATH is preserved");
+            assertFalse(cmd.contains("-lc"), lang + ": must NOT invoke login sh -lc which wipes PATH in Java/Go images");
+            assertTrue(cmd.get(cmd.size() - 1).contains("exit 99"), lang + ": compiled language must distinguish COMPILE_ERROR via exit 99");
+        }
         var goCmd = svc.command("go", "main.go", java.nio.file.Path.of("/tmp/demo"));
-        assertTrue(goCmd.contains("--user") && goCmd.contains("65534:65534"), "Docker must run as non-root user");
         assertTrue(goCmd.contains("GOCACHE=/tmp/.cache"), "Go cache must be directed to writable /tmp");
-        assertTrue(goCmd.stream().anyMatch(s -> s.endsWith(":/workspace:ro")), "Workspace mount must be read-only");
-        assertTrue(goCmd.get(goCmd.size() - 1).contains("exit 99"), "Compiled languages must distinguish COMPILE_ERROR via exit 99");
+    }
+
+    @Test
+    void adaptiveAiQuestionWithExistingQuizAttemptDoesNotThrowLazyInit500() throws Exception {
+        User student = createUser("adaptlazy", "STUDENT");
+        String token = jwt.token(student);
+        Course c = new Course("Adaptive Eager Course", "Desc", "Intermediate", "⚡");
+        c.setPublished(true);
+        c = courses.save(c);
+        QuizAttempt qa = new QuizAttempt(student, c, 2, 1, 50, "99");
+        attempts.save(qa);
+
+        // Previously threw HTTP 500 LazyInitializationException at a.getCourse().getTitle() when open-in-view=false.
+        // With @EntityGraph on QuizAttemptRepository, it reads course title cleanly before reaching aiProvider.available() -> 503.
+        mvc.perform(post("/api/adaptive/" + student.getId() + "/ai-question")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.error", is("AI_UNAVAILABLE")));
+    }
+
+    @Test
+    void sseErrorsReturnRealHttp503And400EvenWithAcceptTextEventStreamOnly() throws Exception {
+        User student = createUser("sse406", "STUDENT");
+        String token = jwt.token(student);
+
+        // 1. Null task with Accept: text/event-stream must return 400 JSON (NOT 406 Not Acceptable!)
+        mvc.perform(post("/api/ai/ask/stream")
+                        .header("Authorization", "Bearer " + token)
+                        .header("Accept", MediaType.TEXT_EVENT_STREAM_VALUE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"topic\":\"DSA\",\"message\":\"Hi\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error", is("INVALID_AI_REQUEST")));
+
+        // 2. Saturated bounded executor must return HTTP 503 AI_BUSY JSON (NOT 406!) even when Accept is strictly text/event-stream
+        java.util.concurrent.ExecutorService rejectingPool = new java.util.concurrent.ThreadPoolExecutor(
+                1, 1, 0L, java.util.concurrent.TimeUnit.SECONDS,
+                new java.util.concurrent.SynchronousQueue<>(),
+                new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
+        java.util.concurrent.CountDownLatch hold = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch started = new java.util.concurrent.CountDownLatch(1);
+        rejectingPool.execute(() -> {
+            started.countDown();
+            try { hold.await(5, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+        });
+        assertTrue(started.await(2, java.util.concurrent.TimeUnit.SECONDS));
+        try {
+            com.aitutor.service.AiService stubAi = new com.aitutor.service.AiService(java.util.List.of());
+            AiController saturated = new AiController(stubAi, java.util.List.of(), new com.aitutor.ai.AiMetrics(), rejectingPool);
+            MockMvc standalone = org.springframework.test.web.servlet.setup.MockMvcBuilders
+                    .standaloneSetup(saturated)
+                    .setControllerAdvice(new GlobalExceptionHandler(objectMapper))
+                    .build();
+
+            standalone.perform(post("/api/ai/ask/stream")
+                            .header("Accept", MediaType.TEXT_EVENT_STREAM_VALUE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"task\":\"TUTOR\",\"topic\":\"DSA\",\"message\":\"Explain BFS\"}"))
+                    .andExpect(status().isServiceUnavailable())
+                    .andExpect(jsonPath("$.error", is("AI_BUSY")));
+        } finally {
+            hold.countDown();
+            rejectingPool.shutdownNow();
+        }
+    }
+
+    @Test
+    void adaptiveShownBlocksDraftLeaksAndAntiXpFarmingCapsArePermanentAndIdempotent() throws Exception {
+        User student = createUser("antifarm", "STUDENT");
+        String token = jwt.token(student);
+
+        Course pub = new Course("Published AntiFarm Course", "Desc", "Beginner", "📘");
+        pub.setPublished(true);
+        pub = courses.save(pub);
+        Course draft = new Course("Secret Draft AntiFarm Course", "Desc", "Advanced", "🔒");
+        draft.setPublished(false);
+        draft = courses.save(draft);
+
+        com.aitutor.quiz.QuizQuestion pubQ = new com.aitutor.quiz.QuizQuestion();
+        pubQ.setCourse(pub); pubQ.setQuestion("Pub Q?"); pubQ.setOptionA("A"); pubQ.setOptionB("B"); pubQ.setOptionC("C"); pubQ.setOptionD("D"); pubQ.setCorrectOption(0); pubQ.setExplanation("Exp"); pubQ.setDifficulty("Easy");
+        pubQ = quizQuestions.save(pubQ);
+        com.aitutor.quiz.QuizQuestion draftQ = new com.aitutor.quiz.QuizQuestion();
+        draftQ.setCourse(draft); draftQ.setQuestion("Draft Q?"); draftQ.setOptionA("A"); draftQ.setOptionB("B"); draftQ.setOptionC("C"); draftQ.setOptionD("D"); draftQ.setCorrectOption(0); draftQ.setExplanation("Exp"); draftQ.setDifficulty("Hard");
+        draftQ = quizQuestions.save(draftQ);
+
+        // 1. /shown must ignore draft question IDs, reject negatives, and deduplicate repeated published IDs
+        mvc.perform(post("/api/adaptive/" + student.getId() + "/shown")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"questionIds\":[" + draftQ.getId() + ",-5," + pubQ.getId() + "," + pubQ.getId() + "]}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.recorded", is(1)));
+
+        mvc.perform(get("/api/intelligence/" + student.getId()).header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(content().string(not(containsString("Secret Draft AntiFarm Course"))));
+
+        // 2. /revision-complete must reject fabricated subjects & draft courses and enforce permanent 3/day cap
+        mvc.perform(post("/api/adaptive/" + student.getId() + "/revision-complete")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"subject\":\"Fabricated Farm Subject\",\"topic\":\"T1\"}"))
+                .andExpect(status().isBadRequest());
+
+        mvc.perform(post("/api/adaptive/" + student.getId() + "/revision-complete")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"subject\":\"Secret Draft AntiFarm Course\",\"topic\":\"T1\"}"))
+                .andExpect(status().isBadRequest());
+
+        for (int i = 1; i <= 3; i++) {
+            mvc.perform(post("/api/adaptive/" + student.getId() + "/revision-complete")
+                            .header("Authorization", "Bearer " + token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"subject\":\"Published AntiFarm Course\",\"topic\":\"RevTopic" + i + "\"}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.saved", is(true)))
+                    .andExpect(jsonPath("$.capped", is(false)));
+        }
+        // 4th revision on the same day must be capped (no XP awarded)
+        mvc.perform(post("/api/adaptive/" + student.getId() + "/revision-complete")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"subject\":\"Published AntiFarm Course\",\"topic\":\"RevTopic4\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.saved", is(false)))
+                .andExpect(jsonPath("$.capped", is(true)));
+
+        // 3. /intelligence/events must reject negative score/duration, fabricated DPP subjects, and enforce permanent 4/day DPP cap & 6/day study cap
+        mvc.perform(post("/api/intelligence/" + student.getId() + "/events")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"DPP_COMPLETED\",\"subject\":\"Published AntiFarm Course\",\"topic\":\"T\",\"score\":-10}"))
+                .andExpect(status().isBadRequest());
+
+        mvc.perform(post("/api/intelligence/" + student.getId() + "/events")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"STUDY_SPRINT_COMPLETED\",\"subject\":\"Nova Focus\",\"topic\":\"T\",\"durationSeconds\":-5}"))
+                .andExpect(status().isBadRequest());
+
+        mvc.perform(post("/api/intelligence/" + student.getId() + "/events")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"DPP_COMPLETED\",\"subject\":\"Arbitrary Fake Subject\",\"topic\":\"T\",\"score\":100}"))
+                .andExpect(status().isBadRequest());
+
+        for (int i = 1; i <= 4; i++) {
+            mvc.perform(post("/api/intelligence/" + student.getId() + "/events")
+                            .header("Authorization", "Bearer " + token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"type\":\"DPP_COMPLETED\",\"subject\":\"Published AntiFarm Course\",\"topic\":\"DPP" + i + "\",\"score\":90}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.saved", is(true)));
+        }
+        // Replay of DPP1 is idempotent / capped; 5th distinct DPP is capped at 4/day
+        mvc.perform(post("/api/intelligence/" + student.getId() + "/events")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"DPP_COMPLETED\",\"subject\":\"Published AntiFarm Course\",\"topic\":\"DPP5\",\"score\":100}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.saved", is(false)))
+                .andExpect(jsonPath("$.capped", is(true)));
+
+        // Study sprint 6/day cap backed by permanent DB count query
+        for (int i = 1; i <= 6; i++) {
+            mvc.perform(post("/api/intelligence/" + student.getId() + "/events")
+                            .header("Authorization", "Bearer " + token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"type\":\"STUDY_SPRINT_COMPLETED\",\"subject\":\"Sprint" + i + "\",\"topic\":\"Focus\",\"durationSeconds\":1500}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.saved", is(true)));
+        }
+        mvc.perform(post("/api/intelligence/" + student.getId() + "/events")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"STUDY_SPRINT_COMPLETED\",\"subject\":\"Sprint7\",\"topic\":\"Focus\",\"durationSeconds\":1500}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.saved", is(false)))
+                .andExpect(jsonPath("$.capped", is(true)));
+    }
+
+    @Test
+    void localJavaHarnessCompilesAndExecutesCleanlyWithJavac() throws Exception {
+        String javaHome = System.getProperty("java.home");
+        java.nio.file.Path javac = java.nio.file.Path.of(javaHome, "bin", "javac");
+        java.nio.file.Path javaBin = java.nio.file.Path.of(javaHome, "bin", "java");
+        assertTrue(java.nio.file.Files.isExecutable(javac), "JDK javac must be available for local compile verification");
+
+        String harness = com.aitutor.dsa.DsaLang.JAVA.harness(
+                com.aitutor.dsa.DsaSig.A2I,
+                "public final class Solution { public static int solve(int[] a) { int s = 0; for (int x : a) s += x; return s; } }");
+        java.nio.file.Path dir = java.nio.file.Files.createTempDirectory("nova-java-test-");
+        try {
+            java.nio.file.Path src = dir.resolve("Main.java");
+            java.nio.file.Files.writeString(src, harness);
+            Process compile = new ProcessBuilder(javac.toString(), "-d", dir.toString(), src.toString())
+                    .redirectErrorStream(true).start();
+            String compileOut = new String(compile.getInputStream().readAllBytes());
+            assertTrue(compile.waitFor(15, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(0, compile.exitValue(), "javac failed: " + compileOut);
+
+            Process run = new ProcessBuilder(javaBin.toString(), "-cp", dir.toString(), "Main")
+                    .redirectErrorStream(true).start();
+            try (var os = run.getOutputStream()) {
+                os.write("2,4,6,8\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+            String runOut = new String(run.getInputStream().readAllBytes()).trim();
+            assertTrue(run.waitFor(10, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(0, run.exitValue(), "java run failed: " + runOut);
+            assertEquals("20", runOut, "Expected exact sum 20 from compiled Java harness");
+        } finally {
+            try (var walk = java.nio.file.Files.walk(dir)) {
+                walk.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
+                    try { java.nio.file.Files.deleteIfExists(p); } catch (Exception ignored) {}
+                });
+            }
+        }
     }
 }

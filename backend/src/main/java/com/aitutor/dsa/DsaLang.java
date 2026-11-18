@@ -693,7 +693,7 @@ public enum DsaLang {
                 inImportBlock = true;
                 continue;
             }
-            if (trimmed.matches("^import\\s+(?:[A-Za-z0-9_.]\\s+)?\"[^\"]+\"\\s*;?\\s*(?://.*)?$")) {
+            if (trimmed.matches("^import\\s+(?:[A-Za-z0-9_.]+\\s+)?\"[^\"]+\"\\s*;?\\s*(?://.*)?$")) {
                 int commentIdx = trimmed.indexOf("//");
                 String spec = (commentIdx >= 0 ? trimmed.substring(0, commentIdx) : trimmed)
                         .replaceFirst("^import\\s+", "").replaceAll(";\\s*$", "").trim();
