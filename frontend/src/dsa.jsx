@@ -65,7 +65,7 @@ export default function DsaPractice({user,api,routeSlug=null,onRouteSlug=null}){
     return (problems||[]).filter(p=>{
       if(diff!=='ALL'&&diffKey(p.difficulty)!==diff)return false;
       if(topic!=='ALL'&&p.topic!==topic)return false;
-      if(needle&&!(p.title.toLowerCase().includes(needle)||p.slug.includes(needle)||(p.tags||[]).join(',').includes(needle)))return false;
+      if(needle&&!(p.title.toLowerCase().includes(needle)||p.slug.includes(needle)||(p.tags||[]).join(',').toLowerCase().includes(needle)))return false;
       if(status!=='ALL'){
         const st=(progress[p.slug]||{}).status||'NEW';
         if(status==='BOOKMARKED'&&!(progress[p.slug]||{}).bookmarked)return false;
@@ -207,37 +207,69 @@ function DsaProblemView({user,api,slug,saved,onBack,onProgress}){
   const lastSavedRef=useRef('');
   const userEditedRef=useRef(false);
   const langSeqRef=useRef(0);
+  const codeSourceRef=useRef('none'); // 'none' | 'starter' | 'saved' | 'draft' | 'user'
+  const savedAppliedRef=useRef(false);
   const userScope=user?.id||'guest';
 
-  // Sync bookmark and saved language/code when async progress arrives after deep-link mount.
+  // Sync bookmark and restore saved language/code when async progress arrives after direct-link mount.
+  // Precedence: user edit > local draft (for savedLang) > saved server lastCode > starter code.
   useEffect(()=>{
     if(!saved)return;
     setBookmarked(Boolean(saved.bookmarked));
+    if(savedAppliedRef.current||userEditedRef.current)return;
     const savedLang=normalizeSavedLang(saved.lastLanguage);
-    if(!userEditedRef.current&&savedLang&&saved.lastCode){
-      const draft=localStorage.getItem(`dsa_code_${userScope}_${slug}_${savedLang}`);
-      if(draft===null){
-        setLang(savedLang);
-        setCode(saved.lastCode);
-        setCodeByLang(m=>({...m,[savedLang]:saved.lastCode}));
-      }
+    if(!savedLang)return;
+    savedAppliedRef.current=true;
+    const seq=++langSeqRef.current; // cancels any in-flight initial starter fetch
+    const draft=localStorage.getItem(`dsa_code_${userScope}_${slug}_${savedLang}`);
+    if(draft!==null){
+      codeSourceRef.current='draft';
+      setLang(savedLang);
+      setCode(draft);
+      setCodeByLang(m=>({...m,[savedLang]:draft}));
+      return;
     }
+    if(saved.lastCode){
+      codeSourceRef.current='saved';
+      setLang(savedLang);
+      setCode(saved.lastCode);
+      setCodeByLang(m=>({...m,[savedLang]:saved.lastCode}));
+      return;
+    }
+    // Saved language known with no draft/lastCode: switch language and load its starter cleanly.
+    setLang(savedLang);
+    api(`/dsa/problems/${slug}/starter?language=${encodeURIComponent(savedLang)}`).then(s=>{
+      if(langSeqRef.current!==seq||userEditedRef.current)return;
+      if(s&&s.code){codeSourceRef.current='starter';setCode(s.code);setCodeByLang(m=>({...m,[savedLang]:s.code}));}
+    }).catch(()=>{});
   },[saved,slug,userScope]);
 
   // Load problem detail + restore/fetch code for the initial language.
   useEffect(()=>{
     let dead=false;
+    const seq=++langSeqRef.current;
     (async()=>{
       try{
         const p=await api(`/dsa/problems/${slug}`);
         if(dead)return;
         setProblem(p);
-        const draft=localStorage.getItem(`dsa_code_${userScope}_${slug}_${lang}`);
-        if(draft!==null){setCode(draft);}
-        else if(normalizeSavedLang(saved?.lastLanguage)===lang&&saved?.lastCode){setCode(saved.lastCode);}
-        else{
-          const s=await api(`/dsa/problems/${slug}/starter?language=${encodeURIComponent(lang)}`);
-          if(!dead&&!userEditedRef.current&&s&&s.code)setCode(s.code);
+        if(userEditedRef.current||codeSourceRef.current==='draft'||codeSourceRef.current==='saved'||langSeqRef.current!==seq)return;
+        const startLang=normalizeSavedLang(saved?.lastLanguage)||lang;
+        const draft=localStorage.getItem(`dsa_code_${userScope}_${slug}_${startLang}`);
+        if(draft!==null){
+          codeSourceRef.current='draft';
+          if(startLang!==lang)setLang(startLang);
+          setCode(draft);
+          setCodeByLang(m=>({...m,[startLang]:draft}));
+        }else if(normalizeSavedLang(saved?.lastLanguage)===startLang&&saved?.lastCode){
+          codeSourceRef.current='saved';
+          if(startLang!==lang)setLang(startLang);
+          setCode(saved.lastCode);
+          setCodeByLang(m=>({...m,[startLang]:saved.lastCode}));
+        }else{
+          const s=await api(`/dsa/problems/${slug}/starter?language=${encodeURIComponent(startLang)}`);
+          if(dead||langSeqRef.current!==seq||userEditedRef.current||codeSourceRef.current!=='none')return;
+          if(s&&s.code){codeSourceRef.current='starter';setCode(s.code);setCodeByLang(m=>({...m,[startLang]:s.code}));}
         }
       }catch(e){if(!dead)setLoadErr(String(e.message||e));}
     })();
@@ -250,6 +282,7 @@ function DsaProblemView({user,api,slug,saved,onBack,onProgress}){
   const switchLang=useCallback(async(next)=>{
     const seq=++langSeqRef.current;
     userEditedRef.current=true;
+    codeSourceRef.current='user';
     setLang(next);
     setResult(null);
     const draft=localStorage.getItem(`dsa_code_${userScope}_${slug}_${next}`);
@@ -273,6 +306,7 @@ function DsaProblemView({user,api,slug,saved,onBack,onProgress}){
 
   const onEdit=useCallback(text=>{
     userEditedRef.current=true;
+    codeSourceRef.current='user';
     setCode(text);
     setCodeByLang(m=>({...m,[lang]:text}));
     try{localStorage.setItem(draftKey,text);}catch(e){}
@@ -364,7 +398,7 @@ function DsaProblemView({user,api,slug,saved,onBack,onProgress}){
             <select aria-label="Language" value={lang} onChange={e=>switchLang(e.target.value)}>
               {LANGS.map(l=><option key={l[0]} value={l[0]} disabled={l[0]==='c'&&!problem.cSupported}>{l[1]}{l[0]==='c'&&!problem.cSupported?' (n/a)':''}</option>)}
             </select>
-            <button className="text-btn" onClick={async()=>{const s=await api(`/dsa/problems/${slug}/starter?language=${encodeURIComponent(lang)}`);if(s&&s.code)onEdit(s.code);}}>Reset starter</button>
+            <button className="text-btn" onClick={async()=>{const seq=++langSeqRef.current;const s=await api(`/dsa/problems/${slug}/starter?language=${encodeURIComponent(lang)}`);if(langSeqRef.current===seq&&s&&s.code)onEdit(s.code);}}>Reset starter</button>
           </div>
         </div>
         <textarea spellCheck={false} value={code} onChange={e=>onEdit(e.target.value)}

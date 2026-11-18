@@ -86,12 +86,13 @@ test('api.js retries idempotent GET on transient 503 and does NOT retry POST on 
   assert.equal(postCalls, 1);
 });
 
-test('apiStream respects AbortSignal, strips single WHATWG SSE leading space, and refreshes once on 401', async () => {
+test('apiStream respects AbortSignal, parses WHATWG SSE (leading space, multiline, bare done token), sends JSON fallback Accept, and refreshes once on 401', async () => {
   setupBrowserGlobals();
   globalThis.localStorage.setItem('ai_user', JSON.stringify({ id: 7, token: 'expired-jwt' }));
 
   let streamCalls = 0;
   let refreshCalls = 0;
+  let seenAccept = '';
 
   globalThis.fetch = async (url, init) => {
     if (String(url).endsWith('/auth/me')) {
@@ -101,6 +102,7 @@ test('apiStream respects AbortSignal, strips single WHATWG SSE leading space, an
         headers: { 'Content-Type': 'application/json' },
       });
     }
+    seenAccept = init?.headers?.Accept || '';
     streamCalls += 1;
     if (streamCalls === 1) {
       return new Response(JSON.stringify({ message: 'Expired' }), { status: 401 });
@@ -109,8 +111,9 @@ test('apiStream respects AbortSignal, strips single WHATWG SSE leading space, an
     const stream = new ReadableStream({
       start(controller) {
         controller.enqueue(encoder.encode('data: Hello \n\n'));
-        controller.enqueue(encoder.encode('data:  Indented\n\n'));
-        controller.enqueue(encoder.encode('event: done\ndata: done\n\n'));
+        controller.enqueue(encoder.encode('data: done\n\n')); // bare LLM token "done" (message event, MUST NOT be dropped!)
+        controller.enqueue(encoder.encode('data:  Line1\ndata: Line2\n\n')); // 2nd space preserved + multiline joined
+        controller.enqueue(encoder.encode('event: done\ndata: done\n\n')); // real completion event
         controller.close();
       },
     });
@@ -127,8 +130,10 @@ test('apiStream respects AbortSignal, strips single WHATWG SSE leading space, an
   });
   assert.equal(refreshCalls, 1);
   assert.equal(streamCalls, 2);
-  // Single space after "data:" stripped per WHATWG SSE spec; second space preserved.
-  assert.equal(collected, 'Hello  Indented');
+  assert.match(seenAccept, /text\/event-stream/);
+  assert.match(seenAccept, /application\/json/);
+  // Single space stripped per WHATWG SSE spec; bare "done" token preserved; multiline joined with \n; event:done completes cleanly.
+  assert.equal(collected, 'Hello done Line1\nLine2');
 
   // Verify pre-aborted AbortSignal aborts cleanly without throwing a generic error
   const ac = new AbortController();
@@ -194,11 +199,17 @@ test('security & stabilization source invariants hold across frontend files', ()
   const stylesCss = fs.readFileSync(path.join(SRC_DIR, 'styles.css'), 'utf8');
   const gateCseJsx = fs.readFileSync(path.join(SRC_DIR, 'gateCse.jsx'), 'utf8');
   const indexHtml = fs.readFileSync(path.join(FRONTEND_DIR, 'index.html'), 'utf8');
+  const themeInitJs = fs.readFileSync(path.join(FRONTEND_DIR, 'public/theme-init.js'), 'utf8');
+  const idePreviewHtml = fs.readFileSync(path.join(FRONTEND_DIR, 'public/ide-preview.html'), 'utf8');
+  const renderYaml = fs.readFileSync(path.join(FRONTEND_DIR, '../render.yaml'), 'utf8');
+  const nginxConf = fs.readFileSync(path.join(FRONTEND_DIR, '../deploy/nginx.conf'), 'utf8');
 
-  // 1. Course IDE iframe must never grant allow-same-origin and must enforce strict sandbox + CSP
-  assert.match(mainJsx, /sandbox="allow-scripts"\s+referrerPolicy="no-referrer"/);
+  // 1. Course IDE iframe must never grant allow-same-origin and must use isolated /ide-preview.html with strict CSP
+  assert.match(mainJsx, /sandbox="allow-scripts"\s+referrerPolicy="no-referrer"\s+allow=""\s+src="\/ide-preview\.html"/);
   assert.doesNotMatch(mainJsx, /allow-same-origin/);
-  assert.match(mainJsx, /default-src \\?'none\\?'/);
+  assert.match(idePreviewHtml, /default-src 'none'/);
+  assert.match(renderYaml, /path:\s*\/ide-preview\.html/);
+  assert.match(nginxConf, /location\s*=\s*\/ide-preview\.html/);
 
   // 2. TopNav starts closed (no initial desktop dropdown CLS)
   assert.match(mainJsx, /const \[openMenu,setOpenMenu\]=useState\(null\);/);
@@ -213,7 +224,16 @@ test('security & stabilization source invariants hold across frontend files', ()
   // 5. GATE CSE fetches hard_quiz.json once (no duplicated paper fetch)
   assert.equal((gateCseJsx.match(/hard_quiz\.json/g) || []).length, 1);
 
-  // 6. index.html applies persisted dark theme synchronously before React mounts
-  assert.match(indexHtml, /localStorage\.getItem\('nova_theme'\)/);
-  assert.match(indexHtml, /document\.documentElement\.classList\.add\('dark'\)/);
+  // 6. index.html loads synchronous external /theme-init.js (no inline <script> violating strict CSP)
+  assert.match(indexHtml, /<script src="\/theme-init\.js"><\/script>/);
+  assert.doesNotMatch(indexHtml, /<script>(?!<\/script>)/);
+  assert.match(themeInitJs, /localStorage\.getItem\('nova_theme'\)/);
+  assert.match(themeInitJs, /document\.documentElement\.classList\.add\('dark'\)/);
+
+  // 7. Guest cleanup clears actual nova_workspace_v1_ prefix and all user-scoped keys
+  assert.match(mainJsx, /nova_workspace_v1_\$\{idStr\}_/);
+  assert.match(mainJsx, /nova_quiz_seen_\$\{idStr\}_/);
+  assert.match(mainJsx, /nova_today_done_\$\{idStr\}_/);
+  assert.match(mainJsx, /nova_challenge_seen_\$\{idStr\}_/);
+  assert.match(mainJsx, /nova_module_state_\$\{idStr\}_/);
 });

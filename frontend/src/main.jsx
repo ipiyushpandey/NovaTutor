@@ -600,14 +600,19 @@ function App(){
   }catch{}
   if(exitingId){
    resetTransientLearningState(exitingId);
+   clearRuntimeUser(exitingId);
    if(isGuest){
-    clearRuntimeUser(exitingId);
     try{
      const idStr=String(exitingId);
      Object.keys(localStorage).filter(k=>
       k.startsWith(`dsa_code_${idStr}_`)
       || k.startsWith(`nova_runtime_v2_${idStr}_`)
-      || k.startsWith(`nova_workspace_${idStr}`)
+      || k.startsWith(`nova_workspace_v1_${idStr}_`)
+      || k.startsWith(`nova_workspace_${idStr}_`)
+      || k.startsWith(`nova_module_state_${idStr}_`)
+      || k.startsWith(`nova_quiz_seen_${idStr}_`)
+      || k.startsWith(`nova_today_done_${idStr}_`)
+      || k.startsWith(`nova_challenge_seen_${idStr}_`)
       || k.endsWith(`_${idStr}`)
      ).forEach(k=>localStorage.removeItem(k));
     }catch{}
@@ -675,8 +680,9 @@ function App(){
  },[user?.id,user?.token]);
 
  const load=useCallback(()=>{
-  api('/courses').then(x=>{const arr=Array.isArray(x)?x:[];setCourses(arr);try{localStorage.setItem('nova_courses_cache',JSON.stringify(arr))}catch{}}).catch(e=>console.warn('courses load failed',e));
-  if(user?.id)api('/progress/'+user.id).then(x=>setProgress(Array.isArray(x)?x:[])).catch(e=>console.warn('progress load failed',e));
+  const activeId=user?.id;
+  api('/courses').then(x=>{if(!readUser()||String(readUser()?.id)!==String(activeId))return;const arr=Array.isArray(x)?x:[];setCourses(arr);try{localStorage.setItem('nova_courses_cache',JSON.stringify(arr))}catch{}}).catch(e=>console.warn('courses load failed',e));
+  if(activeId)api('/progress/'+activeId).then(x=>{if(!readUser()||String(readUser()?.id)!==String(activeId))return;setProgress(Array.isArray(x)?x:[])}).catch(e=>console.warn('progress load failed',e));
  },[user?.id]);
  useEffect(()=>{if(user?.id)load()},[user?.id,load]);
  useEffect(()=>{
@@ -1254,6 +1260,13 @@ function CourseDppIde({user,courses}){
  const [session,setSession]=useLiveRuntimeSession(user?.id,'practice.dppIde',dppInitial);
  const courseId=session.courseId||courses[0]?.id||'',dpp=session.dpp||null,answers=session.answers||{},skipped=session.skipped||{},submitted=Boolean(session.submitted),language=session.language||'Java',code=session.code||'',analysis=session.analysis||'',ideTask=session.ideTask||null;
  const [htmlPreview,setHtmlPreview]=useState(false);
+ const [previewKey,setPreviewKey]=useState(0);
+ const previewFrameRef=useRef(null);
+ const previewCodeRef=useRef('');
+ previewCodeRef.current=code;
+ const sendPreviewToIframe=React.useCallback(()=>{
+  try{previewFrameRef.current?.contentWindow?.postMessage({type:'nova-ide-render',html:previewCodeRef.current},'*');}catch{}
+ },[]);
  const update=React.useCallback((patch)=>setSession(s=>({...s,...(typeof patch==='function'?patch(s):patch)})),[setSession]);
  const setCourseId=x=>update(s=>({courseId:typeof x==='function'?x(s.courseId):x}));
  const setDpp=x=>update(s=>({dpp:typeof x==='function'?x(s.dpp):x}));
@@ -1264,7 +1277,6 @@ function CourseDppIde({user,courses}){
  const setCode=x=>update(s=>({code:typeof x==='function'?x(s.code||''):x}));
  const setAnalysis=x=>update(s=>({analysis:typeof x==='function'?x(s.analysis||''):x}));
  const setIdeTask=x=>update(s=>({ideTask:typeof x==='function'?x(s.ideTask||null):x}));
- const sandboxedHtmlDoc=React.useMemo(()=>{const csp='<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src data:;">';return `<!doctype html><html><head><meta charset="utf-8">${csp}</head><body>${code}</body></html>`;},[code]);
  const [loading,setLoading]=useState(false),[error,setError]=useState(''),[running,setRunning]=useState(false);
  const selected=courses.find(c=>String(c.id)===String(courseId));
  useEffect(()=>{if(!courseId&&courses[0])setCourseId(courses[0].id)},[courses]);
@@ -1304,7 +1316,7 @@ function CourseDppIde({user,courses}){
  const earnedMarks=submitted?resultItems.filter(Boolean).length:0;
  const percent=submitted&&totalMarks?Math.round((earnedMarks/totalMarks)*100):0;
  function explainTask(t){setIdeTask(t);setAnalysis('');window.setTimeout(()=>document.querySelector('.course-ide')?.scrollIntoView({behavior:'smooth',block:'start'}),0)}
- async function runCode(){setRunning(true);setAnalysis('');try{if(language==='HTML'){setHtmlPreview(true);setAnalysis(ideTask?`Live preview updated for: ${ideTask.question}`:'HTML preview updated.');return}const taskQuestion=ideTask?.question||'Explain the current course coding task and how to approach it without giving a full copy-paste solution.';const r=await api('/code/analyze',{method:'POST',body:JSON.stringify({mode:'DEBUG',language,level:'intermediate',question:taskQuestion,code,responseLanguage:getAiLanguage()})});setAnalysis(r.answer||'No analysis returned.')}catch(e){setAnalysis(e.message||'Could not analyze code.')}finally{setRunning(false)}}
+ async function runCode(){setRunning(true);setAnalysis('');try{if(language==='HTML'){setHtmlPreview(true);setPreviewKey(k=>k+1);setAnalysis(ideTask?`Live preview updated for: ${ideTask.question}`:'HTML preview updated.');return}const taskQuestion=ideTask?.question||'Explain the current course coding task and how to approach it without giving a full copy-paste solution.';const r=await api('/code/analyze',{method:'POST',body:JSON.stringify({mode:'DEBUG',language,level:'intermediate',question:taskQuestion,code,responseLanguage:getAiLanguage()})});setAnalysis(r.answer||'No analysis returned.')}catch(e){setAnalysis(e.message||'Could not analyze code.')}finally{setRunning(false)}}
  return <><div className="page-title"><span className="eyebrow">COURSE PRACTICE SYSTEM</span><h1>DPP <span>& IDE.</span></h1><p>Practice every day inside the course. Nova generates targeted problems from your course and learning profile, then gives you a focused workspace.</p></div>
  <div className="dpp-hero"><div><span className="eyebrow">DAILY PRACTICE PROBLEMS</span><h2>{selected?.title||'Choose a course'} • Today's set</h2><p>6 tasks • 3 concepts • 2 practical problems • 1 challenge</p></div><div className="dpp-hero-actions"><select aria-label="Course" value={courseId} onChange={e=>{setCourseId(e.target.value);setDpp(null);setAnswers({});setSkipped({});setSubmitted(false);setError('');setIdeTask(null);setAnalysis('')}}>{courses.map(c=><option key={c.id} value={c.id}>{c.title}</option>)}</select><button className="primary" onClick={generate} disabled={loading||!courseId}>{loading?'Creating DPP…':'Generate today’s DPP'} <Target size={15}/></button></div></div>
  {error&&<div className="error">{error}</div>}
@@ -1316,7 +1328,7 @@ function CourseDppIde({user,courses}){
  </div>{submitted&&t.explanation&&<div className="dpp-explanation"><Lightbulb size={16}/><span><b>Nova's explanation:</b> {t.explanation}</span></div>}{submitted&&!result&&<div className="dpp-wrong-note">Your answer was marked <b>Wrong</b>. Review the explanation and retry this concept.</div>}</article>})}</div><div className="dpp-submit-bar"><span>{submitted?'All answers submitted. Review your results.':'No answer is marked correct before final submission.'}</span><button className="primary" onClick={submitDpp} disabled={submitted||(Object.keys(answers).length+Object.keys(skipped).length)<dpp.length}>{submitted?'Submitted ✓':'Submit all answers'} <CheckCircle2 size={15}/></button></div></>}</section>
  <section className="panel course-ide"><div className="panel-head"><div><span className="eyebrow">COURSE IDE</span><h3>{ideTask?'Explain this DPP question.':'Build, test, improve.'}</h3>{ideTask&&<small className="ide-task-label">{ideTask.question}</small>}</div><Code2 size={20}/></div><div className="ide-toolbar"><select aria-label="Language" value={language} onChange={e=>{setLanguage(e.target.value);setCode(starter(e.target.value));setHtmlPreview(false);setAnalysis('')}}><option>Java</option><option>HTML</option><option>CSS</option><option>JavaScript</option><option>Python</option><option>C++</option></select><span>{ideTask?'Question-specific guidance':'Choose a question from the DPP to get targeted guidance'}</span><button className="secondary" onClick={()=>setCode(starter(language))}>Starter code</button></div>
  <div className="ide-howto"><b>How to use the Course IDE</b><span>1. Pick a language → 2. Choose a DPP question → 3. Write or edit code → 4. Run/Analyze → 5. Use Nova's feedback to improve.</span></div>
- <textarea aria-label="Code editor" className="course-ide-editor" value={code} onChange={e=>setCode(e.target.value)} spellCheck="false"/><div className="ide-actions"><button className="primary" onClick={runCode} disabled={running}>{running?'Analyzing…':language==='HTML'?'Run preview':'Explain & analyze'} <PlayCircle size={15}/></button><button className="secondary" onClick={()=>{setCode('');setAnalysis('');setHtmlPreview(false)}}>Clear</button></div>{htmlPreview&&language==='HTML'&&<iframe title="NovaTutor HTML preview" className="html-preview" sandbox="allow-scripts" referrerPolicy="no-referrer" allow="" srcDoc={sandboxedHtmlDoc}/>} {analysis&&<div className="ide-analysis"><b>Nova IDE feedback</b><AiMarkdown content={analysis}/></div>}</section></div></>
+ <textarea aria-label="Code editor" className="course-ide-editor" value={code} onChange={e=>setCode(e.target.value)} spellCheck="false"/><div className="ide-actions"><button className="primary" onClick={runCode} disabled={running}>{running?'Analyzing…':language==='HTML'?'Run preview':'Explain & analyze'} <PlayCircle size={15}/></button><button className="secondary" onClick={()=>{setCode('');setAnalysis('');setHtmlPreview(false)}}>Clear</button></div>{htmlPreview&&language==='HTML'&&<iframe key={previewKey} ref={previewFrameRef} title="NovaTutor HTML preview" className="html-preview" sandbox="allow-scripts" referrerPolicy="no-referrer" allow="" src="/ide-preview.html" onLoad={sendPreviewToIframe}/>} {analysis&&<div className="ide-analysis"><b>Nova IDE feedback</b><AiMarkdown content={analysis}/></div>}</section></div></>
 }
 
 function Admin({user,courses,refreshCourses,onBack}){ return <AdminControlCenter user={user} courses={courses} refreshCourses={refreshCourses} api={api} onBack={onBack}/> }

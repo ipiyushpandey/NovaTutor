@@ -140,7 +140,7 @@ async function apiStream(path,opt={},onChunk,_retry=false){
  const session=readUser();
  const headers={
   'Content-Type':'application/json',
-  Accept:'text/event-stream',
+  Accept:'text/event-stream, application/json;q=0.9',
   ...(session?.token?{'Authorization':`Bearer ${session.token}`} : {}),
   ...(opt.headers||{})
  };
@@ -202,7 +202,7 @@ async function apiStream(path,opt={},onChunk,_retry=false){
       }
     }
     const data=dataLines.join('\n');
-    if(eventName==='done'||data==='done'){sawDone=true;return}
+    if(eventName==='done'){sawDone=true;return}
     if(!data)return;
     if(eventName==='error'||data==='AI request failed. Please try again.')throw new Error(data);
     onChunk(data);
