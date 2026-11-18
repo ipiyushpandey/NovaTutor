@@ -23,34 +23,42 @@ const readJSON=(key,fallback=null)=>{try{const raw=localStorage.getItem(key);ret
 const readUser=()=>{const u=readJSON('ai_user',null);if(!u||typeof u!=='object'||!u.id||!u.token)return null;return {...u,role:String(u.role||'STUDENT').toUpperCase()}};
 
 let sessionRefreshPromise=null;
-async function refreshSessionToken(){
+// Returns 'ok' | 'unauthorized' | 'network_error' so transient network/timeout errors
+// on /auth/me never destroy a valid local session.
+async function refreshSessionTokenWithStatus(){
  const current=readUser();
- if(!current?.token)return false;
+ if(!current?.token)return 'unauthorized';
  if(sessionRefreshPromise)return sessionRefreshPromise;
  sessionRefreshPromise=(async()=>{
   const controller=new AbortController();
   const timeout=setTimeout(()=>controller.abort(),15000);
   try{
    const r=await fetch(API+'/auth/me',{headers:{Authorization:`Bearer ${current.token}`},signal:controller.signal});
-   if(!r.ok)return false;
+   if(r.status===401||r.status===403)return 'unauthorized';
+   if(!r.ok)return 'network_error';
    const fresh=await r.json();
    const next={...current,...fresh,token:fresh.token||current.token,role:String(fresh.role||current.role||'STUDENT').toUpperCase()};
    localStorage.setItem('ai_user',JSON.stringify(next));
    window.dispatchEvent(new Event('nova:session-refreshed'));
-   return true;
-  }catch{return false}
+   return 'ok';
+  }catch{return 'network_error'}
   finally{clearTimeout(timeout);sessionRefreshPromise=null}
  })();
  return sessionRefreshPromise;
 }
+async function refreshSessionToken(){
+ return (await refreshSessionTokenWithStatus())==='ok';
+}
 const isTransientStatus=(s)=>s===502||s===503||s===504||s===408;
+const isCredentialCheckPath=(p)=>/^\/auth\/(login|register|google|reset-password|verify-email)$|^\/users\/\d+\/password$/i.test(String(p||''));
 const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
 
 async function api(path,opt={},_retry=false){
  const method=String(opt.method||'GET').toUpperCase();
  const isIdempotent=method==='GET'||method==='HEAD';
  const maxRetries=typeof opt.retries==='number'?Math.max(0,Math.min(3,opt.retries)):(isIdempotent?2:0);
- const timeoutMs=Number(opt.timeoutMs)||125000;
+ const explicitTimeout=Number(opt.timeoutMs);
+ const baseTimeoutMs=explicitTimeout||125000;
  const silentUpdate=Boolean(opt.silentUpdate);
  const externalSignal=opt.signal;
  const fetchOptions={...opt};
@@ -60,6 +68,7 @@ async function api(path,opt={},_retry=false){
  delete fetchOptions.signal;
 
  for(let attempt=0;attempt<=maxRetries;attempt++){
+  const attemptTimeoutMs=(!explicitTimeout&&isIdempotent&&attempt<maxRetries)?Math.min(baseTimeoutMs,45000):baseTimeoutMs;
   const controller=new AbortController();
   let timedOut=false;
   const onExternalAbort=()=>controller.abort();
@@ -67,7 +76,7 @@ async function api(path,opt={},_retry=false){
    if(externalSignal.aborted){const err=new Error('Request cancelled.');err.name='AbortError';throw err;}
    externalSignal.addEventListener('abort',onExternalAbort,{once:true});
   }
-  const timeout=setTimeout(()=>{timedOut=true;controller.abort();},timeoutMs);
+  const timeout=setTimeout(()=>{timedOut=true;controller.abort();},attemptTimeoutMs);
   try{
    const session=readUser();
    const headers={...(opt.body instanceof FormData?{}:{'Content-Type':'application/json'}),...(session?.token?{'Authorization':`Bearer ${session.token}`} : {}),...(opt.headers||{})};
@@ -86,13 +95,15 @@ async function api(path,opt={},_retry=false){
     try{const parsed=JSON.parse(raw);message=parsed.message||parsed.error||message;code=parsed.error||''}catch{}
     // A short-lived/stale JWT can happen while a workspace is open. Refresh once
     // through /auth/me and retry the original request before declaring the session dead.
-    if(r.status===401&&!_retry&&session?.token&&path!=='/auth/me'){
-     const refreshed=await refreshSessionToken();
-     if(refreshed){clearTimeout(timeout);if(externalSignal)externalSignal.removeEventListener('abort',onExternalAbort);return api(path,opt,true);}
+    let refreshStatus='unauthorized';
+    if(r.status===401&&!_retry&&session?.token&&path!=='/auth/me'&&!isCredentialCheckPath(path)){
+     refreshStatus=await refreshSessionTokenWithStatus();
+     if(refreshStatus==='ok'){clearTimeout(timeout);if(externalSignal)externalSignal.removeEventListener('abort',onExternalAbort);return api(path,opt,true);}
     }
     const err=new Error(message); err.status=r.status; err.code=code;
-    // 403 means authenticated but not permitted; do not destroy a valid session.
-    if(r.status===401){
+    // 403 means authenticated but not permitted; credential checks (e.g. wrong current password)
+    // and transient /auth/me network errors must not destroy a valid session.
+    if(r.status===401&&!isCredentialCheckPath(path)&&refreshStatus==='unauthorized'){
      localStorage.removeItem('ai_user');
      localStorage.removeItem('nova_page');
      window.dispatchEvent(new Event('nova-session-expired'));
@@ -104,7 +115,7 @@ async function api(path,opt={},_retry=false){
    if(!silentUpdate&&opt.method&&/^(POST|PUT|PATCH)$/i.test(opt.method))window.dispatchEvent(new Event('nova:learning-updated'));
    return parsedResult;
   }catch(e){
-   const isNetErr=e instanceof TypeError && /fetch|network/i.test(e.message||'');
+   const isNetErr=e instanceof TypeError && /fetch|network|load failed/i.test(e.message||'');
    if(isIdempotent&&(isNetErr||timedOut)&&attempt<maxRetries&&!externalSignal?.aborted){
     clearTimeout(timeout);
     if(externalSignal)externalSignal.removeEventListener('abort',onExternalAbort);
@@ -154,9 +165,10 @@ async function apiStream(path,opt={},onChunk,_retry=false){
   const r=await fetch(API+path,{...fetchOptions,headers,signal:controller.signal});
   resetIdleTimer();
   if(!r.ok){
+   let refreshStatus='unauthorized';
    if(r.status===401&&!_retry&&session?.token){
-    const refreshed=await refreshSessionToken();
-    if(refreshed){
+    refreshStatus=await refreshSessionTokenWithStatus();
+    if(refreshStatus==='ok'){
      clearTimeout(idleTimer);
      if(externalSignal)externalSignal.removeEventListener('abort',onExternalAbort);
      return apiStream(path,opt,onChunk,true);
@@ -165,7 +177,7 @@ async function apiStream(path,opt={},onChunk,_retry=false){
    const raw=await r.text();
    let message=raw||`Request failed (${r.status})`;
    try{const parsed=JSON.parse(raw);message=parsed.message||parsed.error||message}catch{}
-   if(r.status===401){
+   if(r.status===401&&refreshStatus==='unauthorized'){
     localStorage.removeItem('ai_user');
     localStorage.removeItem('nova_page');
     window.dispatchEvent(new Event('nova-session-expired'));
@@ -179,23 +191,37 @@ async function apiStream(path,opt={},onChunk,_retry=false){
   let sawDone=false;
   const consume=(event)=>{
     const lines=event.split(/\r?\n/);
-    const data=lines.filter(x=>x.startsWith('data:')).map(x=>x.slice(5)).join('\n');
+    let eventName='message';
+    const dataLines=[];
+    for(const line of lines){
+      if(line.startsWith('event:')){
+        eventName=line.slice(6).replace(/^ /,'').trim()||'message';
+      }else if(line.startsWith('data:')){
+        // WHATWG SSE spec: strip a single optional leading space after `data:`.
+        dataLines.push(line.slice(5).replace(/^ /,''));
+      }
+    }
+    const data=dataLines.join('\n');
+    if(eventName==='done'||data==='done'){sawDone=true;return}
     if(!data)return;
-    if(data==='done'){sawDone=true;return}
-    if(data==='AI request failed. Please try again.')throw new Error(data);
+    if(eventName==='error'||data==='AI request failed. Please try again.')throw new Error(data);
     onChunk(data);
   };
-  while(true){
-   const {value,done}=await reader.read();
-   if(done)break;
-   resetIdleTimer();
-   buffer+=decoder.decode(value,{stream:true});
-   const events=buffer.split(/\r?\n\r?\n/);
-   buffer=events.pop()||'';
-   for(const event of events)consume(event);
+  try{
+   while(true){
+    const {value,done}=await reader.read();
+    if(done)break;
+    resetIdleTimer();
+    buffer+=decoder.decode(value,{stream:true});
+    const events=buffer.split(/\r?\n\r?\n/);
+    buffer=events.pop()||'';
+    for(const event of events)consume(event);
+   }
+   buffer+=decoder.decode();
+   if(buffer.trim())consume(buffer);
+  }finally{
+   try{await reader.cancel();}catch{}
   }
-  buffer+=decoder.decode();
-  if(buffer.trim())consume(buffer);
   if(!sawDone)throw new Error('The AI stream ended before completion. You can retry to continue.');
  }catch(e){
   if(e.name==='AbortError'){

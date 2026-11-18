@@ -75,8 +75,23 @@ export default function DsaPractice({user,api,routeSlug=null,onRouteSlug=null}){
     });
   },[problems,q,diff,topic,status,progress]);
 
+  const enteredInAppRef=useRef(false);
+  const openProblem=useCallback((next)=>{
+    enteredInAppRef.current=true;
+    setSlug(next);
+  },[setSlug]);
+  const handleBack=useCallback(()=>{
+    if(enteredInAppRef.current&&typeof onRouteSlug==='function'){
+      enteredInAppRef.current=false;
+      window.history.back();
+      return;
+    }
+    enteredInAppRef.current=false;
+    setSlug(null);
+  },[onRouteSlug,setSlug]);
+
   if(slug) return <DsaProblemView key={slug} user={user} api={api} slug={slug}
-      saved={progress[slug]} onBack={()=>setSlug(null)} onProgress={refreshProgress}/>;
+      saved={progress[slug]} onBack={handleBack} onProgress={refreshProgress}/>;
 
   return (
     <div className="dsa-page">
@@ -140,8 +155,8 @@ export default function DsaPractice({user,api,routeSlug=null,onRouteSlug=null}){
               /* role=button div: the row contains a nested bookmark button, which
                  is invalid inside a real <button>. Keyboard + a11y preserved. */
               <div className="dsa-row" role="button" tabIndex={0} key={p.slug}
-                onClick={()=>setSlug(p.slug)}
-                onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setSlug(p.slug)}}}>
+                onClick={()=>openProblem(p.slug)}
+                onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openProblem(p.slug)}}}>
                 <span className="dsa-idx">{String(i+1).padStart(2,'0')}</span>
                 <span className="dsa-row-main">
                   <b>{p.title}</b>
@@ -173,8 +188,14 @@ export default function DsaPractice({user,api,routeSlug=null,onRouteSlug=null}){
 /* ------------------------------------------------------------------ */
 
 function DsaProblemView({user,api,slug,saved,onBack,onProgress}){
+  const normalizeSavedLang=(raw)=>{
+    if(!raw)return null;
+    const low=String(raw).trim().toLowerCase();
+    const hit=LANGS.find(l=>l[0]===low||l[1].toLowerCase()===low);
+    return hit?hit[0]:null;
+  };
   const [problem,setProblem]=useState(null);
-  const [lang,setLang]=useState(saved?.lastLanguage&&LANGS.some(l=>l[0]===saved.lastLanguage)?saved.lastLanguage:'java');
+  const [lang,setLang]=useState(()=>normalizeSavedLang(saved?.lastLanguage)||'java');
   const [codeByLang,setCodeByLang]=useState({});
   const [code,setCode]=useState('');
   const [result,setResult]=useState(null);
@@ -184,7 +205,24 @@ function DsaProblemView({user,api,slug,saved,onBack,onProgress}){
   const [loadErr,setLoadErr]=useState('');
   const [bookmarked,setBookmarked]=useState(Boolean(saved?.bookmarked));
   const lastSavedRef=useRef('');
+  const userEditedRef=useRef(false);
+  const langSeqRef=useRef(0);
   const userScope=user?.id||'guest';
+
+  // Sync bookmark and saved language/code when async progress arrives after deep-link mount.
+  useEffect(()=>{
+    if(!saved)return;
+    setBookmarked(Boolean(saved.bookmarked));
+    const savedLang=normalizeSavedLang(saved.lastLanguage);
+    if(!userEditedRef.current&&savedLang&&saved.lastCode){
+      const draft=localStorage.getItem(`dsa_code_${userScope}_${slug}_${savedLang}`);
+      if(draft===null){
+        setLang(savedLang);
+        setCode(saved.lastCode);
+        setCodeByLang(m=>({...m,[savedLang]:saved.lastCode}));
+      }
+    }
+  },[saved,slug,userScope]);
 
   // Load problem detail + restore/fetch code for the initial language.
   useEffect(()=>{
@@ -196,10 +234,10 @@ function DsaProblemView({user,api,slug,saved,onBack,onProgress}){
         setProblem(p);
         const draft=localStorage.getItem(`dsa_code_${userScope}_${slug}_${lang}`);
         if(draft!==null){setCode(draft);}
-        else if(saved?.lastLanguage===lang&&saved?.lastCode){setCode(saved.lastCode);}
+        else if(normalizeSavedLang(saved?.lastLanguage)===lang&&saved?.lastCode){setCode(saved.lastCode);}
         else{
           const s=await api(`/dsa/problems/${slug}/starter?language=${encodeURIComponent(lang)}`);
-          if(!dead&&s&&s.code)setCode(s.code);
+          if(!dead&&!userEditedRef.current&&s&&s.code)setCode(s.code);
         }
       }catch(e){if(!dead)setLoadErr(String(e.message||e));}
     })();
@@ -210,6 +248,8 @@ function DsaProblemView({user,api,slug,saved,onBack,onProgress}){
   const draftKey=useMemo(()=>`dsa_code_${userScope}_${slug}_${lang}`,[userScope,slug,lang]);
 
   const switchLang=useCallback(async(next)=>{
+    const seq=++langSeqRef.current;
+    userEditedRef.current=true;
     setLang(next);
     setResult(null);
     const draft=localStorage.getItem(`dsa_code_${userScope}_${slug}_${next}`);
@@ -217,8 +257,12 @@ function DsaProblemView({user,api,slug,saved,onBack,onProgress}){
     if(codeByLang[next]){setCode(codeByLang[next]);return;}
     try{
       const s=await api(`/dsa/problems/${slug}/starter?language=${encodeURIComponent(next)}`);
+      if(langSeqRef.current!==seq)return;
       if(s&&s.code){setCode(s.code);setCodeByLang(m=>({...m,[next]:s.code}));}
-    }catch(e){setCode('// starter unavailable: '+String(e.message||e));}
+    }catch(e){
+      if(langSeqRef.current!==seq)return;
+      setCode('// starter unavailable: '+String(e.message||e));
+    }
   },[api,userScope,slug,codeByLang]);
 
   const persistCode=useCallback(async(text,language)=>{
@@ -228,6 +272,7 @@ function DsaProblemView({user,api,slug,saved,onBack,onProgress}){
   },[api,slug]);
 
   const onEdit=useCallback(text=>{
+    userEditedRef.current=true;
     setCode(text);
     setCodeByLang(m=>({...m,[lang]:text}));
     try{localStorage.setItem(draftKey,text);}catch(e){}

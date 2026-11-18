@@ -524,30 +524,36 @@ function parseAppHash(rawHash=window.location.hash){
  const courseLesson=clean.match(/^course\/(\d+)\/lesson\/(\d+)$/i);
  if(courseLesson){
   const cid=Number(courseLesson[1]),lid=Number(courseLesson[2]);
-  return {page:'course',courseId:cid,lessonId:lid,dsaSlug:null,gateTab:null,routeKey:`course/${cid}/lesson/${lid}`};
+  return {page:'course',courseId:cid,lessonId:lid,dsaSlug:null,gateTab:null,studioTab:null,routeKey:`course/${cid}/lesson/${lid}`};
  }
  const courseOnly=clean.match(/^course\/(\d+)$/i);
  if(courseOnly){
   const cid=Number(courseOnly[1]);
-  return {page:'course',courseId:cid,lessonId:null,dsaSlug:null,gateTab:null,routeKey:`course/${cid}`};
+  return {page:'course',courseId:cid,lessonId:null,dsaSlug:null,gateTab:null,studioTab:null,routeKey:`course/${cid}`};
  }
  const dsaMatch=clean.match(/^dsa\/([a-z0-9-]+)$/i);
  if(dsaMatch){
   const slug=dsaMatch[1];
-  return {page:'dsa',courseId:null,lessonId:null,dsaSlug:slug,gateTab:null,routeKey:`dsa/${slug}`};
+  return {page:'dsa',courseId:null,lessonId:null,dsaSlug:slug,gateTab:null,studioTab:null,routeKey:`dsa/${slug}`};
  }
  const gateMatch=clean.match(/^(?:gatecse|gate-cse)\/(overview|syllabus|notes|pyq)$/i);
  if(gateMatch){
   const tab=gateMatch[1].toLowerCase();
-  return {page:'gatecse',courseId:null,lessonId:null,dsaSlug:null,gateTab:tab,routeKey:`gatecse/${tab}`};
+  return {page:'gatecse',courseId:null,lessonId:null,dsaSlug:null,gateTab:tab,studioTab:null,routeKey:`gatecse/${tab}`};
+ }
+ const studioMatch=clean.match(/^learning-studio\/(teacher|voice)$/i);
+ if(studioMatch){
+  const stab=studioMatch[1].toLowerCase();
+  return {page:'learning-studio',courseId:null,lessonId:null,dsaSlug:null,gateTab:null,studioTab:stab,routeKey:stab==='voice'?'learning-studio/voice':'learning-studio'};
  }
  const base=alias[clean.toLowerCase()]||clean.toLowerCase();
  const legacyStudio={tutor:'teacher',notes:'teacher',voice:'voice'};
  if(legacyStudio[base]){
-  try{localStorage.setItem('nova_learning_studio_tab',legacyStudio[base])}catch{}
-  return {page:'learning-studio',courseId:null,lessonId:null,dsaSlug:null,gateTab:null,routeKey:'learning-studio'};
+  const stab=legacyStudio[base];
+  try{localStorage.setItem('nova_learning_studio_tab',stab)}catch{}
+  return {page:'learning-studio',courseId:null,lessonId:null,dsaSlug:null,gateTab:null,studioTab:stab,routeKey:stab==='voice'?'learning-studio/voice':'learning-studio'};
  }
- return {page:base,courseId:null,lessonId:null,dsaSlug:null,gateTab:null,routeKey:base||'dashboard'};
+ return {page:base,courseId:null,lessonId:null,dsaSlug:null,gateTab:null,studioTab:null,routeKey:base||'dashboard'};
 }
 
 function App(){
@@ -566,10 +572,13 @@ function App(){
   return ALLOWED_PAGES.includes(h)?h:(ALLOWED_PAGES.includes(saved)&&saved!=='login'?saved:'dashboard');
  });
  useEffect(()=>{if(initialNonAdminBlocked&&window.location.hash!=='#/dashboard'){window.location.replace('#/dashboard')}},[initialNonAdminBlocked]);
+ useEffect(()=>{try{if('scrollRestoration' in window.history)window.history.scrollRestoration='manual'}catch{}},[]);
  const [courseId,setCourseId]=useState(()=>initialParsed.courseId);
  const [lessonId,setLessonId]=useState(()=>initialParsed.lessonId);
  const [dsaSlug,setDsaSlug]=useState(()=>initialParsed.dsaSlug);
  const [gateTab,setGateTab]=useState(()=>initialParsed.gateTab||'overview');
+ const [studioTab,setStudioTab]=useState(()=>initialParsed.studioTab||null);
+ const inAppNavCountRef=useRef(0);
  const [aiStatus,setAiStatus]=useState({configured:false,model:'—'}),[courses,setCourses]=useState([]),[progress,setProgress]=useState([]),[mobile,setMobile]=useState(false),[user,setUser]=useState(readUser);
  const [wakingServer,setWakingServer]=useState(false);
  const [vp,setVp]=useState(()=>typeof window!=='undefined'&&window.matchMedia('(max-width:960px)').matches);
@@ -610,6 +619,7 @@ function App(){
   setLessonId(null);
   setDsaSlug(null);
   setGateTab('overview');
+  setStudioTab(null);
   setMobile(false);
   setUser(null);
   setPage('login');
@@ -624,8 +634,9 @@ function App(){
   if(page==='course'&&courseId)return lessonId?`course/${courseId}/lesson/${lessonId}`:`course/${courseId}`;
   if(page==='dsa'&&dsaSlug)return `dsa/${dsaSlug}`;
   if(page==='gatecse'&&gateTab&&gateTab!=='overview')return `gatecse/${gateTab}`;
+  if(page==='learning-studio'&&studioTab==='voice')return 'learning-studio/voice';
   return page;
- },[page,courseId,lessonId,dsaSlug,gateTab]);
+ },[page,courseId,lessonId,dsaSlug,gateTab,studioTab]);
  const routeKeyRef=useRef(routeKey);
  routeKeyRef.current=routeKey;
  const navModeRef=useRef('init');
@@ -712,7 +723,7 @@ function App(){
   const numId=Number(id);
   const numLesson=nextLessonId?Number(nextLessonId):null;
   const nextKey=numLesson?`course/${numId}/lesson/${numLesson}`:`course/${numId}`;
-  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';}
+  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';inAppNavCountRef.current+=1;}
   setCourseId(numId);
   setLessonId(numLesson);
   setPage('course');
@@ -724,7 +735,7 @@ function App(){
  const onDsaSlug=useCallback((nextSlug)=>{
   saveCurrentScroll();
   const nextKey=nextSlug?`dsa/${nextSlug}`:'dsa';
-  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';}
+  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';inAppNavCountRef.current+=1;}
   setDsaSlug(nextSlug||null);
   setPage('dsa');
   localStorage.setItem('nova_page','dsa');
@@ -734,10 +745,21 @@ function App(){
   saveCurrentScroll();
   const cleanTab=nextTab||'overview';
   const nextKey=cleanTab==='overview'?'gatecse':`gatecse/${cleanTab}`;
-  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';}
+  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';inAppNavCountRef.current+=1;}
   setGateTab(cleanTab);
   setPage('gatecse');
   localStorage.setItem('nova_page','gatecse');
+  pushHash(nextKey);
+ },[]);
+ const onStudioTab=useCallback((nextTab)=>{
+  saveCurrentScroll();
+  const cleanTab=nextTab==='voice'?'voice':'teacher';
+  const nextKey=cleanTab==='voice'?'learning-studio/voice':'learning-studio';
+  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';inAppNavCountRef.current+=1;}
+  setStudioTab(cleanTab);
+  setPage('learning-studio');
+  localStorage.setItem('nova_learning_studio_tab',cleanTab);
+  localStorage.setItem('nova_page','learning-studio');
   pushHash(nextKey);
  },[]);
  const go=id=>{
@@ -746,13 +768,15 @@ function App(){
   saveCurrentScroll();
   const legacyStudio={tutor:'teacher',notes:'teacher',voice:'voice'};
   const target=legacyStudio[id]?'learning-studio':id;
-  if(legacyStudio[id])localStorage.setItem('nova_learning_studio_tab',legacyStudio[id]);
+  const nextStudioTab=legacyStudio[id]||(target==='learning-studio'?'teacher':null);
+  const nextKey=target==='learning-studio'&&nextStudioTab==='voice'?'learning-studio/voice':target;
+  if(nextStudioTab){localStorage.setItem('nova_learning_studio_tab',nextStudioTab);setStudioTab(nextStudioTab);}
   if(target==='dsa')setDsaSlug(null);
   if(target==='gatecse')setGateTab('overview');
-  if(routeKeyRef.current!==target){persistBeforeNavigation();navModeRef.current='push';}
+  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';inAppNavCountRef.current+=1;}
   setPage(target);
   localStorage.setItem('nova_page',target);
-  pushHash(target);
+  pushHash(nextKey);
   setMobile(false);
  };
 
@@ -794,7 +818,7 @@ function App(){
   };
   let ro=null;
   if(typeof ResizeObserver!=='undefined'){
-   ro=new ResizeObserver(()=>{if(!cancelled&&!userInteracted)raf=requestAnimationFrame(apply)});
+   ro=new ResizeObserver(()=>{if(!cancelled&&!userInteracted){cancelAnimationFrame(raf);raf=requestAnimationFrame(apply)}});
    ro.observe(document.body);
   }
   const timer=setInterval(()=>{if(!cancelled&&!userInteracted)apply()},60);
@@ -808,9 +832,13 @@ function App(){
    ro?.disconnect();
    window.removeEventListener('wheel',stopUser);
    window.removeEventListener('touchstart',stopUser);
+   window.removeEventListener('keydown',stopUser);
+   window.removeEventListener('pointerdown',stopUser);
   };
   window.addEventListener('wheel',stopUser,{passive:true});
   window.addEventListener('touchstart',stopUser,{passive:true});
+  window.addEventListener('keydown',stopUser,{passive:true});
+  window.addEventListener('pointerdown',stopUser,{passive:true});
   raf=requestAnimationFrame(apply);
   return cleanup;
  },[routeKey]);
@@ -825,19 +853,27 @@ function App(){
    const parsed=parseAppHash(window.location.hash);
    const h=parsed.page==='login'?'dashboard':(ALLOWED_PAGES.includes(parsed.page)?parsed.page:'dashboard');
    if(h==='admin'&&String(session.role||'STUDENT').toUpperCase()!=='ADMIN'){
-    setPage('dashboard');window.location.hash='#/dashboard';setAdminDenied(true);return;
+    setPage('dashboard');window.location.replace('#/dashboard');setAdminDenied(true);return;
    }
-   if(navModeRef.current!=='push'&&parsed.routeKey!==routeKeyRef.current){
+   if(h==='course'&&!parsed.courseId){
+    setPage('dashboard');window.location.replace('#/dashboard');return;
+   }
+   const finalRouteKey=h==='course'?(parsed.lessonId?`course/${parsed.courseId}/lesson/${parsed.lessonId}`:`course/${parsed.courseId}`)
+    :h==='dsa'?(parsed.dsaSlug?`dsa/${parsed.dsaSlug}`:'dsa')
+    :h==='gatecse'?(parsed.gateTab&&parsed.gateTab!=='overview'?`gatecse/${parsed.gateTab}`:'gatecse')
+    :h==='learning-studio'?(parsed.studioTab==='voice'?'learning-studio/voice':'learning-studio')
+    :h;
+   if(navModeRef.current!=='push'&&finalRouteKey!==routeKeyRef.current){
     restoringScrollRef.current=true;
    }
    if(h==='course'){
-    if(!parsed.courseId){setPage('dashboard');window.location.hash='#/dashboard';return}
     setCourseId(parsed.courseId);
     setLessonId(parsed.lessonId||null);
    }
    if(h==='dsa')setDsaSlug(parsed.dsaSlug||null);
    if(h==='gatecse')setGateTab(parsed.gateTab||'overview');
-   if(parsed.routeKey!==routeKeyRef.current)persistBeforeNavigation();
+   if(h==='learning-studio')setStudioTab(parsed.studioTab||null);
+   if(finalRouteKey!==routeKeyRef.current)persistBeforeNavigation();
    setPage(h);
    localStorage.setItem('nova_page',h);
   };
@@ -859,7 +895,7 @@ function App(){
  const logout=()=>{if(role!=='GUEST'){persistBeforeNavigation('logout')}else{api('/auth/guest',{method:'DELETE'}).catch(()=>{})}clearUserClientState(user)};
  const switchAccount=()=>{if(role!=='GUEST'){persistBeforeNavigation('switch-account')}else{api('/auth/guest',{method:'DELETE'}).catch(()=>{})}clearUserClientState(user)};
  const updateUser=next=>{const normalized={...(user||{}),...(next||{}),role:String(next?.role||user?.role||'STUDENT').toUpperCase()};localStorage.setItem('ai_user',JSON.stringify(normalized));setUser(normalized)};
- if(!user)return <Auth onLogin={u=>{bootstrappedUserRef.current=null;const next={...u,role:String(u.role||'STUDENT').toUpperCase()};resetTransientLearningState(next.id);localStorage.removeItem('nova_nav_stack');const needsProfile=next.role!=='ADMIN'&&next.profileComplete===false;const target=needsProfile?'onboarding':'dashboard';localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page',target);setUser(next);setPage(target);window.location.hash='#/'+target}} dark={dark} setDark={setDark}/>;
+ if(!user)return <Auth onLogin={u=>{bootstrappedUserRef.current=null;inAppNavCountRef.current=0;const next={...u,role:String(u.role||'STUDENT').toUpperCase()};resetTransientLearningState(next.id);localStorage.removeItem('nova_nav_stack');const needsProfile=next.role!=='ADMIN'&&next.profileComplete===false;const target=needsProfile?'onboarding':'dashboard';localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page',target);setUser(next);setPage(target);window.location.hash='#/'+target}} dark={dark} setDark={setDark}/>;
  return <div className="app app-topnav">
  <TopNav
   user={user} role={role} page={page} go={go} dark={dark} setDark={setDark}
@@ -869,8 +905,8 @@ function App(){
  {mobile&&<div className="nav-shade" onClick={()=>setMobile(false)}/>}
  <main className="main-topnav">
  {wakingServer&&<div className="nv-toast" role="status">Waking up NovaTutor server… this can take a few seconds after idle.</div>}
- <div className="page-transition"><ErrorBoundary key={page}>{adminDenied&&<div className="nv-toast" role="status">Admin area is restricted to administrator accounts.</div>}{page==='dashboard'&&<Dashboard courses={courses} progress={progress} go={go} openCourse={openCourse} user={user}/>} {page==='course'&&<CoursePage courseId={courseId} lessonId={lessonId} onSelectLesson={lid=>openLesson(courseId,lid)} courses={courses} progress={progress} refresh={load} onBack={()=>window.history.length>1?window.history.back():go('dashboard')}/>} {page==='coach'&&<NovaCoach user={user} go={go} courses={courses}/>} {page==='study-room'&&<NovaCoach user={user} go={go} courses={courses} initialTab="community"/>} {page==='analytics'&&<Analytics user={user}/>} {page==='nova-os'&&<NovaBrain user={user} go={go}/>} {page==='nova-brain'&&<NovaBrain user={user} go={go}/>} {page==='practice'&&<PracticeHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='prepare'&&<PrepareHub user={user} go={go}/>} {page==='courses'&&<MyLearningHub courses={courses} progress={progress} refresh={load} user={user} go={go} openCourse={openCourse}/>} {page==='learning-studio'&&<LearningStudio user={user}/>} {page==='tutor'&&<LearningStudio user={user} initialTab="teacher"/>} {page==='code'&&<CodeLab user={user}/>} {page==='quiz'&&<Quiz courses={courses} progress={progress} refresh={load} user={user}/>} {page==='chat'&&<ChatWorkspace user={user}/>} {page==='knowledge'&&<KnowledgeHub user={user}/>}
- {page==='mentor'&&<AdaptiveMentor user={user} courses={courses}/>} {page==='planner'&&<StudyPlanner user={user}/>} {page==='flashcards'&&<Flashcards user={user}/>} {page==='achievements'&&<Achievements user={user} go={go}/>} {page==='profile'&&<AILearningProfile user={user} courses={courses} go={go}/>} {page==='interview'&&<Interviewer user={user}/>} {page==='voice'&&<LearningStudio user={user} initialTab="voice"/>} {page==='dpp'&&<CourseDppIde user={user} courses={courses}/>} {page==='exam'&&<ExamSimulator user={user}/>} {page==='gatecse'&&<GateCse routeTab={gateTab} onRouteTab={onGateTab}/>} {page==='dsa'&&<DsaPractice user={user} api={api} routeSlug={dsaSlug} onRouteSlug={onDsaSlug}/>} {page==='career'&&<CareerHub user={user} go={go}/>} {page==='community'&&<CommunityHub user={user} go={go}/>} {page==='notifications'&&<TodayHub user={user} go={go}/>} {page==='revision'&&<RevisionHub user={user} go={go}/>} {page==='settings'&&<SettingsPage user={user} dark={dark} setDark={setDark} logout={logout} switchAccount={switchAccount} onUserUpdate={updateUser} aiStatus={aiStatus}/>} {page==='about'&&<PublicPage page="about" signedIn onBack={()=>go('dashboard')}/>} {page==='privacy'&&<PublicPage page="privacy" signedIn onBack={()=>go('settings')}/>} {page==='terms'&&<PublicPage page="terms" signedIn onBack={()=>go('settings')}/>} {page==='contact'&&<PublicPage page="contact" signedIn onBack={()=>go('dashboard')}/>} {page==='admin'&&(role==='ADMIN'?<Admin user={user} courses={courses} refreshCourses={load} onBack={()=>go('dashboard')}/>:<AdminLocked go={go}/>)}</ErrorBoundary></div></main></div>
+ <div className="page-transition"><ErrorBoundary key={page}>{adminDenied&&<div className="nv-toast" role="status">Admin area is restricted to administrator accounts.</div>}{page==='dashboard'&&<Dashboard courses={courses} progress={progress} go={go} openCourse={openCourse} user={user}/>} {page==='course'&&<CoursePage courseId={courseId} lessonId={lessonId} onSelectLesson={lid=>openLesson(courseId,lid)} courses={courses} progress={progress} refresh={load} onBack={()=>inAppNavCountRef.current>0?window.history.back():go('courses')}/>} {page==='coach'&&<NovaCoach user={user} go={go} courses={courses}/>} {page==='study-room'&&<NovaCoach user={user} go={go} courses={courses} initialTab="community"/>} {page==='analytics'&&<Analytics user={user}/>} {page==='nova-os'&&<NovaBrain user={user} go={go}/>} {page==='nova-brain'&&<NovaBrain user={user} go={go}/>} {page==='practice'&&<PracticeHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='prepare'&&<PrepareHub user={user} go={go} gateTab={gateTab} onGateTab={onGateTab} dsaSlug={dsaSlug} onDsaSlug={onDsaSlug}/>} {page==='courses'&&<MyLearningHub courses={courses} progress={progress} refresh={load} user={user} go={go} openCourse={openCourse}/>} {page==='learning-studio'&&<LearningStudio user={user} routeTab={studioTab} onRouteTab={onStudioTab}/>} {page==='tutor'&&<LearningStudio user={user} initialTab="teacher" onRouteTab={onStudioTab}/>} {page==='code'&&<CodeLab user={user}/>} {page==='quiz'&&<Quiz courses={courses} progress={progress} refresh={load} user={user}/>} {page==='chat'&&<ChatWorkspace user={user}/>} {page==='knowledge'&&<KnowledgeHub user={user}/>}
+ {page==='mentor'&&<AdaptiveMentor user={user} courses={courses}/>} {page==='planner'&&<StudyPlanner user={user}/>} {page==='flashcards'&&<Flashcards user={user}/>} {page==='achievements'&&<Achievements user={user} go={go}/>} {page==='profile'&&<AILearningProfile user={user} courses={courses} go={go}/>} {page==='interview'&&<Interviewer user={user}/>} {page==='voice'&&<LearningStudio user={user} initialTab="voice" onRouteTab={onStudioTab}/>} {page==='dpp'&&<CourseDppIde user={user} courses={courses}/>} {page==='exam'&&<ExamSimulator user={user}/>} {page==='gatecse'&&<GateCse routeTab={gateTab} onRouteTab={onGateTab}/>} {page==='dsa'&&<DsaPractice user={user} api={api} routeSlug={dsaSlug} onRouteSlug={onDsaSlug}/>} {page==='career'&&<CareerHub user={user} go={go}/>} {page==='community'&&<CommunityHub user={user} go={go}/>} {page==='notifications'&&<TodayHub user={user} go={go}/>} {page==='revision'&&<RevisionHub user={user} go={go}/>} {page==='settings'&&<SettingsPage user={user} dark={dark} setDark={setDark} logout={logout} switchAccount={switchAccount} onUserUpdate={updateUser} aiStatus={aiStatus}/>} {page==='about'&&<PublicPage page="about" signedIn onBack={()=>go('dashboard')}/>} {page==='privacy'&&<PublicPage page="privacy" signedIn onBack={()=>go('settings')}/>} {page==='terms'&&<PublicPage page="terms" signedIn onBack={()=>go('settings')}/>} {page==='contact'&&<PublicPage page="contact" signedIn onBack={()=>go('dashboard')}/>} {page==='admin'&&(role==='ADMIN'?<Admin user={user} courses={courses} refreshCourses={load} onBack={()=>go('dashboard')}/>:<AdminLocked go={go}/>)}</ErrorBoundary></div></main></div>
 }
 function readHashRoute(){
  const raw=String(window.location.hash||'').replace(/^#\/?/,'');
@@ -1473,15 +1509,26 @@ function CourseDetail({detail,routeLessonId,onSelectLesson,progress,refresh,back
  const currentUser=readUser();
  const bookmarkKey=`nova_bookmarks_${currentUser?.id||'guest'}`;
  const readBookmarks=()=>{const list=readJSON(bookmarkKey,null);if(Array.isArray(list))return list;const legacy=readJSON('nova_bookmarks',[]);return Array.isArray(legacy)?legacy:[]};
- const findInitialLesson=()=>{if(routeLessonId){const hit=(detail.lessons||[]).find(l=>String(l.id)===String(routeLessonId));if(hit)return hit;}return detail.lessons?.[0]||null;};
- const [working,setWorking]=useState(false),[selectedLesson,setSelectedLesson]=useState(findInitialLesson),[localProgress,setLocalProgress]=useState(progress||null),[error,setError]=useState('');
- useEffect(()=>{if(!routeLessonId)return;const hit=(detail.lessons||[]).find(l=>String(l.id)===String(routeLessonId));if(hit&&String(hit.id)!==String(selectedLesson?.id))setSelectedLesson(hit);},[routeLessonId,detail.lessons]);
  const topicName=l=>l?.topic||String(l?.title||'Core Concepts').replace(/^Lesson\s+\d+\s*[—-]\s*/,'').replace(/\s*•\s*(Deep Dive|Worked Example|Practice Lab)$/,'').trim()||'Core Concepts';
  // Older seeded courses reuse orderIndex inside each topic. Keep topic order
  // from the API's original lesson insertion order, then sort within each topic.
  const topicGroups=Object.entries((detail.lessons||[]).reduce((acc,l)=>{const key=topicName(l);if(!acc[key])acc[key]=[];acc[key].push(l);return acc},{}));
  const groupedLessons=topicGroups.map(([topic,items])=>[topic,[...items].sort((a,b)=>{const ao=Number(a.orderIndex||0),bo=Number(b.orderIndex||0);return ao-bo||Number(a.id||0)-Number(b.id||0)})]);
  const orderedLessons=groupedLessons.flatMap(([,items])=>items);
+ const findInitialLesson=()=>{if(routeLessonId){const hit=(detail.lessons||[]).find(l=>String(l.id)===String(routeLessonId));if(hit)return hit;}return orderedLessons[0]||detail.lessons?.[0]||null;};
+ const [working,setWorking]=useState(false),[selectedLesson,setSelectedLesson]=useState(findInitialLesson),[localProgress,setLocalProgress]=useState(progress||null),[error,setError]=useState('');
+ const prevRouteLessonIdRef=useRef(routeLessonId);
+ useEffect(()=>{
+  const prev=prevRouteLessonIdRef.current;
+  prevRouteLessonIdRef.current=routeLessonId;
+  if(routeLessonId){
+   const hit=(detail.lessons||[]).find(l=>String(l.id)===String(routeLessonId));
+   if(hit&&String(hit.id)!==String(selectedLesson?.id))setSelectedLesson(hit);
+  }else if(prev){
+   const first=orderedLessons[0]||detail.lessons?.[0]||null;
+   if(first&&String(first.id)!==String(selectedLesson?.id))setSelectedLesson(first);
+  }
+ },[routeLessonId,detail.lessons]);
  const sequenceFor=lesson=>{const index=orderedLessons.findIndex(x=>String(x.id)===String(lesson?.id));return index<0?1:index+1};
  const lectureLabel=(lesson,index)=>{const raw=String(lesson?.title||'').replace(/^Lesson\s+\d+\s*[—-]\s*/,'').replace(/^Lecture\s+\d+\s*[—-]\s*/,'').trim();return `Lecture ${index+1}${raw?` — ${raw}`:''}`};
  const lectureNumberFor=lesson=>{const topic=topicName(lesson);const group=groupedLessons.find(([name])=>name===topic)?.[1]||[];const index=group.findIndex(x=>String(x.id)===String(lesson?.id));return index<0?1:index+1};
@@ -1524,7 +1571,7 @@ ${lessonContext}`;
  const isDone=selectedLesson?sequenceFor(selectedLesson)<=completed:false;
  const [chaptersOpen,setChaptersOpen]=useState(false);
  const gotoLesson=l=>{if(l){setSelectedLesson(l);setChaptersOpen(false);if(onSelectLesson){onSelectLesson(l.id)}else{window.scrollTo({top:0})}}};
- return <><div className="page-title"><span className="eyebrow">{c.level} • {c.totalLessons} THEORY LESSONS</span><h1>{c.title}</h1><p>{c.description}</p><div className="course-meta"><span>📚 {detail.lessons?.length||0} lessons</span><span>⏱️ ~{Math.max(5,(selectedLesson?.content||'').split(/\s+/).length/160|0)} min reading</span></div></div>{error&&<div className="error-banner">{error}</div>}<div className={'lesson-layout'+(chaptersOpen?' chapters-open':'')}><div className="lesson-list"><button className="chapters-toggle" onClick={()=>setChaptersOpen(o=>!o)} aria-expanded={chaptersOpen}>{chaptersOpen?'Hide chapters':'Chapters'} <ChevronRight size={14}/></button><div className="lesson-chapters"><div className="lesson-summary"><b>{Math.round(localProgress?.percent||0)}%</b><span>course progress • {detail.lessons?.length||0} lessons</span><div className="progress"><span style={{width:(localProgress?.percent||0)+'%'}}/></div></div>{groupedLessons.map(([topic,items],groupIndex)=><section className="lesson-topic-group" key={topic}><div className="lesson-topic-head"><span>{String(groupIndex+1).padStart(2,'0')}</span><div><b>{topic}</b><small>{items.length} lectures</small></div></div>{items.map((l,lectureIndex)=>{const lDone=sequenceFor(l)<=completed;return <div className={'lesson-item '+(selectedLesson?.id===l.id?'selected':'')+(lDone?' done':'')} key={l.id} onClick={()=>gotoLesson(l)}><div className="lesson-number">{lDone?'✓':lectureIndex+1}</div><div><b>{lectureLabel(l,lectureIndex)}</b><small>{lDone?'Completed • review anytime':'Theory ready • open anytime'}</small></div><button className="icon-btn" disabled={working} onClick={e=>{e.stopPropagation();launchTeacher(l)}} title="Open AI Teacher & learn"><PlayCircle size={18}/></button></div>})}</section>)}</div></div><div className="lesson-ai">{selectedLesson?<><div className="lesson-top-actions"><span className="eyebrow">LECTURE {lectureNumberFor(selectedLesson)} OF {flatLessons.length}</span><button className={'round-btn '+(bookmarked?'saved':'')} onClick={toggleBookmark} title="Bookmark lesson">★</button></div><h3>{lectureLabel(selectedLesson,lectureNumberFor(selectedLesson)-1)}</h3><div className="lesson-reading"><div className="lesson-content">{selectedLesson.content?<TheoryContent content={cleanLessonContent(selectedLesson.content)}/>:<div className="empty"><BookOpen/><b>No lesson content yet</b><span>Ask the AI teacher to explain the topic.</span></div>}</div></div><div className="lesson-bottombar"><button className="nv-icon-btn" disabled={!prevLesson} onClick={()=>gotoLesson(prevLesson)} aria-label="Previous lesson">←</button><button className={'primary '+(isDone?'ghosted':'')} disabled={working} onClick={()=>complete(selectedLesson.id)}>{working?'Saving…':isDone?'✓ Completed':'Mark lesson complete'}</button><button className="nv-icon-btn" disabled={!nextLesson} onClick={()=>gotoLesson(nextLesson)} aria-label="Next lesson">→</button></div><div className="lesson-actions"><button className="secondary" disabled={working} onClick={askAI}><Sparkles size={15}/> Explain with AI</button><button className="secondary" disabled={working} onClick={()=>launchTeacher(selectedLesson)}>{working?'Opening AI Teacher…':'Learn with AI Teacher'} <BrainCircuit size={15}/></button></div></>:<><BrainCircuit size={28}/><h3>Select a lesson</h3><p>Choose a theory lesson from the list.</p></>}</div></div></>;
+ return <><div className="page-title">{back&&<button type="button" className="text-btn course-back-btn" onClick={back} style={{marginBottom:8}}>← Back</button>}<span className="eyebrow">{c.level} • {c.totalLessons} THEORY LESSONS</span><h1>{c.title}</h1><p>{c.description}</p><div className="course-meta"><span>📚 {detail.lessons?.length||0} lessons</span><span>⏱️ ~{Math.max(5,(selectedLesson?.content||'').split(/\s+/).length/160|0)} min reading</span></div></div>{error&&<div className="error-banner">{error}</div>}<div className={'lesson-layout'+(chaptersOpen?' chapters-open':'')}><div className="lesson-list"><button className="chapters-toggle" onClick={()=>setChaptersOpen(o=>!o)} aria-expanded={chaptersOpen}>{chaptersOpen?'Hide chapters':'Chapters'} <ChevronRight size={14}/></button><div className="lesson-chapters"><div className="lesson-summary"><b>{Math.round(localProgress?.percent||0)}%</b><span>course progress • {detail.lessons?.length||0} lessons</span><div className="progress"><span style={{width:(localProgress?.percent||0)+'%'}}/></div></div>{groupedLessons.map(([topic,items],groupIndex)=><section className="lesson-topic-group" key={topic}><div className="lesson-topic-head"><span>{String(groupIndex+1).padStart(2,'0')}</span><div><b>{topic}</b><small>{items.length} lectures</small></div></div>{items.map((l,lectureIndex)=>{const lDone=sequenceFor(l)<=completed;return <div className={'lesson-item '+(selectedLesson?.id===l.id?'selected':'')+(lDone?' done':'')} key={l.id} onClick={()=>gotoLesson(l)}><div className="lesson-number">{lDone?'✓':lectureIndex+1}</div><div><b>{lectureLabel(l,lectureIndex)}</b><small>{lDone?'Completed • review anytime':'Theory ready • open anytime'}</small></div><button className="icon-btn" disabled={working} onClick={e=>{e.stopPropagation();launchTeacher(l)}} title="Open AI Teacher & learn"><PlayCircle size={18}/></button></div>})}</section>)}</div></div><div className="lesson-ai">{selectedLesson?<><div className="lesson-top-actions"><span className="eyebrow">LECTURE {lectureNumberFor(selectedLesson)} OF {flatLessons.length}</span><button className={'round-btn '+(bookmarked?'saved':'')} onClick={toggleBookmark} title="Bookmark lesson">★</button></div><h3>{lectureLabel(selectedLesson,lectureNumberFor(selectedLesson)-1)}</h3><div className="lesson-reading"><div className="lesson-content">{selectedLesson.content?<TheoryContent content={cleanLessonContent(selectedLesson.content)}/>:<div className="empty"><BookOpen/><b>No lesson content yet</b><span>Ask the AI teacher to explain the topic.</span></div>}</div></div><div className="lesson-bottombar"><button className="nv-icon-btn" disabled={!prevLesson} onClick={()=>gotoLesson(prevLesson)} aria-label="Previous lesson">←</button><button className={'primary '+(isDone?'ghosted':'')} disabled={working} onClick={()=>complete(selectedLesson.id)}>{working?'Saving…':isDone?'✓ Completed':'Mark lesson complete'}</button><button className="nv-icon-btn" disabled={!nextLesson} onClick={()=>gotoLesson(nextLesson)} aria-label="Next lesson">→</button></div><div className="lesson-actions"><button className="secondary" disabled={working} onClick={askAI}><Sparkles size={15}/> Explain with AI</button><button className="secondary" disabled={working} onClick={()=>launchTeacher(selectedLesson)}>{working?'Opening AI Teacher…':'Learn with AI Teacher'} <BrainCircuit size={15}/></button></div></>:<><BrainCircuit size={28}/><h3>Select a lesson</h3><p>Choose a theory lesson from the list.</p></>}</div></div></>;
 }
 function CodeLab({user}){
  const codeInitial=React.useMemo(()=>({language:'Java',mode:'EXPLAIN',hintLevel:1,code:'public class Main {\n    public static void main(String[] args) {\n        int[] nums = {2, 4, 6, 8};\n        int sum = 0;\n        for (int n : nums) sum += n;\n        System.out.println(sum);\n    }\n}',question:'',level:'beginner',answer:'',runResult:null}),[]);
@@ -1571,12 +1618,12 @@ function AiPanel({task,title,subtitle,icon,user,modeHint}){
  const [lessonDoubtHistory,setLessonDoubtHistory]=useState([]);
  const [lessonDoubtLoading,setLessonDoubtLoading]=useState(false);
  const [lessonDoubtError,setLessonDoubtError]=useState('');
- const responseRef=useRef(null);const requestSeqRef=useRef(0);const answerBoxRef=useRef(null);const lastAskRef=useRef(null);const streamAbortRef=useRef(null);
+ const responseRef=useRef(null);const requestSeqRef=useRef(0);const answerBoxRef=useRef(null);const lastAskRef=useRef(null);const streamAbortRef=useRef(null);const askRef=useRef(null);const prefillTimerRef=useRef(null);
  const [askError,setAskError]=useState('');
  useEffect(()=>{if(user?.id)api('/intelligence/'+user.id).then(setLearningContext).catch(()=>setLearningContext(null));},[user?.id]);
- useEffect(()=>()=>{try{streamAbortRef.current?.abort()}catch{}},[]);
+ useEffect(()=>()=>{if(prefillTimerRef.current){clearTimeout(prefillTimerRef.current);prefillTimerRef.current=null;}try{streamAbortRef.current?.abort()}catch{}},[]);
  useEffect(()=>{const apply=()=>{const m=readTutorMemory(user?.id);if(contextKey&&m.contextKey&&m.contextKey!==contextKey)return;setTopic(m.topic||'');setMessage(m.message||'');setAnswer(m.contextKey===contextKey?m.answer:'');setStudentAnswer(m.contextKey===contextKey?m.studentAnswer:'');setFeedback(m.contextKey===contextKey?m.feedback:'');setAnswerSubmitted(Boolean(m.contextKey===contextKey&&m.answerSubmitted));};window.addEventListener('nova:tutor-memory-updated',apply);return()=>window.removeEventListener('nova:tutor-memory-updated',apply)},[user?.id,contextKey]);
- useEffect(()=>{const apply=()=>{try{const x=readJSON('nova_ai_prefill',null);if(x){const nextContextKey=x.contextKey||'';setContextKey(nextContextKey);setTopic(x.topic||'');setMessage(x.message||'');internalContextRef.current=typeof x.contextPrompt==='string'?x.contextPrompt:'';if(x.lessonId&&x.courseId){setLessonContext({lessonId:x.lessonId,courseId:x.courseId,topic:x.topic||''});setLessonDoubtHistory([]);setLessonDoubtError('');}setAnswer('');setFeedback('');setStudentAnswer('');setAnswerSubmitted(false);localStorage.removeItem('nova_ai_prefill');if(x.autoAsk&&x.message){setTimeout(()=>ask(x.message,x.topic,nextContextKey),80)}}}catch{}};apply();window.addEventListener('nova-ai-prefill',apply);return()=>window.removeEventListener('nova-ai-prefill',apply)},[]);
+ useEffect(()=>{const apply=()=>{try{const x=readJSON('nova_ai_prefill',null);if(x){const nextContextKey=x.contextKey||'';setContextKey(nextContextKey);setTopic(x.topic||'');setMessage(x.message||'');internalContextRef.current=typeof x.contextPrompt==='string'?x.contextPrompt:'';if(x.lessonId&&x.courseId){setLessonContext({lessonId:x.lessonId,courseId:x.courseId,topic:x.topic||''});setLessonDoubtHistory([]);setLessonDoubtError('');}setAnswer('');setFeedback('');setStudentAnswer('');setAnswerSubmitted(false);localStorage.removeItem('nova_ai_prefill');if(x.autoAsk&&x.message){if(prefillTimerRef.current)clearTimeout(prefillTimerRef.current);prefillTimerRef.current=setTimeout(()=>{prefillTimerRef.current=null;askRef.current?.(x.message,x.topic,nextContextKey)},80)}}}catch{}};apply();window.addEventListener('nova-ai-prefill',apply);return()=>{window.removeEventListener('nova-ai-prefill',apply);if(prefillTimerRef.current){clearTimeout(prefillTimerRef.current);prefillTimerRef.current=null;}}},[]);
  /* Smart scroll: the reply box is brought into view once per NEW request.
     The old effect re-ran on every streamed chunk and pinned the reader to the
     top of long answers mid-stream; during streaming the user now scrolls
@@ -1614,6 +1661,7 @@ const lessonBg=internalContextRef.current?`\n\nLESSON CONTEXT (background for te
  saveTutorMemory(user?.id,{topic:effectiveTopic,message:effectiveMessage,answer:nextAnswer,feedback:'',studentAnswer:'',answerSubmitted:false,contextKey:effectiveContextKey});
  appendTutorTurn(user?.id,'USER',effectiveMessage,{topic:effectiveTopic,source:'ai-teacher',contextKey:effectiveContextKey});
  appendTutorTurn(user?.id,'ASSISTANT',nextAnswer,{topic:effectiveTopic,source:'ai-teacher',contextKey:effectiveContextKey});}catch(e){if(e?.name==='AbortError')return;if(requestId===requestSeqRef.current)setAskError(e.message||'Nova could not be reached right now. Please try again.')}finally{if(requestId===requestSeqRef.current)setLoading(false)}}
+ askRef.current=ask;
  const previousTeachingModeRef=useRef(modeHint||'');
  useEffect(()=>{
   const previous=previousTeachingModeRef.current;
@@ -1653,16 +1701,38 @@ Answer only this specific doubt using the current lesson as context. Explain the
  }
  return <div className="ai-workspace"><aside className="ai-composer"><label>TOPIC</label><input value={topic} onChange={e=>setTopic(e.target.value)} placeholder="e.g. Java inheritance"/><textarea value={message} onChange={e=>setMessage(e.target.value)} rows="9" aria-label="Message to Nova" placeholder="Ask Nova to teach you, explain a concept, or test you…"/><button className="primary full" onClick={ask} disabled={loading}>{loading?'Thinking…':'Ask Nova'} <Send size={14}/></button><small className="ai-composer-hint">Nova teaches at your level, then checks your understanding.</small></aside><section ref={answerBoxRef} className={"ai-transcript ai-teacher-answer-box "+(task==='TUTOR'?'is-teacher':'')} aria-live="polite"><div className="ai-transcript-head"><div className="ai-avatar">{icon}</div><div><b>{title}</b><small>Teaching → check → feedback</small></div><span className="ai-live-dot" aria-hidden="true"/></div>{askError&&<div className="error-banner ai-teacher-error" role="alert"><span><b>Nova couldn't finish this answer.</b> {askError} Your previous teaching content is safe.</span><button className="secondary compact" onClick={()=>{const r=lastAskRef.current;if(r)ask(r.message,r.topic,r.contextKey)}}>Try again</button></div>}{loading&&!answer&&<div className="ai-teacher-thinking"><span className="nova-thinking-dots" aria-hidden="true"><i/><i/><i/></span>Nova is thinking…</div>}{answer?<div className="ai-transcript-body"><div className="ai-turn ai-turn-teacher"><div ref={responseRef} className="answer ai-teacher-response"><AiMarkdown content={teacherAnswerBody}/></div></div>{teacherMiniQuestion&&<div className="teacher-mini-question"><span>Mini question for you</span><AiMarkdown content={teacherMiniQuestion}/></div>}{answerSubmitted&&teacherMiniQuestion&&<div className="teacher-feedback teacher-submitted"><b>✓ Answer submitted</b><div><AiMarkdown content={feedback||'Your teacher has already evaluated this response.'}/></div></div>}{teacherMiniQuestion&&<div className="teacher-check"><div className="teacher-check-head"><b>Your turn</b><small>Answer above to continue the lesson.</small></div><textarea value={studentAnswer} onChange={e=>setStudentAnswer(e.target.value)} rows="5" placeholder="Write your answer here…"/><button className="primary" onClick={submitStudentAnswer} disabled={checking||!studentAnswer.trim()}>{checking?'Checking your answer…':'Reply to teacher'} <CheckCircle2 size={15}/></button></div>}</div>:<div className="empty ai-empty-motion"><LottiePlayer src={lottieLogoUrl} className="ai-empty-lottie" ariaLabel="Nova thinking"/><b>Your lesson appears here</b><span>Ask a focused question and Nova will teach you, then check your understanding.</span></div>}</section>{task==='TUTOR'&&<section className="ai-lesson-doubt" aria-label="Ask a doubt about this lesson"><div className="lesson-doubt-head"><div><span className="eyebrow">LESSON DOUBT</span><h4>Still stuck on this lesson?</h4><p>Each answer stays in its own section below; ask another doubt anytime.</p></div></div>{lessonDoubtHistory.map((item,index)=><div className="lesson-doubt-answer" key={index}><div className="lesson-doubt-question"><span>YOUR DOUBT</span><b>{item.question}</b></div><div className="answer-head"><div className="ai-avatar">{icon}</div><div><b>Nova's explanation</b><small>Based on this lesson</small></div></div><AiMarkdown content={item.answer}/></div>)}<div className="lesson-doubt-composer"><textarea value={lessonDoubt} onChange={e=>setLessonDoubt(e.target.value)} rows="3" aria-label="Type your doubt about this lesson" placeholder="Type your doubt here — e.g. “Why does the loop stop at n-1 instead of n?”"/><button className="primary" onClick={askTeacherLessonDoubt} disabled={lessonDoubtLoading||!lessonDoubt.trim()}>{lessonDoubtLoading?'Clearing doubt…':'Ask'} <Send size={14}/></button></div><small className="lesson-doubt-context">{lessonContext.topic||'Current lesson'}</small>{lessonDoubtError&&<div className="error-banner">{lessonDoubtError}</div>}</section>}</div>}
 
-function LearningStudio({user,initialTab='teacher'}){
- const [tab,setTab]=useState(()=>initialTab||localStorage.getItem('nova_learning_studio_tab')||'teacher'); const [teachingMode,setTeachingMode]=useState(()=>localStorage.getItem('nova_teaching_mode')||'Step-by-step');
- useModulePersistence(user?.id,'learning-studio',{tab,teachingMode},{tab:x=>setTab(x||initialTab||'teacher'),teachingMode:x=>setTeachingMode(x||'Step-by-step')});
+function LearningStudio({user,initialTab=null,routeTab=null,onRouteTab}){
+ const [tab,setTab]=useState(()=>{
+  if(readJSON('nova_ai_prefill',null))return 'teacher';
+  return routeTab||initialTab||localStorage.getItem('nova_learning_studio_tab')||'teacher';
+ });
+ const [teachingMode,setTeachingMode]=useState(()=>localStorage.getItem('nova_teaching_mode')||'Step-by-step');
+ const prevRouteTabRef=useRef(routeTab);
+ useEffect(()=>{
+  const prev=prevRouteTabRef.current;
+  prevRouteTabRef.current=routeTab;
+  if(routeTab){
+   if(routeTab!==tab)setTab(routeTab);
+  }else if(prev){
+   setTab('teacher');
+  }
+ },[routeTab]);
+ useEffect(()=>{
+  const onPrefill=()=>{setTab('teacher');localStorage.setItem('nova_learning_studio_tab','teacher');};
+  window.addEventListener('nova-ai-prefill',onPrefill);
+  return()=>window.removeEventListener('nova-ai-prefill',onPrefill);
+ },[]);
+ useModulePersistence(user?.id,'learning-studio',{tab,teachingMode},{
+  tab:x=>{if(routeTab||initialTab||readJSON('nova_ai_prefill',null))return;setTab(x||'teacher');},
+  teachingMode:x=>setTeachingMode(x||'Step-by-step')
+ });
  const tabs=[
   {id:'teacher',label:'AI Teacher',eyebrow:'TEACH • PRACTICE',icon:<BrainCircuit size={17}/>,title:'Learn with Nova like a personal teacher.',desc:'Ask doubts, get step-by-step teaching, answer mini questions and receive feedback.'},
   {id:'voice',label:'Voice Tutor',eyebrow:'SPEAK • LISTEN',icon:<Mic size={17}/>,title:'Talk through concepts naturally.',desc:'Ask by voice, get a teaching response and listen to the explanation aloud.'}
  ];
- const active=tabs.find(x=>x.id===tab)||tabs[1];
- function changeTab(next){setTab(next);localStorage.setItem('nova_learning_studio_tab',next);window.dispatchEvent(new Event('nova-learning-studio-tab'))}
-const TEACHING_MODES=['Step-by-step','Socratic','Visual','Exam Coach','Interview Coach','Simple analogy'];
+ const active=tabs.find(x=>x.id===tab)||tabs[0];
+ function changeTab(next){setTab(next);localStorage.setItem('nova_learning_studio_tab',next);onRouteTab?.(next);window.dispatchEvent(new Event('nova-learning-studio-tab'))}
+ const TEACHING_MODES=['Step-by-step','Socratic','Visual','Exam Coach','Interview Coach','Simple analogy'];
  return <>
   <div className="studio-head">
    <div className="studio-head-copy"><span className="eyebrow">NOVA LEARNING STUDIO</span><h1>Learn with <span>Nova.</span></h1><p>{active.desc}</p></div>
@@ -1685,12 +1755,12 @@ function PracticeHub({courses,progress,refresh,user,go}){
    <div className={tab==='code'?'practice-panel-visible':'practice-panel-hidden'} aria-hidden={tab!=='code'}><CodeLab user={user}/></div>
  </div></>;
 }
-function PrepareHub({user,go}){
+function PrepareHub({user,go,gateTab,onGateTab,dsaSlug,onDsaSlug}){
  const [tab,setTab]=useState(()=>localStorage.getItem('nova_prepare_tab')||'exam');
  useModulePersistence(user?.id,'prepare',{tab},{tab:x=>setTab(x||'exam')});
  const tabs=[['exam','Exam Simulator'],['gatecse','GATE CSE'],['dsa','DSA Practice'],['interview','AI Interviewer'],['career','Career Hub']];
  const change=t=>{setTab(t);localStorage.setItem('nova_prepare_tab',t)};
- return <><div className="page-title"><span className="eyebrow">PREPARATION WORKSPACE</span><h1>Prepare with <span>Nova.</span></h1><p>Exam readiness, GATE preparation, interviews and career planning connected to your learning data.</p></div><div className="practice-hub-tabs">{tabs.map(x=><button className={tab===x[0]?'active':''} onClick={()=>change(x[0])} key={x[0]}>{x[1]}</button>)}</div><div>{tab==='exam'&&<ExamSimulator user={user}/>} {tab==='gatecse'&&<GateCse/>} {tab==='dsa'&&<DsaPractice user={user} api={api}/>} {tab==='interview'&&<Interviewer user={user}/>} {tab==='career'&&<CareerHub user={user} go={go}/>}</div></>;
+ return <><div className="page-title"><span className="eyebrow">PREPARATION WORKSPACE</span><h1>Prepare with <span>Nova.</span></h1><p>Exam readiness, GATE preparation, interviews and career planning connected to your learning data.</p></div><div className="practice-hub-tabs">{tabs.map(x=><button className={tab===x[0]?'active':''} onClick={()=>change(x[0])} key={x[0]}>{x[1]}</button>)}</div><div>{tab==='exam'&&<ExamSimulator user={user}/>} {tab==='gatecse'&&<GateCse routeTab={gateTab} onRouteTab={onGateTab}/>} {tab==='dsa'&&<DsaPractice user={user} api={api} routeSlug={dsaSlug} onRouteSlug={onDsaSlug}/>} {tab==='interview'&&<Interviewer user={user}/>} {tab==='career'&&<CareerHub user={user} go={go}/>}</div></>;
 }
 
 function useLiveRuntimeSession(userId,module,initialState){
@@ -1874,7 +1944,7 @@ function TopNav({user,role,page,go,dark,setDark,navModel,activeGroup,mobile,setM
  const firstPage=useRef(page);
  useEffect(()=>{
   const close=e=>{if(rootRef.current&&!rootRef.current.contains(e.target)){setOpenMenu(null);setAccountOpen(false)}};
-  const esc=e=>{if(e.key==='Escape'){setOpenMenu(null);setAccountOpen(false)}};
+  const esc=e=>{if(e.key==='Escape'){setOpenMenu(null);setAccountOpen(false);setMobile(false)}};
   document.addEventListener('pointerdown',close);
   document.addEventListener('keydown',esc);
   return()=>{document.removeEventListener('pointerdown',close);document.removeEventListener('keydown',esc)};
