@@ -30,6 +30,16 @@ public class IntelligenceController {
    if(req==null||req.type()==null||req.type().isBlank()) throw new IllegalArgumentException("Learning event type is required");
    String type=req.type().trim().toUpperCase(Locale.ROOT);
    if(!Set.of("DPP_COMPLETED","STUDY_SPRINT_COMPLETED","STUDY_SESSION_COMPLETED").contains(type)) throw new IllegalArgumentException("Unsupported client learning event type");
+   if (Set.of("STUDY_SPRINT_COMPLETED", "STUDY_SESSION_COMPLETED").contains(type)) {
+     LocalDate todayIst = LocalDate.now(ZoneId.of("Asia/Kolkata"));
+     long todaySelfReported = events.findTop200ByUserIdOrderByCreatedAtDesc(userId).stream()
+             .filter(e -> Set.of("STUDY_SPRINT_COMPLETED", "STUDY_SESSION_COMPLETED").contains(e.getType()))
+             .filter(e -> e.getCreatedAt() != null && e.getCreatedAt().atZone(ZoneId.systemDefault()).withZoneSameInstant(ZoneId.of("Asia/Kolkata")).toLocalDate().equals(todayIst))
+             .count();
+     if (todaySelfReported >= 6) {
+       return Map.of("saved", false, "type", type, "capped", true);
+     }
+   }
    String details=clean(req.details(),1000);
    int score=req.score()==null?0:Math.max(0,Math.min(100,req.score()));
    String dedupeKey=eventDedupeKey(type, u.getId(), req.subject(), req.topic(), details);
@@ -115,9 +125,13 @@ public class IntelligenceController {
    String t=type.toUpperCase(Locale.ROOT);
    if(Set.of("LESSON_COMPLETED").contains(t)) return t+":"+userId+":"+clean(subject,120)+":"+clean(topic,180);
    if(Set.of("DPP_COMPLETED","REVISION_COMPLETED").contains(t)) return t+":"+userId+":"+java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata"))+":"+clean(subject,120)+":"+clean(topic,180);
+   if(Set.of("STUDY_SPRINT_COMPLETED","STUDY_SESSION_COMPLETED").contains(t)) {
+     String hourBucket = LocalDateTime.now(ZoneId.of("Asia/Kolkata")).truncatedTo(java.time.temporal.ChronoUnit.HOURS).toString();
+     return t+":"+userId+":"+hourBucket+":"+Objects.toString(clean(subject,60),"general");
+   }
    return null;
  }
  private static String clean(String s,int max){if(s==null)return null;s=s.trim();return s.isBlank()?null:s.substring(0,Math.min(max,s.length()));}
- private static int safeDuration(Integer x){return x==null?0:Math.max(0,Math.min(86400,x));}
+ private static int safeDuration(Integer x){return x==null?0:Math.max(0,Math.min(3600,x));}
  private static List<String> parseWrong(QuizAttempt q){if(q.getWrongQuestionIds()==null||q.getWrongQuestionIds().isBlank())return List.of();return Arrays.stream(q.getWrongQuestionIds().split(",")).map(String::trim).filter(x->!x.isBlank()).toList();}
 }

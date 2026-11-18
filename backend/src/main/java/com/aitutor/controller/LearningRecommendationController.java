@@ -30,7 +30,10 @@ public class LearningRecommendationController {
     public Map<String, Object> next(@PathVariable Long userId, Authentication authentication) {
         authenticatedUser.requireSame(authentication,userId);
         users.findById(userId).orElseThrow();
-        List<Course> all = courses.findAll();
+        boolean admin = authenticatedUser.isAdmin(authentication);
+        List<Course> all = courses.findAll().stream()
+                .filter(c -> admin || c.isPublished())
+                .toList();
         List<Progress> rows = progress.findByUserId(userId);
         Course chosen = all.stream()
                 .min(Comparator.comparingDouble(c -> rows.stream().filter(p -> p.getCourse().getId().equals(c.getId()))

@@ -479,4 +479,62 @@ class SecurityRemediationTest {
         assertEquals("GUEST_CAPACITY_REACHED", capEx.code());
         assertEquals(429, capEx.status().value());
     }
+
+    @Test
+    void draftCoursesBlockedAcrossStudentEndpointsAndSecurityHeadersPresent() throws Exception {
+        User student = createUser("draftstud", "STUDENT", true);
+        User admin = createUser("draftadmin", "ADMIN", true);
+        User guest = createUser("draftguest", "GUEST", true);
+        String studentToken = jwt.token(student);
+        String adminToken = jwt.token(admin);
+
+        // Create an unpublished draft course via admin endpoint
+        String createdJson = mvc.perform(post("/api/admin/courses")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"title\":\"Secret Draft Course\",\"description\":\"Hidden\",\"level\":\"Advanced\",\"published\":false}"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        Long draftId = new com.fasterxml.jackson.databind.ObjectMapper().readTree(createdJson).get("id").asLong();
+        mvc.perform(patch("/api/admin/courses/" + draftId + "/publish?published=false")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.published", is(false)));
+
+        // Student cannot access draft course quizzes or DPP
+        mvc.perform(get("/api/quizzes/course/" + draftId).header("Authorization", "Bearer " + studentToken))
+                .andExpect(status().isNotFound());
+        mvc.perform(post("/api/dpp/generate")
+                        .header("Authorization", "Bearer " + studentToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"courseId\":" + draftId + "}"))
+                .andExpect(status().isNotFound());
+
+        // Admin cannot promote GUEST to ADMIN
+        mvc.perform(patch("/api/admin/users/" + guest.getId() + "/role")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"role\":\"ADMIN\"}"))
+                .andExpect(status().isBadRequest());
+
+        // Adaptive AI answer rejects fabricated negative questionId
+        mvc.perform(post("/api/adaptive/" + student.getId() + "/answer")
+                        .header("Authorization", "Bearer " + studentToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"questionId\":-999999,\"selectedOption\":0}"))
+                .andExpect(status().isBadRequest());
+
+        // API security headers are emitted
+        mvc.perform(get("/api/health"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+                .andExpect(header().string("X-Frame-Options", "DENY"))
+                .andExpect(header().string("Referrer-Policy", "strict-origin-when-cross-origin"))
+                .andExpect(header().string("Content-Security-Policy", containsString("default-src 'none'")))
+                .andExpect(header().string("Permissions-Policy", containsString("microphone=(self)")));
+
+        // Non-GET on /api/courses requires authentication (401, not permitAll)
+        mvc.perform(delete("/api/courses/" + draftId))
+                .andExpect(status().isUnauthorized());
+    }
 }

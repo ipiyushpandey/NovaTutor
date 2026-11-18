@@ -204,6 +204,7 @@ public class AdminController {
     public Map<String,Object> updateUserRole(@RequestHeader(value="Authorization", required=false) String authorization,@PathVariable Long userId,@RequestBody RoleRequest r){
         User me=admin(authorization); User u=users.findById(userId).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"User not found"));
         if(u.getEmail().equalsIgnoreCase(adminEmail) || Objects.equals(me.getId(),u.getId())) throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Owner account cannot be changed");
+        if(com.aitutor.service.GuestService.ROLE.equalsIgnoreCase(u.getRole())) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Guest accounts cannot be promoted or modified");
         String role=r.role()==null?"STUDENT":r.role().trim().toUpperCase(Locale.ROOT); if(!Set.of("STUDENT","ADMIN").contains(role)) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Unsupported role");
         u.setRole(role); users.save(u); audit(me,"ROLE_CHANGED",String.valueOf(userId),"SUCCESS",role); return Map.of("id",u.getId(),"role",u.getRole());
     }

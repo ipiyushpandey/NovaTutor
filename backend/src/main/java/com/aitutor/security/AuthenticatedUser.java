@@ -24,9 +24,20 @@ public class AuthenticatedUser {
 
     public void requireSame(Authentication authentication, Long requestedId) {
         User user = require(authentication);
-        boolean admin = "ADMIN".equalsIgnoreCase(user.getRole()) || "OWNER".equalsIgnoreCase(user.getRole());
-        if (!admin && !user.getId().equals(requestedId)) {
+        if (!isAdmin(user) && !user.getId().equals(requestedId)) {
             throw new AccessDeniedException("You can only access your own account data");
         }
+    }
+
+    public boolean isAdmin(User user) {
+        return user != null && ("ADMIN".equalsIgnoreCase(user.getRole()) || "OWNER".equalsIgnoreCase(user.getRole()));
+    }
+
+    public boolean isAdmin(Authentication authentication) {
+        if (authentication == null || !authentication.isAuthenticated() || authentication.getAuthorities() == null) {
+            return false;
+        }
+        return authentication.getAuthorities().stream()
+                .anyMatch(a -> "ROLE_ADMIN".equalsIgnoreCase(a.getAuthority()) || "ROLE_OWNER".equalsIgnoreCase(a.getAuthority()));
     }
 }

@@ -101,7 +101,8 @@ public class AdaptiveController {
         revisions.stream().limit(5).forEach(r->rescue.add("20 min — " + r.subject()+": revise " + r.topic()+" and solve 5 focused questions."));
         if(rescue.isEmpty()) rescue.add("Take a 10-question diagnostic quiz, then NovaTutor will build a personalized recovery plan.");
         ScoreCard card=new ScoreCard(readiness,confidence,mastered,needs,dueCount,headline,subjects);
-        List<Question> adaptive=adaptiveQuestions(qs,bySubject,adaptiveLevel,recentlySeen);
+        boolean admin = authenticatedUser.isAdmin(authentication);
+        List<Question> adaptive=adaptiveQuestions(qs,bySubject,adaptiveLevel,recentlySeen,admin);
         return new AdaptiveView(card,adaptive,revisions.stream().limit(12).toList(),map.stream().limit(60).toList(),rescue,adaptiveLevel,adaptiveReason);
     }
 
@@ -118,25 +119,28 @@ public class AdaptiveController {
                 +"Use a reasoning/scenario/output-analysis style question rather than trivial recall. It may involve code, algorithms, data structures, systems or a trace. "
                 +"Return ONLY valid JSON with keys question, options (array of exactly 4 strings), correctOption (0-3), explanation, difficulty, topic. "
                 +"Do not copy known exam wording. Make exactly one option correct.";
-        if(!aiProvider.available()) throw new IllegalStateException("AI question generation is unavailable until the Gemini API key is configured.");
+        if(!aiProvider.available()) throw new com.aitutor.controller.ApiException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "AI_UNAVAILABLE", "AI question generation is unavailable until the Gemini API key is configured.");
         String responseLanguage = u.getPreferredAiLanguage() == null || u.getPreferredAiLanguage().isBlank()
                 ? "English" : u.getPreferredAiLanguage();
         String raw=aiProvider.generate(new AiRequest(AiTask.QUIZ,subject,prompt,level.toLowerCase(Locale.ROOT),responseLanguage)).answer();
         JsonNode node=parseJson(raw);
         if(node==null || !node.hasNonNull("question") || !node.has("options") || !node.get("options").isArray() || node.get("options").size()!=4)
-            throw new IllegalStateException("AI returned an invalid quiz question. Please try again.");
+            throw new com.aitutor.controller.ApiException(org.springframework.http.HttpStatus.BAD_GATEWAY, "AI_INVALID_RESPONSE", "AI returned an invalid quiz question. Please try again.");
         String text=node.get("question").asText().trim();
         List<String> opts=new ArrayList<>(); node.get("options").forEach(x->opts.add(x.asText()));
         int correct=node.has("correctOption")?node.get("correctOption").asInt(-1):-1;
-        if(correct<0||correct>3) throw new IllegalStateException("AI returned an invalid answer index.");
+        if(correct<0||correct>3) throw new com.aitutor.controller.ApiException(org.springframework.http.HttpStatus.BAD_GATEWAY, "AI_INVALID_RESPONSE", "AI returned an invalid answer index.");
         String explanation = node.path("explanation").asText("Review the reasoning behind the correct option.");
         String difficulty = node.path("difficulty").asText(level);
         String topic = node.path("topic").asText(subject);
         // Never mutate the shared global quiz_question bank from student/guest AI requests.
-        // Record only the learner's own event and keep the generated question scoped to this user's response.
+        // Bind the exact transientId to this user's event so answers can only consume real, single-use questions.
         long transientId = -Math.abs(System.nanoTime());
-        events.save(new LearningEvent(u, "ADAPTIVE_AI_GENERATED", subject, topic, null, 0,
-                "correct=" + correct + ";explanation=" + explanation.substring(0, Math.min(explanation.length(), 400))));
+        if (transientId == 0L) transientId = -1L;
+        String generatedKey = "ADAPTIVE_AI_GENERATED:" + u.getId() + ":" + transientId;
+        eventService.record(u, "ADAPTIVE_AI_GENERATED", subject, topic, null, 0,
+                "qid=" + transientId + ";correct=" + correct + ";explanation=" + explanation.substring(0, Math.min(explanation.length(), 400)),
+                generatedKey);
         return new Question(transientId, subject, text, List.copyOf(opts), difficulty, topic);
     }
 
@@ -198,32 +202,54 @@ public class AdaptiveController {
         Long qid=Long.valueOf(String.valueOf(body.get("questionId")));
         int selected=Integer.parseInt(String.valueOf(body.get("selectedOption")));
         if (qid <= 0) {
-            List<LearningEvent> generated = events.findTop5ByUserIdAndTypeOrderByCreatedAtDesc(userId, "ADAPTIVE_AI_GENERATED");
-            if (!generated.isEmpty() && generated.get(0).getDetails() != null && generated.get(0).getDetails().startsWith("correct=")) {
-                String details = generated.get(0).getDetails();
-                int semi = details.indexOf(';');
-                int expected = Integer.parseInt(details.substring(8, semi > 0 ? semi : details.length()));
-                boolean correct = selected == expected;
-                eventService.record(u, "ADAPTIVE_QUESTION", generated.get(0).getSubject(), "Adaptive practice",
-                        correct ? 100 : 0, 0, "aiQuestion;" + (correct ? "Correct" : "Incorrect"),
-                        "ADAPTIVE_QUESTION:" + u.getId() + ":" + qid + ":" + System.currentTimeMillis() / 60000);
-                return Map.of("correct", correct, "correctOption", expected,
-                        "message", correct ? "Correct. Difficulty can increase." : "Not quite. This concept should be revised before the next attempt.");
+            String generatedKey = "ADAPTIVE_AI_GENERATED:" + userId + ":" + qid;
+            LearningEvent generated = events.findByUserIdAndDedupeKey(userId, generatedKey)
+                    .orElseThrow(() -> new com.aitutor.controller.ApiException(
+                            org.springframework.http.HttpStatus.BAD_REQUEST, "QUESTION_EXPIRED",
+                            "Question session expired. Generate a fresh question."));
+            String answerKey = "ADAPTIVE_QUESTION:" + u.getId() + ":" + qid;
+            if (events.findByUserIdAndDedupeKey(userId, answerKey).isPresent()) {
+                throw new com.aitutor.controller.ApiException(
+                        org.springframework.http.HttpStatus.CONFLICT, "ALREADY_ANSWERED",
+                        "This question has already been answered.");
             }
-            throw new IllegalArgumentException("Question session expired. Generate a fresh question.");
+            int expected = parseCorrectOption(generated.getDetails());
+            boolean correct = selected == expected;
+            eventService.record(u, "ADAPTIVE_QUESTION", generated.getSubject(), "Adaptive practice",
+                    correct ? 100 : 0, 0, "aiQuestion;qid=" + qid + ";" + (correct ? "Correct" : "Incorrect"),
+                    answerKey);
+            return Map.of("correct", correct, "correctOption", expected,
+                    "message", correct ? "Correct. Difficulty can increase." : "Not quite. This concept should be revised before the next attempt.");
         }
         QuizQuestion q=questions.findById(qid).orElseThrow();
-        boolean correct=selected==q.getCorrectOption();
         Course c=q.getCourse();
-        eventService.record(u,"ADAPTIVE_QUESTION",c==null?null:c.getTitle(),"Adaptive practice",correct?100:0,0,"questionId="+qid+";"+(correct?"Correct":"Incorrect"),"ADAPTIVE_QUESTION:"+u.getId()+":"+qid+":"+System.currentTimeMillis()/60000);
+        if (c != null && !c.isPublished() && !authenticatedUser.isAdmin(u)) {
+            throw new NoSuchElementException("Question not found");
+        }
+        boolean correct=selected==q.getCorrectOption();
+        LocalDate todayIst = LocalDate.now(ZoneId.of("Asia/Kolkata"));
+        eventService.record(u,"ADAPTIVE_QUESTION",c==null?null:c.getTitle(),"Adaptive practice",correct?100:0,0,"questionId="+qid+";"+(correct?"Correct":"Incorrect"),"ADAPTIVE_QUESTION:"+u.getId()+":"+qid+":"+todayIst);
         return Map.of("correct",correct,"correctOption",q.getCorrectOption(),"message",correct?"Correct. Difficulty can increase.":"Not quite. This concept should be revised before the next attempt.");
     }
 
-    private List<Question> adaptiveQuestions(List<QuizAttempt> qs, Map<String,List<QuizAttempt>> bySubject, String level, Set<Long> recentlySeen){
+    private static int parseCorrectOption(String details) {
+        if (details == null) throw new IllegalArgumentException("Question metadata missing.");
+        int idx = details.indexOf("correct=");
+        if (idx < 0) throw new IllegalArgumentException("Question metadata invalid.");
+        int start = idx + 8;
+        int semi = details.indexOf(';', start);
+        return Integer.parseInt(details.substring(start, semi > 0 ? semi : details.length()).trim());
+    }
+
+    private List<Question> adaptiveQuestions(List<QuizAttempt> qs, Map<String,List<QuizAttempt>> bySubject, String level, Set<Long> recentlySeen, boolean admin){
         Set<Long> wrong=new HashSet<>();
         qs.stream().flatMap(q->parseWrong(q).stream()).forEach(x->{try{wrong.add(Long.valueOf(x));}catch(Exception ignored){}});
         List<QuizQuestion> pool=new ArrayList<>(questions.findAll());
-        LinkedHashMap<Long,QuizQuestion> unique=new LinkedHashMap<>(); for(QuizQuestion q:pool) unique.putIfAbsent(q.getId(),q);
+        LinkedHashMap<Long,QuizQuestion> unique=new LinkedHashMap<>();
+        for(QuizQuestion q:pool) {
+            if (!admin && q.getCourse() != null && !q.getCourse().isPublished()) continue;
+            unique.putIfAbsent(q.getId(),q);
+        }
         List<QuizQuestion> fresh=new ArrayList<>();
         List<QuizQuestion> review=new ArrayList<>();
         int target=difficultyRank(level);

@@ -26,8 +26,11 @@ public class QuizController {
     record Result(int total,int correct,int score,String message,List<Long> wrongQuestionIds){}
 
     @GetMapping("/course/{courseId}")
-    List<Question> questions(@PathVariable Long courseId){
-        courses.findById(courseId).orElseThrow();
+    List<Question> questions(@PathVariable Long courseId, Authentication authentication){
+        Course course = courses.findById(courseId).orElseThrow();
+        if (!course.isPublished() && !authenticatedUser.isAdmin(authentication)) {
+            throw new NoSuchElementException("Course not found");
+        }
         // Remove duplicate question text, shuffle the pool, then expose exactly 20 questions.
         // This repairs old databases that may already contain repeated quiz rows.
         Map<String, QuizQuestion> unique = new LinkedHashMap<>();
@@ -49,8 +52,11 @@ public class QuizController {
      */
     @GetMapping("/course/{courseId}/revision")
     List<Question> revision(@PathVariable Long courseId, Authentication authentication) {
-        courses.findById(courseId).orElseThrow();
+        Course course = courses.findById(courseId).orElseThrow();
         User user = authenticatedUser.require(authentication);
+        if (!course.isPublished() && !authenticatedUser.isAdmin(user)) {
+            throw new NoSuchElementException("Course not found");
+        }
         Set<Long> wrong = new LinkedHashSet<>();
         Set<Long> correct = new HashSet<>();
         for (QuizAttempt attempt : attempts.findByUserId(user.getId())) {
@@ -95,6 +101,9 @@ public class QuizController {
     Result submit(@PathVariable Long courseId,@RequestBody Submit s, Authentication authentication){
         Course course=courses.findById(courseId).orElseThrow();
         User user=authenticatedUser.require(authentication);
+        if (!course.isPublished() && !authenticatedUser.isAdmin(user)) {
+            throw new NoSuchElementException("Course not found");
+        }
         Map<Long,QuizQuestion> available = repo.findByCourseIdOrderByIdAsc(courseId).stream()
                 .collect(Collectors.toMap(QuizQuestion::getId, Function.identity(), (a,b)->a));
         Map<Long,Integer> selected=new HashMap<>();
@@ -107,7 +116,7 @@ public class QuizController {
             boolean ok=selected.get(id)==q.getCorrectOption();
             if(ok) correct++; else wrong.add(id);
             String topic=q.getTopic();
-            if(topic==null||topic.isBlank()){ topic=conceptFromQuestion(q.getQuestion(),course.getTitle()); q.setTopic(topic); repo.save(q); }
+            if(topic==null||topic.isBlank()){ topic=conceptFromQuestion(q.getQuestion(),course.getTitle()); }
             eventService.record(user,"QUIZ_QUESTION",course.getTitle(),topic,ok?100:0,0,"questionId="+id+";difficulty="+Objects.toString(q.getDifficulty(),"Mixed"),// Include the outcome so a correct retry in the same minute is not swallowed by
             // the wrong attempt's dedupe key. Question revision depends on this signal.
             "QUIZ_QUESTION:"+user.getId()+":"+id+":"+(ok?"1":"0")+":"+System.currentTimeMillis()/60000);

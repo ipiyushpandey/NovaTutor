@@ -111,10 +111,11 @@ public class GeminiProvider implements AiProvider {
                 });
                 return;
             } catch (Exception e) {
-                last = e;
+                Exception scrubbed = new IllegalStateException(safeMessage(e.getMessage()));
+                last = scrubbed;
                 // Never switch models after partial output: doing so would duplicate
                 // the beginning of the answer in the browser.
-                if (emitted.get()) throw e;
+                if (emitted.get()) throw scrubbed;
             }
         }
         throw last == null ? new IllegalStateException("Gemini streaming request failed") : last;
@@ -139,7 +140,10 @@ public class GeminiProvider implements AiProvider {
 
         HttpResponse<java.io.InputStream> response = streamingClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            String error = new String(response.body().readAllBytes(), StandardCharsets.UTF_8);
+            String error;
+            try (java.io.InputStream errBody = response.body()) {
+                error = new String(errBody.readAllBytes(), StandardCharsets.UTF_8);
+            }
             if (response.statusCode() == 408 || response.statusCode() == 429 || response.statusCode() >= 500) {
                 throw new TransientGeminiException(response.statusCode() + " " + safeMessage(error));
             }
@@ -190,9 +194,11 @@ public class GeminiProvider implements AiProvider {
 
     private String buildUnavailableMessage(List<String> failures) {
         if (failures.isEmpty()) return "Gemini is temporarily unavailable. Please try again in a few seconds.";
+        org.slf4j.LoggerFactory.getLogger(GeminiProvider.class)
+                .warn("Gemini request failed across candidate models: {}", safeMessage(String.join(" | ", failures)));
         boolean transientOnly = failures.stream().allMatch(this::looksTransient);
         if (transientOnly) return "Gemini is temporarily busy or rate-limited. Please try again in a few seconds.";
-        return "Gemini could not complete the request. " + safeMessage(String.join(" | ", failures));
+        return "Gemini could not complete the request right now. Please try again shortly.";
     }
 
     private boolean looksTransient(String failure) {

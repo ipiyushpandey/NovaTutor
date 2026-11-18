@@ -24,6 +24,9 @@ public class ProgressController {
         authenticatedUser.requireSame(authentication,userId);
         User u=ur.findById(userId).orElseThrow();
         Course c=cr.findById(courseId).orElseThrow();
+        if (!c.isPublished() && !authenticatedUser.isAdmin(authentication)) {
+            throw new NoSuchElementException("Course not found");
+        }
         Lesson lesson=lr.findById(lessonId).orElseThrow();
         if (!lesson.getCourse().getId().equals(courseId)) {
             throw new IllegalArgumentException("Lesson does not belong to this course");

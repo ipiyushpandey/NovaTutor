@@ -37,7 +37,9 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(IllegalStateException.class)
     ResponseEntity<Map<String,String>> conflict(IllegalStateException e) {
-        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("error", "conflict", "message", e.getMessage() == null ? "Operation not allowed" : e.getMessage()));
+        log.warn("Request conflict state: {}", e.getMessage());
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(Map.of("error", "conflict", "message", "Operation cannot be completed in the current state."));
     }
 
     /** Missing entity (orElseThrow on empty Optional) maps to 404, never a 500. */

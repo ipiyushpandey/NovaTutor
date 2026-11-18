@@ -44,6 +44,9 @@ public class MentorController {
     public AiResponse ask(@RequestBody MentorRequest r, Authentication authentication) {
         Lesson lesson = lessons.findById(r.lessonId()).orElseThrow();
         User authenticated = authenticatedUser.require(authentication);
+        if (lesson.getCourse() != null && !lesson.getCourse().isPublished() && !authenticatedUser.isAdmin(authenticated)) {
+            throw new NoSuchElementException("Lesson not found");
+        }
         return ai.ask(buildRequest(r, lesson, authenticated));
     }
 
@@ -52,6 +55,9 @@ public class MentorController {
     public SseEmitter askStream(@RequestBody MentorRequest r, Authentication authentication) {
         Lesson lesson = lessons.findById(r.lessonId()).orElseThrow();
         User authenticated = authenticatedUser.require(authentication);
+        if (lesson.getCourse() != null && !lesson.getCourse().isPublished() && !authenticatedUser.isAdmin(authenticated)) {
+            throw new NoSuchElementException("Lesson not found");
+        }
         SseEmitter emitter = new SseEmitter(300_000L);
         emitter.onTimeout(emitter::complete);
         emitter.onError(ex -> emitter.complete());

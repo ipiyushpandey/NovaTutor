@@ -116,13 +116,23 @@ public class SecurityConfig {
                 .csrf(c -> c.disable())
                 .cors(c -> c.configurationSource(corsSource))
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .headers(h -> h
+                        .contentTypeOptions(c -> {})
+                        .frameOptions(f -> f.deny())
+                        .httpStrictTransportSecurity(hsts -> hsts.includeSubDomains(true).maxAgeInSeconds(31536000))
+                        .referrerPolicy(r -> r.policy(org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN))
+                        .contentSecurityPolicy(csp -> csp.policyDirectives("default-src 'none'; frame-ancestors 'none'"))
+                        .addHeaderWriter(new org.springframework.security.web.header.writers.StaticHeadersWriter(
+                                "Permissions-Policy", "camera=(), microphone=(self), geolocation=()")))
                 .authorizeHttpRequests(a -> a
                         .requestMatchers(org.springframework.http.HttpMethod.OPTIONS, "/**").permitAll()
+                        .requestMatchers(org.springframework.http.HttpMethod.GET,
+                                "/api/courses", "/api/courses/**", "/api/gate-cse/notes/**").permitAll()
                         .requestMatchers("/api/auth/login", "/api/auth/register", "/api/auth/guest", "/api/auth/me",
                                 "/api/auth/verify-email", "/api/auth/resend-verification",
                                 "/api/auth/forgot-password", "/api/auth/reset-password",
                                 "/api/auth/google", "/api/auth/providers",
-                                "/api/health", "/actuator/health/**", "/error", "/api/gate-cse/notes/**", "/api/courses", "/api/courses/**").permitAll()
+                                "/api/health", "/actuator/health/**", "/error").permitAll()
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .anyRequest().authenticated())
                 .exceptionHandling(e -> e

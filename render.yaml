@@ -93,6 +93,22 @@ services:
     envVars:
       - key: VITE_API_URL
         sync: false
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: SAMEORIGIN
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(self), geolocation=()
+      - path: /*
+        name: Content-Security-Policy
+        value: "default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com/gsi/style; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self' https://novatutor-api.onrender.com https://accounts.google.com https://oauth2.googleapis.com; frame-src 'self' https://accounts.google.com; frame-ancestors 'self'; base-uri 'self'; object-src 'none'"
     routes:
       - type: rewrite
         source: /*
