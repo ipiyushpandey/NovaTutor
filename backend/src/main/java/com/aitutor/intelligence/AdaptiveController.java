@@ -67,6 +67,7 @@ public class AdaptiveController {
         List<Revision> revisions=new ArrayList<>();
         List<Concept> map=new ArrayList<>();
         int mastered=0, needs=0, dueCount=0;
+        LocalDateTime nowIst = LocalDateTime.now(ZoneId.of("Asia/Kolkata"));
         for(Map.Entry<String,List<QuizAttempt>> e:bySubject.entrySet()) {
             int total=e.getValue().stream().mapToInt(QuizAttempt::getTotal).sum();
             int correct=e.getValue().stream().mapToInt(QuizAttempt::getCorrect).sum();
@@ -80,16 +81,16 @@ public class AdaptiveController {
             LocalDateTime lastRevision=latestRevision(es,e.getKey());
             LocalDateTime base=lastLearning;
             if(lastRevision!=null && lastRevision.isAfter(base)) base=lastRevision;
-            long days=Duration.between(base,LocalDateTime.now()).toDays();
+            long days=Math.max(0, Duration.between(base, nowIst).toDays());
             int interval=reviewInterval(acc, days);
             LocalDateTime next=base.plusDays(interval);
-            boolean due=!next.isAfter(LocalDateTime.now());
+            boolean due=!next.isAfter(nowIst);
             if(due) dueCount++;
             String label=due?"Due now":(interval<=1?"Due today":"Next review in "+interval+" days");
             String reason=due?(acc<60?"Repeated mistakes need attention":"Memory refresh is due"):(acc<60?"Weak area — keep it in your rotation":(acc<80?"Strengthen this before it fades":"Keep this concept active with a quick recall"));
             revisions.add(new Revision(e.getKey(),"Quiz mastery",reason,label,due?(acc<60?3:2):1,interval+" day"+(interval==1?"":"s"),next.toLocalDate().toString()));
         }
-        for(Course c:courses.findAll()) if(!bySubject.containsKey(c.getTitle())) map.add(new Concept(c.getTitle(),"Course foundations",0,"NOT_STARTED"));
+        for(Course c:courses.findAll()) if(c.isPublished() && !bySubject.containsKey(c.getTitle())) map.add(new Concept(c.getTitle(),"Course foundations",0,"NOT_STARTED"));
         revisions.sort(Comparator.comparingInt(Revision::priority).reversed().thenComparing(Revision::nextReview));
         int readiness=qs.isEmpty()?0:(int)Math.round(qs.stream().mapToInt(QuizAttempt::getScore).average().orElse(0));
         int confidence=Math.min(100, Math.max(0, readiness + Math.min(15, qs.size())));
@@ -111,7 +112,7 @@ public class AdaptiveController {
         User u=users.findById(userId).orElseThrow();
         List<QuizAttempt> recent=attempts.findTop200ByUserIdOrderBySubmittedAtDesc(userId).stream().limit(50).toList();
         String subject=recent.stream().filter(a->a.getCourse()!=null).map(a->a.getCourse().getTitle()).findFirst()
-                .orElseGet(()->courses.findAll().stream().map(Course::getTitle).findFirst().orElse("Computer Science"));
+                .orElseGet(()->courses.findAll().stream().filter(Course::isPublished).map(Course::getTitle).findFirst().orElse("Computer Science"));
         String level=adaptiveLevel(recent);
         String prompt="Generate ONE original, non-trivial exam-style MCQ for a computer-science learner. Subject: "+subject+". Difficulty: "+level+". "
                 +"Use a reasoning/scenario/output-analysis style question rather than trivial recall. It may involve code, algorithms, data structures, systems or a trace. "
@@ -128,14 +129,15 @@ public class AdaptiveController {
         List<String> opts=new ArrayList<>(); node.get("options").forEach(x->opts.add(x.asText()));
         int correct=node.has("correctOption")?node.get("correctOption").asInt(-1):-1;
         if(correct<0||correct>3) throw new IllegalStateException("AI returned an invalid answer index.");
-        QuizQuestion q=new QuizQuestion();
-        Course course=courses.findAll().stream().filter(c->Objects.equals(c.getTitle(),subject)).findFirst().orElse(null);
-        q.setCourse(course); q.setQuestion(text); q.setOptionA(opts.get(0)); q.setOptionB(opts.get(1)); q.setOptionC(opts.get(2)); q.setOptionD(opts.get(3));
-        q.setCorrectOption(correct); q.setExplanation(node.path("explanation").asText("Review the reasoning behind the correct option."));
-        q.setDifficulty(node.path("difficulty").asText(level)); q.setTopic(node.path("topic").asText(subject));
-        if(course!=null) questions.save(q);
-        if(course!=null) events.save(new LearningEvent(u,"ADAPTIVE_AI_GENERATED",subject,q.getTopic(),null,0,"questionId="+q.getId()));
-        return new Question(q.getId(),subject,q.getQuestion(),List.of(q.getOptionA(),q.getOptionB(),q.getOptionC(),q.getOptionD()),q.getDifficulty(),q.getTopic());
+        String explanation = node.path("explanation").asText("Review the reasoning behind the correct option.");
+        String difficulty = node.path("difficulty").asText(level);
+        String topic = node.path("topic").asText(subject);
+        // Never mutate the shared global quiz_question bank from student/guest AI requests.
+        // Record only the learner's own event and keep the generated question scoped to this user's response.
+        long transientId = -Math.abs(System.nanoTime());
+        events.save(new LearningEvent(u, "ADAPTIVE_AI_GENERATED", subject, topic, null, 0,
+                "correct=" + correct + ";explanation=" + explanation.substring(0, Math.min(explanation.length(), 400))));
+        return new Question(transientId, subject, text, List.copyOf(opts), difficulty, topic);
     }
 
     private JsonNode parseJson(String raw) {
@@ -156,6 +158,7 @@ public class AdaptiveController {
             for(Object id:list){
                 try{
                     Long qid=Long.valueOf(String.valueOf(id));
+                    if (qid <= 0) continue;
                     QuizQuestion q=questions.findById(qid).orElse(null);
                     if(q!=null) events.save(new LearningEvent(u,"ADAPTIVE_SHOWN",q.getCourse()==null?null:q.getCourse().getTitle(),"Adaptive practice",null,0,"questionId="+qid));
                 }catch(Exception ignored){}
@@ -171,7 +174,9 @@ public class AdaptiveController {
         User u=users.findById(userId).orElseThrow();
         String subject=String.valueOf(body.getOrDefault("subject",""));
         String topic=String.valueOf(body.getOrDefault("topic","Quiz mastery"));
-        eventService.record(u,"REVISION_COMPLETED",subject,topic,100,0,"Student marked this revision as reviewed.","REVISION_COMPLETED:"+u.getId()+":"+subject+":"+topic);
+        LocalDate todayIst = LocalDate.now(ZoneId.of("Asia/Kolkata"));
+        eventService.record(u,"REVISION_COMPLETED",subject,topic,100,0,"Student marked this revision as reviewed.",
+                "REVISION_COMPLETED:"+u.getId()+":"+subject+":"+topic+":"+todayIst);
         int accuracy=0;
         List<QuizAttempt> subjectAttempts=attempts.findTop200ByUserIdOrderBySubmittedAtDesc(userId).stream()
                 .filter(a->a.getCourse()!=null && Objects.equals(a.getCourse().getTitle(),subject)).toList();
@@ -181,7 +186,7 @@ public class AdaptiveController {
             accuracy=total==0?0:(int)Math.round(correct*100.0/total);
         }
         int interval=reviewInterval(accuracy,0);
-        String nextReview=LocalDateTime.now().plusDays(interval).toLocalDate().toString();
+        String nextReview=todayIst.plusDays(interval).toString();
         return Map.of("success",true,"message","Revision recorded. Nova will schedule the next review from this session.","interval",interval+" day"+(interval==1?"":"s"),"nextReview",nextReview);
     }
 
@@ -192,6 +197,21 @@ public class AdaptiveController {
         User u=users.findById(userId).orElseThrow();
         Long qid=Long.valueOf(String.valueOf(body.get("questionId")));
         int selected=Integer.parseInt(String.valueOf(body.get("selectedOption")));
+        if (qid <= 0) {
+            List<LearningEvent> generated = events.findTop5ByUserIdAndTypeOrderByCreatedAtDesc(userId, "ADAPTIVE_AI_GENERATED");
+            if (!generated.isEmpty() && generated.get(0).getDetails() != null && generated.get(0).getDetails().startsWith("correct=")) {
+                String details = generated.get(0).getDetails();
+                int semi = details.indexOf(';');
+                int expected = Integer.parseInt(details.substring(8, semi > 0 ? semi : details.length()));
+                boolean correct = selected == expected;
+                eventService.record(u, "ADAPTIVE_QUESTION", generated.get(0).getSubject(), "Adaptive practice",
+                        correct ? 100 : 0, 0, "aiQuestion;" + (correct ? "Correct" : "Incorrect"),
+                        "ADAPTIVE_QUESTION:" + u.getId() + ":" + qid + ":" + System.currentTimeMillis() / 60000);
+                return Map.of("correct", correct, "correctOption", expected,
+                        "message", correct ? "Correct. Difficulty can increase." : "Not quite. This concept should be revised before the next attempt.");
+            }
+            throw new IllegalArgumentException("Question session expired. Generate a fresh question.");
+        }
         QuizQuestion q=questions.findById(qid).orElseThrow();
         boolean correct=selected==q.getCorrectOption();
         Course c=q.getCourse();

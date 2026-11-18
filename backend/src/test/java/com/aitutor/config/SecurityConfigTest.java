@@ -54,7 +54,7 @@ class SecurityConfigTest {
         User u = new User("Sec Test", email, encoder.encode("test123456"));
         u.setEmailVerified(true);
         users.save(u);
-        String token = jwt.token(email);
+        String token = jwt.token(u);
         mvc.perform(get("/api/dsa/stats").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString("328")));

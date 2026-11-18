@@ -103,12 +103,13 @@ public class DsaController {
     private Map<String, Object> runToMap(DsaJudgeService.RunResult r) {
         List<Map<String, Object>> tests = new ArrayList<>();
         for (DsaJudgeService.TestResult t : r.tests()) {
+            boolean sample = t.sample();
             tests.add(Map.of(
                     "index", t.index(),
-                    "sample", t.sample(),
-                    "input", t.input() == null ? "" : t.input(),
-                    "expected", t.expected() == null ? "" : t.expected(),
-                    "actual", t.actual() == null ? "" : t.actual(),
+                    "sample", sample,
+                    "input", sample && t.input() != null ? t.input() : "",
+                    "expected", sample && t.expected() != null ? t.expected() : "",
+                    "actual", sample && t.actual() != null ? t.actual() : "",
                     "passed", t.passed(),
                     "note", t.note() == null ? "" : t.note()));
         }

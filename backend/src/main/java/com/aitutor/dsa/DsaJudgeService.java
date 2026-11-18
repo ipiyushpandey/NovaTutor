@@ -81,11 +81,13 @@ public class DsaJudgeService {
         // belongs to test N.
         List<String[]> tests = new ArrayList<>();
         List<String> expectedAll = new ArrayList<>();
+        int sampleCount = 0;
         for (String[] sample : problem.samples()) {
             String expected = expectedFor(problem, sample[0]);
             if (expected == null) continue;
             tests.add(sample);
             expectedAll.add(expected);
+            sampleCount++;
         }
         for (String[] hidden : problem.hiddenTests(HIDDEN_TESTS_PER_RUN)) {
             String expected = expectedFor(problem, hidden[0]);
@@ -97,7 +99,6 @@ public class DsaJudgeService {
             return new RunResult("NO_TESTS", "This problem has no runnable tests yet.", List.of(), 0, 0, false, 0);
         }
 
-        int sampleCount = problem.samples().size();
         String program = lang.harness(problem.sig(), request.code() == null ? "" : request.code());
         StringBuilder stdin = new StringBuilder();
         for (String[] t : tests) stdin.append(t[0]).append('\n');
@@ -167,7 +168,15 @@ public class DsaJudgeService {
                 else if (runtimeFailure) note = "Runtime error on this test.";
                 else if (!sample) note = "Hidden test failed — check edge cases.";
             }
-            results.add(new TestResult(i, sample, pretty(problem, t), expected, actual, ok, note));
+            // Never leak hidden test inputs, expected outputs, or raw outputs to the client.
+            results.add(new TestResult(
+                    i,
+                    sample,
+                    sample ? pretty(problem, t) : "",
+                    sample ? expected : "",
+                    sample ? actual : "",
+                    ok,
+                    note));
         }
 
         boolean accepted = passed == tests.size();

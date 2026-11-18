@@ -45,10 +45,17 @@ public class AuthService {
         if (password.length() > 128) throw new ApiException(HttpStatus.BAD_REQUEST, "PASSWORD_TOO_LONG", "Password is too long");
         Optional<User> existing = repo.findByEmail(cleanEmail);
         if (existing.isPresent()) {
-            if (existing.get().isEmailVerified()) {
+            User pending = existing.get();
+            if (pending.isEmailVerified()) {
                 throw new ApiException(HttpStatus.CONFLICT, "EMAIL_TAKEN", "An account with this email already exists. Sign in instead.");
             }
-            return existing.get();
+            // Prevent pre-registration account takeover: update the pending row with
+            // the latest registrant's name & password and invalidate any prior link.
+            pending.setName(name.trim());
+            pending.setPassword(encoder.encode(password));
+            pending.setVerificationTokenHash(null);
+            pending.setVerificationExpiresAt(null);
+            return repo.save(pending);
         }
         User u = new User(name.trim(), cleanEmail, encoder.encode(password));
         u.setEmailVerified(false);
@@ -131,6 +138,10 @@ public class AuthService {
             if (u.isBlocked() || !u.isActive()) {
                 throw new ApiException(HttpStatus.FORBIDDEN, "ACCOUNT_DISABLED", "This account is inactive or blocked.");
             }
+            if ("ADMIN".equalsIgnoreCase(u.getRole())) {
+                throw new ApiException(HttpStatus.FORBIDDEN, "PORTAL_MISMATCH",
+                        "Administrator accounts must use the Admin sign-in.");
+            }
             if (!u.isEmailVerified()) { u.setEmailVerified(true); repo.save(u); }
             return syncOwnerRole(u);
         }
@@ -139,6 +150,10 @@ public class AuthService {
             User u = byEmail.get();
             if (u.isBlocked() || !u.isActive()) {
                 throw new ApiException(HttpStatus.FORBIDDEN, "ACCOUNT_DISABLED", "This account is inactive or blocked.");
+            }
+            if ("ADMIN".equalsIgnoreCase(u.getRole()) || isAdminEmail(cleanEmail)) {
+                throw new ApiException(HttpStatus.FORBIDDEN, "PORTAL_MISMATCH",
+                        "Administrator accounts must use the Admin sign-in.");
             }
             if (u.getGoogleSubject() != null && !u.getGoogleSubject().isBlank()
                     && !u.getGoogleSubject().equals(subject)) {
@@ -151,6 +166,10 @@ public class AuthService {
             repo.save(u);
             return syncOwnerRole(u);
         }
+        if (isAdminEmail(cleanEmail)) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "PORTAL_MISMATCH",
+                    "Administrator accounts must use the Admin sign-in.");
+        }
         String displayName = (name == null || name.isBlank()) ? cleanEmail.split("@")[0] : name.trim();
         if (displayName.length() > 100) displayName = displayName.substring(0, 100);
         User u = new User(displayName, cleanEmail, encoder.encode(UUID.randomUUID() + "-" + UUID.randomUUID()));
@@ -161,6 +180,7 @@ public class AuthService {
     }
 
     public User syncOwnerRole(User user) {
+        if (user == null || GuestService.ROLE.equalsIgnoreCase(user.getRole())) return user;
         if (!adminEmail.isBlank()) {
             if (adminEmail.equalsIgnoreCase(user.getEmail()) && !"ADMIN".equalsIgnoreCase(user.getRole())) {
                 user.setRole("ADMIN");
@@ -168,12 +188,7 @@ public class AuthService {
             }
             return user;
         }
-        if ("ADMIN".equalsIgnoreCase(user.getRole())) return user;
-        boolean anyAdmin = repo.findAll().stream().anyMatch(x -> "ADMIN".equalsIgnoreCase(x.getRole()));
-        if (!anyAdmin && repo.count() > 0) {
-            user.setRole("ADMIN");
-            return repo.save(user);
-        }
+        // Never auto-promote arbitrary users when ADMIN_EMAIL is not configured.
         return user;
     }
 
@@ -182,9 +197,10 @@ public class AuthService {
     }
 
     private void applyBootstrapRole(User u) {
+        if (GuestService.ROLE.equalsIgnoreCase(u.getRole())) return;
         if (!adminEmail.isBlank()) {
             if (adminEmail.equalsIgnoreCase(u.getEmail())) u.setRole("ADMIN");
-        } else if (repo.count() == 0 || repo.findAll().stream().noneMatch(x -> "ADMIN".equalsIgnoreCase(x.getRole()))) {
+        } else if (repo.count() == 0 && !repo.existsByRoleIgnoreCase("ADMIN")) {
             u.setRole("ADMIN");
         }
     }

@@ -51,13 +51,17 @@ class AuthServiceTest {
     }
 
     @Test
-    void duplicateUnverifiedEmailReturnsThePendingAccount() {
-        User existing = new User("A", "student@example.com", "hash");
+    void duplicateUnverifiedEmailRefreshesCredentialsAndClearsOldToken() {
+        User existing = new User("Attacker", "student@example.com", "attacker-hash");
         existing.setEmailVerified(false);
+        existing.setVerificationTokenHash("old-token-hash");
         when(repo.findByEmail("student@example.com")).thenReturn(Optional.of(existing));
-        User returned = service.register("B", "student@example.com", "password123");
+        User returned = service.register("Real Owner", "student@example.com", "owner-password-123");
         assertSame(existing, returned);
-        verify(repo, never()).save(any(User.class));
+        assertEquals("Real Owner", returned.getName());
+        assertEquals("encoded", returned.getPassword());
+        assertNull(returned.getVerificationTokenHash());
+        verify(repo).save(existing);
     }
 
     @Test

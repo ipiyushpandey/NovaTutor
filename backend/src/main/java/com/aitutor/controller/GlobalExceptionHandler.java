@@ -79,6 +79,34 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(e.getStatusCode()).body(Map.of("error", "request_rejected", "message", message));
     }
 
+    /** Controller/service authorization failures must return 403, never 500. */
+    @ExceptionHandler(org.springframework.security.access.AccessDeniedException.class)
+    ResponseEntity<Map<String,String>> accessDenied(org.springframework.security.access.AccessDeniedException e) {
+        String message = (e.getMessage() == null || e.getMessage().isBlank()) ? "Access denied" : e.getMessage();
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", "forbidden", "message", message));
+    }
+
+    /** Wrong HTTP method on a valid route is 405 Method Not Allowed, never 500. */
+    @ExceptionHandler(org.springframework.web.HttpRequestMethodNotSupportedException.class)
+    ResponseEntity<Map<String,String>> methodNotAllowed(org.springframework.web.HttpRequestMethodNotSupportedException e) {
+        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED)
+                .body(Map.of("error", "method_not_allowed", "message", "HTTP method not supported for this endpoint"));
+    }
+
+    /** Oversized multipart uploads are 413 Payload Too Large, never 500. */
+    @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+    ResponseEntity<Map<String,String>> payloadTooLarge(org.springframework.web.multipart.MaxUploadSizeExceededException e) {
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
+                .body(Map.of("error", "payload_too_large", "message", "Uploaded file exceeds the maximum allowed size"));
+    }
+
+    /** Missing required multipart field is 400 Bad Request, never 500. */
+    @ExceptionHandler(org.springframework.web.multipart.support.MissingServletRequestPartException.class)
+    ResponseEntity<Map<String,String>> missingPart(org.springframework.web.multipart.support.MissingServletRequestPartException e) {
+        return ResponseEntity.badRequest()
+                .body(Map.of("error", "bad_request", "message", "Missing required file or form field"));
+    }
+
     /** Last-resort handler: never leak stack traces or internal messages. */
     @ExceptionHandler(Exception.class)
     ResponseEntity<Map<String,String>> unexpected(Exception e) {

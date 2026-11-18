@@ -296,7 +296,11 @@ public class GeminiProvider implements AiProvider {
 
     private String safeMessage(String value) {
         if (value == null || value.isBlank()) return "request failed";
-        return value.replaceAll("(?i)(api[-_ ]?key|authorization)\\s*[:=]\\s*[^\\s,;]+", "$1=[redacted]");
+        String cleaned = value.replaceAll("(?i)(api[-_ ]?key|authorization|(?<![a-z0-9_])key)\\s*[:=]\\s*[^\\s,&;\"']+", "$1=[redacted]");
+        if (!key.isBlank()) {
+            cleaned = cleaned.replace(key, "[redacted]");
+        }
+        return cleaned;
     }
 
     private record GeminiResult(String text, String finishReason) {}

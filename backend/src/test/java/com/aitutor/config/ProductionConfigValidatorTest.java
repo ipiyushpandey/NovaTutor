@@ -44,4 +44,20 @@ class ProductionConfigValidatorTest {
                 "gemini-key", "admin@example.com", "strong-admin-password", "http://localhost:5173",
                 false, "", "remote"));
     }
+
+    @Test
+    void rejectsWildcardCorsInProduction() {
+        assertThrows(IllegalStateException.class, () -> new ProductionConfigValidator(
+                "jdbc:mysql://db:3306/ai_tutor", "novatutor", "strong-db-password", SECRET,
+                "gemini-key", "admin@example.com", "strong-admin-password", "*",
+                false, "", "remote"));
+    }
+
+    @Test
+    void rejectsAutoCodeRunnerWithoutSandboxAck() {
+        assertThrows(IllegalStateException.class, () -> new ProductionConfigValidator(
+                "jdbc:mysql://db:3306/ai_tutor", "novatutor", "strong-db-password", SECRET,
+                "gemini-key", "admin@example.com", "strong-admin-password", "https://app.example.com",
+                true, "", "auto"));
+    }
 }

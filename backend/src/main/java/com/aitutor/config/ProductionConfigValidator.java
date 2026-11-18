@@ -31,17 +31,18 @@ public class ProductionConfigValidator {
         if (jwtSecret.getBytes(java.nio.charset.StandardCharsets.UTF_8).length < 32) {
             throw new IllegalStateException("JWT_SECRET must be at least 32 bytes in production");
         }
-        if (corsOrigins.contains("localhost") || corsOrigins.contains("127.0.0.1") || corsOrigins.contains("[::1]")) {
-            throw new IllegalStateException("CORS_ORIGINS must not contain local development origins in production");
+        if (corsOrigins.contains("*") || corsOrigins.contains("localhost") || corsOrigins.contains("127.0.0.1") || corsOrigins.contains("[::1]")) {
+            throw new IllegalStateException("CORS_ORIGINS must not contain wildcards or local development origins in production");
         }
         if (adminPassword.length() < 12) {
             throw new IllegalStateException("ADMIN_PASSWORD must be at least 12 characters in production");
         }
-        // The acknowledgement guards running containers on the application host.
-        // The remote runner executes submissions in its own isolated sandbox, so
-        // it does not need that acknowledgement.
-        boolean localDocker = "docker".equalsIgnoreCase(codeRunnerProvider == null ? "" : codeRunnerProvider.trim());
-        if (codeRunnerEnabled && localDocker && !"I_UNDERSTAND_SANDBOX_RISK".equals(codeRunnerProductionAck)) {
+        // The acknowledgement guards running containers on the application host
+        // (including "auto" which can fall back to local Docker). The remote
+        // runner executes submissions in its own isolated sandbox.
+        String provider = codeRunnerProvider == null ? "" : codeRunnerProvider.trim().toLowerCase(java.util.Locale.ROOT);
+        boolean mayUseLocalDocker = "docker".equals(provider) || "auto".equals(provider);
+        if (codeRunnerEnabled && mayUseLocalDocker && !"I_UNDERSTAND_SANDBOX_RISK".equals(codeRunnerProductionAck)) {
             throw new IllegalStateException("CODE_RUNNER_PRODUCTION_ACK must equal I_UNDERSTAND_SANDBOX_RISK before enabling the production sandbox");
         }
     }

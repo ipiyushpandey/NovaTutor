@@ -2,9 +2,10 @@ package com.aitutor.controller;
 
 import com.aitutor.entity.User;
 import com.aitutor.repository.UserRepository;
-import com.aitutor.intelligence.LearningEvent;
 import com.aitutor.intelligence.LearningEventRepository;
-import com.aitutor.security.JwtService;
+import com.aitutor.security.AuthenticatedUser;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 import java.util.*;
@@ -15,61 +16,58 @@ import java.util.stream.Collectors;
 public class UserController {
     private final UserRepository users;
     private final PasswordEncoder encoder;
-    private final JwtService jwt;
+    private final AuthenticatedUser authenticatedUser;
     private final LearningEventRepository learningEvents;
 
-    public UserController(UserRepository users, PasswordEncoder encoder, JwtService jwt, LearningEventRepository learningEvents) {
+    public UserController(UserRepository users, PasswordEncoder encoder, AuthenticatedUser authenticatedUser, LearningEventRepository learningEvents) {
         this.users = users;
         this.encoder = encoder;
-        this.jwt = jwt;
+        this.authenticatedUser = authenticatedUser;
         this.learningEvents = learningEvents;
     }
 
-    private User owner(Long pathId, Long headerId, String authorization) {
-        if (authorization != null && authorization.startsWith("Bearer ")) {
-            try {
-                User tokenUser = users.findByEmail(jwt.email(authorization.substring(7))).orElseThrow();
-                if (!pathId.equals(tokenUser.getId())) throw new IllegalArgumentException("You can only manage your own account");
-                return tokenUser;
-            } catch (IllegalArgumentException e) { throw e; } catch (Exception e) { throw new IllegalArgumentException("Invalid session"); }
-        }
-        if (headerId == null || !pathId.equals(headerId)) throw new IllegalArgumentException("You can only manage your own account");
-        return users.findById(pathId).orElseThrow(() -> new IllegalArgumentException("Account not found"));
-    }
-
-
     /**
      * Public, privacy-safe leaderboard. Only real registered users with recorded
-     * learning activity are returned; placeholder/demo names are never generated.
+     * learning activity are returned; placeholder/demo names and disposable guests
+     * are never included.
      */
     @GetMapping("/leaderboard")
     public List<LeaderboardEntry> leaderboard() {
-        List<Long> ids = learningEvents.leaderboardXp().stream()
+        List<LearningEventRepository.LeaderboardXpProjection> ranked = learningEvents.leaderboardXp().stream()
                 .filter(x -> x.getUserId() != null && x.getXp() > 0)
-                .map(x -> x.getUserId())
                 .limit(20)
                 .toList();
-        if (ids.isEmpty()) return List.of();
+        if (ranked.isEmpty()) return List.of();
+        List<Long> ids = ranked.stream().map(LearningEventRepository.LeaderboardXpProjection::getUserId).toList();
         Map<Long, User> realUsers = users.findByIdIn(ids).stream()
-                .collect(Collectors.toMap(User::getId, x -> x, (a,b) -> a));
-        return learningEvents.leaderboardXp().stream()
-                .filter(x -> x.getUserId() != null && x.getXp() > 0 && realUsers.containsKey(x.getUserId()))
-                .map(x -> new LeaderboardEntry(x.getUserId(), realUsers.get(x.getUserId()).getName(), (int)Math.min(Integer.MAX_VALUE, x.getXp())))
+                .filter(u -> u.isActive() && !u.isBlocked() && !"GUEST".equalsIgnoreCase(u.getRole()))
+                .collect(Collectors.toMap(User::getId, x -> x, (a, b) -> a));
+        return ranked.stream()
+                .filter(x -> realUsers.containsKey(x.getUserId()))
+                .map(x -> new LeaderboardEntry(x.getUserId(), realUsers.get(x.getUserId()).getName(), (int) Math.min(Integer.MAX_VALUE, x.getXp())))
                 .toList();
+    }
+
+    private User ownAccount(Long pathId, Authentication authentication) {
+        User u = authenticatedUser.require(authentication);
+        if (!Objects.equals(pathId, u.getId())) {
+            throw new org.springframework.security.access.AccessDeniedException("You can only manage your own account");
+        }
+        return u;
     }
 
     public record LeaderboardEntry(Long id, String name, int score) {}
 
     @GetMapping("/{id}")
-    public Profile get(@PathVariable Long id, @RequestHeader(value="X-User-Id", required=false) Long userId, @RequestHeader(value="Authorization", required=false) String authorization) {
-        User u=owner(id,userId,authorization);
+    public Profile get(@PathVariable Long id, Authentication authentication) {
+        User u = ownAccount(id, authentication);
         return profile(u);
     }
 
     @PutMapping("/{id}")
-    public Profile update(@PathVariable Long id, @RequestHeader(value="X-User-Id", required=false) Long userId, @RequestHeader(value="Authorization", required=false) String authorization, @RequestBody ProfileRequest r) {
-        User u = owner(id, userId, authorization);
-        if (r.name() == null || r.name().isBlank()) throw new IllegalArgumentException("Name is required");
+    public Profile update(@PathVariable Long id, Authentication authentication, @RequestBody ProfileRequest r) {
+        User u = ownAccount(id, authentication);
+        if (r == null || r.name() == null || r.name().isBlank()) throw new IllegalArgumentException("Name is required");
         u.setName(r.name().trim());
         if(r.educationLevel()!=null) u.setEducationLevel(clean(r.educationLevel()));
         if(r.learningGoal()!=null) u.setLearningGoal(clean(r.learningGoal()));
@@ -85,13 +83,20 @@ public class UserController {
     }
 
     @PostMapping("/{id}/password")
-    public void changePassword(@PathVariable Long id, @RequestHeader(value="X-User-Id", required=false) Long userId, @RequestHeader(value="Authorization", required=false) String authorization, @RequestBody PasswordRequest r) {
-        User u = owner(id, userId, authorization);
-        if (r.currentPassword() == null || !encoder.matches(r.currentPassword(), u.getPassword())) {
+    public void changePassword(@PathVariable Long id, Authentication authentication, @RequestBody PasswordRequest r) {
+        User u = ownAccount(id, authentication);
+        if ("GUEST".equalsIgnoreCase(u.getRole())) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "GUEST_NOT_ALLOWED",
+                    "Guest sessions do not have a password to change.");
+        }
+        if (r == null || r.currentPassword() == null || !encoder.matches(r.currentPassword(), u.getPassword())) {
             throw new IllegalArgumentException("Current password is incorrect");
         }
         if (r.newPassword() == null || r.newPassword().length() < 6) {
             throw new IllegalArgumentException("New password must be at least 6 characters");
+        }
+        if (r.newPassword().length() > 128) {
+            throw new IllegalArgumentException("New password must be 128 characters or fewer");
         }
         u.setPassword(encoder.encode(r.newPassword()));
         users.save(u);

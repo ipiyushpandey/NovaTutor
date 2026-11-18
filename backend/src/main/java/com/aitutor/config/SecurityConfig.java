@@ -25,8 +25,11 @@ public class SecurityConfig {
     @Bean PasswordEncoder passwordEncoder(){ return new BCryptPasswordEncoder(); }
 
     @Bean
-    JwtAuthenticationFilter jwtAuthenticationFilter(JwtService jwt, UserRepository users) {
-        return new JwtAuthenticationFilter(jwt, users);
+    JwtAuthenticationFilter jwtAuthenticationFilter(
+            JwtService jwt,
+            UserRepository users,
+            @Value("${app.guest.ttl-hours:24}") long guestTtlHours) {
+        return new JwtAuthenticationFilter(jwt, users, guestTtlHours);
     }
 
     @Bean
@@ -48,7 +51,7 @@ public class SecurityConfig {
         }
         cors.setAllowedOriginPatterns(new ArrayList<>(origins));
         cors.setAllowedMethods(List.of("GET","POST","PUT","DELETE","PATCH","OPTIONS"));
-        cors.setAllowedHeaders(List.of("Authorization","Content-Type","Accept","Origin","X-User-Id"));
+        cors.setAllowedHeaders(List.of("Authorization","Content-Type","Accept","Origin"));
         cors.setExposedHeaders(List.of("Authorization"));
         cors.setAllowCredentials(false);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
@@ -83,12 +86,18 @@ public class SecurityConfig {
                                 "/api/auth/forgot-password", "/api/auth/reset-password",
                                 "/api/auth/google", "/api/auth/providers",
                                 "/api/health", "/actuator/health/**", "/error", "/api/gate-cse/notes/**", "/api/courses", "/api/courses/**").permitAll()
+                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .anyRequest().authenticated())
-                .exceptionHandling(e -> e.authenticationEntryPoint(
-                        (request, response, authException) -> {
+                .exceptionHandling(e -> e
+                        .authenticationEntryPoint((request, response, authException) -> {
                             response.setStatus(jakarta.servlet.http.HttpServletResponse.SC_UNAUTHORIZED);
                             response.setContentType("application/json");
                             response.getWriter().write("{\"error\":\"unauthorized\",\"message\":\"Login required\"}");
+                        })
+                        .accessDeniedHandler((request, response, accessDeniedException) -> {
+                            response.setStatus(jakarta.servlet.http.HttpServletResponse.SC_FORBIDDEN);
+                            response.setContentType("application/json");
+                            response.getWriter().write("{\"error\":\"forbidden\",\"message\":\"Access denied\"}");
                         }))
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterAfter(rateLimitFilter, JwtAuthenticationFilter.class)
