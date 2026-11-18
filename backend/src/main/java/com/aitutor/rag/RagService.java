@@ -47,6 +47,10 @@ public class RagService {
         this.maxExtractedCharacters = Math.max(100_000, Math.min(20_000_000, maxExtractedCharacters));
     }
 
+    private static final int MAX_STORED_PREVIEW_CHARS = 16_000;
+    private static final int MAX_CHUNKS_RETURNED = 200;
+
+    @org.springframework.transaction.annotation.Transactional
     public KnowledgeDocument upload(MultipartFile file, User owner) throws IOException {
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("File is empty");
@@ -56,8 +60,8 @@ public class RagService {
         if (!name.toLowerCase(Locale.ROOT).endsWith(".pdf")) {
             throw new IllegalArgumentException("Only PDF files are supported");
         }
-        if (file.getSize() > 50L * 1024 * 1024) {
-            throw new IllegalArgumentException("PDF exceeds the 50 MB upload limit");
+        if (file.getSize() > 15L * 1024 * 1024) {
+            throw new IllegalArgumentException("PDF exceeds the 15 MB upload limit");
         }
 
         try (PDDocument pdf = Loader.loadPDF(file.getBytes())) {
@@ -69,18 +73,16 @@ public class RagService {
             }
 
             PDFTextStripper stripper = new PDFTextStripper();
-            StringBuilder extracted = new StringBuilder();
+            StringBuilder preview = new StringBuilder();
+            int totalChars = 0;
             final int chunkSize = 1400;
             final int overlap = 220;
             int pageCount = pdf.getNumberOfPages();
 
-            // Page-aware indexing fixes the old offset-based page estimator. Every
-            // stored chunk now carries the exact PDF page it came from, so RAG
-            // answers can cite real page numbers rather than approximate positions.
-            // Each page is extracted exactly once and reused for both the stored
-            // document text and the chunking pass below (PDFBox extraction is the
-            // most expensive part of an upload).
-            java.util.List<String> pageTexts = new ArrayList<>(pageCount);
+            // Page-aware indexing: extract each page once, keep a bounded preview on
+            // KnowledgeDocument (TiDB 6 MB row-limit safe; RAG reads chunks only), and
+            // batch-insert page-tagged chunks inside one transaction.
+            List<String> pageTexts = new ArrayList<>(pageCount);
             for (int page = 1; page <= pageCount; page++) {
                 stripper.setStartPage(page);
                 stripper.setEndPage(page);
@@ -92,26 +94,32 @@ public class RagService {
                 pageTexts.add(pageText);
 
                 if (pageText.isBlank()) continue;
-                if (extracted.length() > 0) extracted.append("\n\n");
-                extracted.append("[Page ").append(page).append("]\n").append(pageText);
-                if (extracted.length() > maxExtractedCharacters) throw new IllegalArgumentException("PDF contains too much extracted text for safe indexing");
-
+                totalChars += pageText.length();
+                if (totalChars > maxExtractedCharacters) {
+                    throw new IllegalArgumentException("PDF contains too much extracted text for safe indexing");
+                }
+                if (preview.length() < MAX_STORED_PREVIEW_CHARS) {
+                    if (preview.length() > 0) preview.append("\n\n");
+                    preview.append("[Page ").append(page).append("]\n").append(pageText);
+                    if (preview.length() > MAX_STORED_PREVIEW_CHARS) {
+                        preview.setLength(MAX_STORED_PREVIEW_CHARS);
+                    }
+                }
             }
 
-            String text = extracted.toString().trim();
-            if (text.isBlank()) {
+            String storedPreview = preview.toString().trim();
+            if (storedPreview.isBlank()) {
                 throw new IllegalArgumentException("No readable text found in PDF");
             }
 
-            // Chunks must reference the saved document. We first persist the
-            // document, then rebuild the page-aware chunks with that relation.
             KnowledgeDocument document = docs.save(new KnowledgeDocument(
                     name,
                     file.getContentType() == null ? "application/pdf" : file.getContentType(),
                     file.getSize(),
-                    text,
+                    storedPreview,
                     owner
             ));
+            List<KnowledgeChunk> batch = new ArrayList<>();
             int index = 0;
             for (int page = 1; page <= pageCount; page++) {
                 String pageText = pageTexts.get(page - 1);
@@ -119,49 +127,57 @@ public class RagService {
                 for (int start = 0; start < pageText.length(); start = Math.max(start + 1, start + chunkSize - overlap)) {
                     int end = Math.min(pageText.length(), start + chunkSize);
                     String part = pageText.substring(start, end).trim();
-                    if (!part.isBlank()) chunks.save(new KnowledgeChunk(document, index++, page, part));
+                    if (!part.isBlank()) {
+                        batch.add(new KnowledgeChunk(document, index++, page, part));
+                        if (batch.size() >= 100) {
+                            chunks.saveAll(batch);
+                            batch.clear();
+                        }
+                    }
                     if (end == pageText.length()) break;
                 }
             }
+            if (!batch.isEmpty()) chunks.saveAll(batch);
             return document;
         }
     }
 
     public List<Map<String, Object>> list(User user, boolean admin) {
         List<Map<String, Object>> result = new ArrayList<>();
-        List<KnowledgeDocument> source = admin ? docs.findAllByOrderByUploadedAtDesc() : docs.findAllByOwnerIdOrderByUploadedAtDesc(user.getId());
+        List<KnowledgeDocumentRepository.DocumentSummary> source = admin
+                ? docs.findAllMetadataOrderByUploadedAtDesc()
+                : docs.findMetadataByOwnerIdOrderByUploadedAtDesc(user.getId());
 
         source.forEach(document -> {
             Map<String, Object> item = new HashMap<>();
-            item.put("id", document.id);
-            item.put("fileName", document.fileName);
-            item.put("sizeBytes", document.sizeBytes);
-            item.put("uploadedAt", document.uploadedAt);
-            item.put("contentType", document.contentType);
+            item.put("id", document.getId());
+            item.put("fileName", document.getFileName());
+            item.put("sizeBytes", document.getSizeBytes());
+            item.put("uploadedAt", document.getUploadedAt());
+            item.put("contentType", document.getContentType());
             result.add(item);
         });
 
         return result;
     }
 
-    private KnowledgeDocument accessibleDocument(Long id, User user, boolean admin) {
-        KnowledgeDocument document = docs.findById(id).orElseThrow(() -> new NoSuchElementException("Document not found"));
-        if (!admin && (document.owner == null || !document.owner.getId().equals(user.getId()))) {
+    private KnowledgeDocumentRepository.DocumentSummary accessibleDocument(Long id, User user, boolean admin) {
+        KnowledgeDocumentRepository.DocumentSummary document = docs.findMetadataById(id)
+                .orElseThrow(() -> new NoSuchElementException("Document not found"));
+        if (!admin && (document.getOwnerId() == null || !document.getOwnerId().equals(user.getId()))) {
             throw new org.springframework.security.access.AccessDeniedException("You can only access your own knowledge documents");
         }
         return document;
     }
 
+    @org.springframework.transaction.annotation.Transactional
     public void delete(Long id, User user, boolean admin) {
-        KnowledgeDocument document = docs.findById(id).orElseThrow(() -> new NoSuchElementException("Document not found"));
-        if (!admin && (document.owner == null || !document.owner.getId().equals(user.getId()))) { throw new org.springframework.security.access.AccessDeniedException("You can only modify your own knowledge documents"); }
-        if (!docs.existsById(id)) {
-            throw new NoSuchElementException("Document not found");
+        KnowledgeDocumentRepository.DocumentSummary document = docs.findMetadataById(id)
+                .orElseThrow(() -> new NoSuchElementException("Document not found"));
+        if (!admin && (document.getOwnerId() == null || !document.getOwnerId().equals(user.getId()))) {
+            throw new org.springframework.security.access.AccessDeniedException("You can only modify your own knowledge documents");
         }
-
-        chunks.findAllByDocumentIdOrderByChunkIndex(id)
-                .forEach(chunk -> chunks.deleteById(chunk.id));
-
+        chunks.deleteByDocumentId(id);
         docs.deleteById(id);
     }
 
@@ -173,7 +189,7 @@ public class RagService {
             String level,
             String language
     ) {
-        KnowledgeDocument document = accessibleDocument(id,user,admin);
+        KnowledgeDocumentRepository.DocumentSummary document = accessibleDocument(id, user, admin);
 
         List<KnowledgeChunk> all = chunks
                 .findAllByDocumentIdOrderByChunkIndex(id);
@@ -195,7 +211,7 @@ public class RagService {
 
         AiRequest request = new AiRequest(
                 AiTask.TUTOR,
-                document.fileName,
+                document.getFileName(),
                 "Answer this question using ONLY the supplied document context. " +
                         "If the answer is not present, say clearly that the document " +
                         "does not contain enough information. Cite page numbers like [Page 2]." +
@@ -220,7 +236,7 @@ public class RagService {
     }
 
     public AiResponse generatePack(Long id, User user, boolean admin, String type, String level, String language) {
-        KnowledgeDocument document = accessibleDocument(id,user,admin);
+        KnowledgeDocumentRepository.DocumentSummary document = accessibleDocument(id, user, admin);
         List<KnowledgeChunk> all = chunks.findAllByDocumentIdOrderByChunkIndex(id);
         if (all.isEmpty()) {
             return new AiResponse("No readable content was indexed for this PDF. Please upload a text-based PDF.", "STUDY_PACK", "none");
@@ -259,7 +275,7 @@ public class RagService {
 
         AiRequest request = new AiRequest(
                 task,
-                document.fileName,
+                document.getFileName(),
                 instruction + "\nIf the supplied context is incomplete, clearly say so instead of inventing missing material."
                         + "\n\nPDF CONTEXT:\n" + context,
                 level,
@@ -403,16 +419,17 @@ public class RagService {
     }
 
     public List<Map<String, Object>> chunks(Long id, User user, boolean admin) {
-        accessibleDocument(id,user,admin);
+        accessibleDocument(id, user, admin);
         List<Map<String, Object>> result = new ArrayList<>();
 
-        chunks.findAllByDocumentIdOrderByChunkIndex(id).forEach(chunk -> {
-            Map<String, Object> item = new HashMap<>();
-            item.put("id", chunk.id);
-            item.put("page", chunk.pageNumber);
-            item.put("content", chunk.content);
-            result.add(item);
-        });
+        chunks.findByDocumentIdOrderByChunkIndex(id, org.springframework.data.domain.PageRequest.of(0, MAX_CHUNKS_RETURNED))
+                .forEach(chunk -> {
+                    Map<String, Object> item = new HashMap<>();
+                    item.put("id", chunk.id);
+                    item.put("page", chunk.pageNumber);
+                    item.put("content", chunk.content);
+                    result.add(item);
+                });
 
         return result;
     }

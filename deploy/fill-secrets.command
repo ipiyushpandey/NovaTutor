@@ -13,16 +13,25 @@ OUT="deploy/secrets.env"
 [ -f "$OUT" ] || cp deploy/secrets.env.example "$OUT"
 chmod 600 "$OUT" 2>/dev/null || true
 
-current() { grep -E "^$1=" "$OUT" 2>/dev/null | head -1 | cut -d= -f2- ; }
+current() { (grep -E "^$1=" "$OUT" 2>/dev/null || true) | head -1 | cut -d= -f2- ; }
 
 # Read a value with hidden input (passwords/keys are never echoed).
+# If a current default is provided, pressing Enter preserves it safely.
 ask_hidden() {
-  local prompt="$1" __out="$2" val=""
-  while [ -z "$val" ]; do
-    printf '  %s: ' "$prompt" >&2
+  local prompt="$1" __out="$2" def="${3:-}" val=""
+  while true; do
+    if [ -n "$def" ]; then
+      printf '  %s [already set — press Enter to keep]: ' "$prompt" >&2
+    else
+      printf '  %s: ' "$prompt" >&2
+    fi
     IFS= read -rs val || true
     printf '\n' >&2
-    [ -z "$val" ] && printf '    (required)\n' >&2
+    if [ -z "$val" ] && [ -n "$def" ]; then
+      val="$def"
+    fi
+    [ -n "$val" ] && break
+    printf '    (required)\n' >&2
   done
   printf -v "$__out" '%s' "$val"
 }
@@ -65,8 +74,7 @@ ADMIN_EMAIL="$(current ADMIN_EMAIL)"
 ADMIN_PASSWORD="$(current ADMIN_PASSWORD)"
 
 echo "[1/5] Render API key (starts with rnd_...)"
-if [ -n "$RENDER_API_KEY" ]; then echo "  already set (press Enter to keep)"; fi
-ask_hidden "RENDER_API_KEY" RENDER_API_KEY
+ask_hidden "RENDER_API_KEY" RENDER_API_KEY "$RENDER_API_KEY"
 
 echo "[2/5] Database host (TiDB Cloud: the host shown in Connect; may be a full jdbc:mysql:// URL)"
 ask_visible "DB_HOST_OR_URL" DB_INPUT "$(current DB_URL)"
@@ -74,9 +82,9 @@ if [ -n "${DB_INPUT:-}" ]; then
   case "$DB_INPUT" in
     jdbc:mysql://*) DB_URL="$DB_INPUT" ;;
     mysql://*)
-      # mysql://user:pass@host:port/db
+      # mysql://user:pass@host:port/db (supports '@' inside password)
       rest="${DB_INPUT#mysql://}"
-      creds="${rest%%@*}"; hostpart="${rest#*@}"
+      creds="${rest%@*}"; hostpart="${rest##*@}"
       DB_USERNAME="${creds%%:*}"; DB_PASSWORD="${creds#*:}"
       hostport="${hostpart%%/*}"; dbname="${hostpart#*/}"; dbname="${dbname%%\?*}"
       DB_URL="jdbc:mysql://${hostport}/${dbname}?sslMode=VERIFY_IDENTITY&serverTimezone=Asia/Kolkata&allowPublicKeyRetrieval=true"
@@ -94,20 +102,14 @@ fi
 
 echo "[3/5] Database credentials"
 ask_visible "DB_USERNAME" DB_USERNAME "$DB_USERNAME"
-ask_hidden "DB_PASSWORD" DB_PASSWORD
+ask_hidden "DB_PASSWORD" DB_PASSWORD "$DB_PASSWORD"
 
 echo "[4/5] Gemini API key (fresh key — the exposed one must not be used publicly)"
-if [ -n "$GEMINI_API_KEY" ]; then echo "  already set (press Enter to keep)"; fi
-ask_hidden "GEMINI_API_KEY" GEMINI_API_KEY
+ask_hidden "GEMINI_API_KEY" GEMINI_API_KEY "$GEMINI_API_KEY"
 
 echo "[5/5] Owner/admin account"
 ask_visible "ADMIN_EMAIL" ADMIN_EMAIL "$ADMIN_EMAIL"
-if [ -n "$ADMIN_PASSWORD" ]; then
-  echo "  admin password already generated (press Enter to keep it)"
-  ask_visible "ADMIN_PASSWORD" ADMIN_PASSWORD "$ADMIN_PASSWORD"
-else
-  ask_hidden "ADMIN_PASSWORD (min 12 chars)" ADMIN_PASSWORD
-fi
+ask_hidden "ADMIN_PASSWORD (min 12 chars)" ADMIN_PASSWORD "$ADMIN_PASSWORD"
 
 [ -n "$JWT_SECRET" ] || JWT_SECRET="$(openssl rand -base64 48 2>/dev/null | tr -d '\n')"
 [ -n "$ADMIN_PASSWORD" ] || ADMIN_PASSWORD=""
@@ -124,6 +126,9 @@ case "$DB_URL" in jdbc:mysql://*) ;; *) echo "ERROR: database URL must start wit
 [ "${#JWT_SECRET}" -ge 32 ] || { echo "ERROR: JWT secret must be at least 32 characters"; fail=1; }
 if [ "$fail" -ne 0 ]; then echo "Nothing written. Re-run the script."; exit 1; fi
 
+# Capture existing CORS_ORIGINS BEFORE redirecting/truncating $OUT.
+EXISTING_CORS_ORIGINS="$(current CORS_ORIGINS)"
+
 umask 077
 cat > "$OUT" <<EOF
 # NovaTutor deployment secrets — GITIGNORED. Do not commit, do not share.
@@ -135,7 +140,7 @@ GEMINI_API_KEY=${GEMINI_API_KEY}
 JWT_SECRET=${JWT_SECRET}
 ADMIN_EMAIL=${ADMIN_EMAIL}
 ADMIN_PASSWORD=${ADMIN_PASSWORD}
-CORS_ORIGINS=$(current CORS_ORIGINS)
+CORS_ORIGINS=${EXISTING_CORS_ORIGINS}
 EOF
 chmod 600 "$OUT"
 

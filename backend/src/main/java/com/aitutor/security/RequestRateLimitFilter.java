@@ -6,24 +6,52 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
-import org.springframework.web.filter.OncePerRequestFilter;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.time.Instant;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
-/** Small dependency-free sliding-window limiter for public API protection.
- * Production deployments should additionally place a trusted reverse-proxy/WAF
- * rate limit in front of the application.
+/**
+ * Bounded per-instance fixed-window rate limiter for API protection.
+ *
+ * Architectural note: This filter runs in-memory on a single JVM instance
+ * (suitable for NovaTutor's single-instance Render deployment). Horizontal
+ * multi-replica deployments require a shared Redis/WAF rate-limit layer.
+ *
+ * Security hardening:
+ * - Never trusts client-spoofable X-Real-IP or the leftmost X-Forwarded-For hop.
+ *   When trustProxy=true behind a single trusted reverse proxy (e.g. Render),
+ *   extracts the rightmost proxy-appended X-Forwarded-For entry, falling back to
+ *   request.getRemoteAddr().
+ * - Enforces a strict upper bound (MAX_ENTRIES) using LRU eviction even under
+ *   429 floods so rotating IPs cannot exhaust JVM heap.
+ * - Categorizes all AI generation, DSA execution, password recovery, and upload
+ *   endpoints into dedicated buckets instead of falling through to `general`.
  */
 public class RequestRateLimitFilter extends OncePerRequestFilter {
-    private record Window(long startedAt, int count) {}
-    private final Map<String, Window> windows = new ConcurrentHashMap<>();
+    private static final int MAX_ENTRIES = 10_000;
+    private static final long MAX_WINDOW_MS = 600_000L;
+
+    private record Window(long startedAt, long windowMs, int count) {}
+    private record Policy(String bucket, int limit, long windowMs, boolean ipScoped) {}
+
+    // Access-ordered bounded map guarded by its monitor; O(1) lookup, update & LRU eviction.
+    private final Map<String, Window> windows = new LinkedHashMap<>(256, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Window> eldest) {
+            return size() > MAX_ENTRIES;
+        }
+    };
+    private long lastSweepAt = 0L;
+
     private final boolean enabled;
-    private final int generalRpm, authRpm, aiRpm, codeRpm, upload10m, adminRpm;
+    private final int generalRpm, authRpm, recoveryRpm, aiRpm, codeRpm, upload10m, adminRpm;
     private final boolean trustProxy;
 
     public RequestRateLimitFilter(
@@ -38,6 +66,7 @@ public class RequestRateLimitFilter extends OncePerRequestFilter {
         this.enabled = enabled;
         this.generalRpm = Math.max(10, generalRpm);
         this.authRpm = Math.max(3, authRpm);
+        this.recoveryRpm = Math.max(3, Math.min(10, authRpm));
         this.aiRpm = Math.max(5, aiRpm);
         this.codeRpm = Math.max(5, codeRpm);
         this.upload10m = Math.max(1, upload10m);
@@ -46,52 +75,171 @@ public class RequestRateLimitFilter extends OncePerRequestFilter {
     }
 
     @Override
-    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain) throws ServletException, IOException {
-        if (!enabled || "OPTIONS".equalsIgnoreCase(request.getMethod())) { chain.doFilter(request, response); return; }
-        String path = request.getRequestURI();
-        int limit = generalRpm; long windowMs = 60_000L; String bucket = "general";
-        if (path.startsWith("/api/auth/")) { limit = authRpm; bucket = "auth"; }
-        else if (path.contains("/upload") || path.startsWith("/api/admin/gate-notes")) { limit = upload10m; windowMs = 600_000L; bucket = "upload"; }
-        else if (path.startsWith("/api/admin/")) { limit = adminRpm; bucket = "admin"; }
-        else if (path.startsWith("/api/ai/")) { limit = aiRpm; bucket = "ai"; }
-        else if (path.startsWith("/api/code/")) { limit = codeRpm; bucket = "code"; }
-        String key = bucket + ":" + rateLimitIdentity(request);
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
+            throws ServletException, IOException {
+        if (!enabled || "OPTIONS".equalsIgnoreCase(request.getMethod())) {
+            chain.doFilter(request, response);
+            return;
+        }
+
+        Policy policy = classify(request.getMethod(), request.getRequestURI());
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        boolean isGuest = isGuestAuth(auth);
+
+        int effectiveLimit = policy.limit();
+        // Keep guest sessions bounded on expensive external APIs while preserving legitimate use.
+        if (isGuest) {
+            if ("ai".equals(policy.bucket())) effectiveLimit = Math.max(5, Math.min(effectiveLimit, 20));
+            else if ("code".equals(policy.bucket())) effectiveLimit = Math.max(5, Math.min(effectiveLimit, 15));
+            else if ("upload".equals(policy.bucket())) effectiveLimit = Math.max(2, Math.min(effectiveLimit, 5));
+        }
+
+        // For guests on AI/code/upload/auth, key by IP as well as user identity so minting
+        // fresh guest sessions cannot reset rate-limit counters.
+        String identity = (policy.ipScoped() || (isGuest && ("ai".equals(policy.bucket()) || "code".equals(policy.bucket()) || "upload".equals(policy.bucket()))))
+                ? "ip:" + clientAddress(request)
+                : rateLimitIdentity(request, auth);
+        String key = policy.bucket() + ":" + identity;
+
         long now = Instant.now().toEpochMilli();
-        final long activeWindowMs = windowMs;
-        windows.compute(key, (k, old) -> {
-            if (old == null || now - old.startedAt() >= activeWindowMs) return new Window(now, 1);
-            return new Window(old.startedAt(), old.count() + 1);
-        });
-        Window w = windows.get(key);
-        if (w != null && w.count() > limit) {
-            long retry = Math.max(1, (activeWindowMs - (now - w.startedAt())) / 1000L);
+        Window current;
+        synchronized (windows) {
+            if (now - lastSweepAt > 60_000L && windows.size() > 1000) {
+                Iterator<Map.Entry<String, Window>> it = windows.entrySet().iterator();
+                while (it.hasNext()) {
+                    Window w = it.next().getValue();
+                    if (now - w.startedAt() >= Math.max(w.windowMs(), MAX_WINDOW_MS)) {
+                        it.remove();
+                    }
+                }
+                lastSweepAt = now;
+            }
+            Window old = windows.get(key);
+            if (old == null || now - old.startedAt() >= policy.windowMs()) {
+                current = new Window(now, policy.windowMs(), 1);
+            } else {
+                current = new Window(old.startedAt(), policy.windowMs(), old.count() + 1);
+            }
+            windows.put(key, current);
+        }
+
+        if (current.count() > effectiveLimit) {
+            long retry = Math.max(1, (policy.windowMs() - (now - current.startedAt())) / 1000L);
             response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());
             response.setContentType("application/json");
             response.setHeader("Retry-After", String.valueOf(retry));
             response.getWriter().write("{\"error\":\"RATE_LIMITED\",\"message\":\"Too many requests. Please retry later.\"}");
             return;
         }
-        // Opportunistic cleanup prevents abandoned client/user keys from growing forever.
-        if (windows.size() > 5000) windows.entrySet().removeIf(e -> now - e.getValue().startedAt() > 600_000L);
         chain.doFilter(request, response);
     }
 
-    private String rateLimitIdentity(HttpServletRequest request) {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+    Policy classify(String method, String path) {
+        String raw = path == null ? "" : path.trim();
+        String p = raw.length() > 1 ? raw.replaceAll("/+$", "") : raw;
+        String m = method == null ? "GET" : method.toUpperCase(Locale.ROOT);
+
+        if (p.equals("/api/auth/forgot-password") || p.equals("/api/auth/reset-password")
+                || p.equals("/api/auth/resend-verification")) {
+            return new Policy("auth-recovery", recoveryRpm, 60_000L, true);
+        }
+        if (p.startsWith("/api/auth/")) {
+            // /api/auth/me is authenticated; unauthenticated auth endpoints are IP-scoped.
+            boolean ipScoped = !p.equals("/api/auth/me");
+            return new Policy("auth", authRpm, 60_000L, ipScoped);
+        }
+        if ("POST".equals(m) && (p.contains("/upload") || p.equals("/api/admin/gate-notes"))) {
+            return new Policy("upload", upload10m, 600_000L, false);
+        }
+        if (p.startsWith("/api/admin/")) {
+            return new Policy("admin", adminRpm, 60_000L, false);
+        }
+        if (p.equals("/api/code/analyze")) {
+            return new Policy("ai", aiRpm, 60_000L, false);
+        }
+        if (p.startsWith("/api/code/")
+                || ("POST".equals(m) && p.startsWith("/api/dsa/problems/") && p.endsWith("/run"))) {
+            return new Policy("code", codeRpm, 60_000L, false);
+        }
+        if (p.startsWith("/api/ai/")
+                || p.equals("/api/dpp/generate")
+                || p.equals("/api/interview/ask")
+                || p.startsWith("/api/mentor/ask")
+                || ("POST".equals(m) && p.startsWith("/api/chat/conversations/") && p.endsWith("/messages"))
+                || ("POST".equals(m) && p.startsWith("/api/knowledge/") && (p.endsWith("/ask") || p.endsWith("/pack")))
+                || ("POST".equals(m) && p.startsWith("/api/dsa/problems/") && p.endsWith("/hint"))
+                || ("POST".equals(m) && p.startsWith("/api/adaptive/") && p.endsWith("/ai-question"))) {
+            return new Policy("ai", aiRpm, 60_000L, false);
+        }
+        return new Policy("general", generalRpm, 60_000L, false);
+    }
+
+    private boolean isGuestAuth(Authentication authentication) {
+        if (authentication == null || authentication.getAuthorities() == null) return false;
+        return authentication.getAuthorities().stream()
+                .anyMatch(a -> "ROLE_GUEST".equalsIgnoreCase(a.getAuthority()));
+    }
+
+    private String rateLimitIdentity(HttpServletRequest request, Authentication authentication) {
         if (authentication != null && authentication.isAuthenticated() && authentication.getName() != null
                 && !authentication.getName().isBlank() && !"anonymousUser".equals(authentication.getName())) {
-            return "user:" + authentication.getName().trim().toLowerCase(java.util.Locale.ROOT);
+            return "user:" + authentication.getName().trim().toLowerCase(Locale.ROOT);
         }
         return "ip:" + clientAddress(request);
     }
 
-    private String clientAddress(HttpServletRequest request) {
-        if (trustProxy) {
-            String forwarded = request.getHeader("X-Real-IP");
-            if (forwarded != null && !forwarded.isBlank()) return forwarded.trim();
+    /**
+     * Never trust arbitrary client-supplied X-Real-IP or leftmost X-Forwarded-For.
+     * Only consult X-Forwarded-For when trustProxy=true AND the direct TCP peer
+     * (request.getRemoteAddr()) is a trusted internal/loopback reverse proxy.
+     * Behind Tomcat's native RemoteIpValve, remoteAddr is already resolved to the
+     * true public client IP (non-internal), so spoofed X-Forwarded-For headers are
+     * ignored completely. When behind a raw proxy hop (e.g. Nginx/MockMvc), walk
+     * right-to-left skipping internal proxy hops to find the first public peer IP.
+     */
+    String clientAddress(HttpServletRequest request) {
+        return resolveClientAddress(request, trustProxy);
+    }
+
+    static String resolveClientAddress(HttpServletRequest request, boolean trustProxy) {
+        String remoteAddr = request.getRemoteAddr() == null ? "unknown" : request.getRemoteAddr().trim();
+        if (trustProxy && isTrustedProxy(remoteAddr)) {
             String chain = request.getHeader("X-Forwarded-For");
-            if (chain != null && !chain.isBlank()) return chain.split(",", 2)[0].trim();
+            if (chain != null && !chain.isBlank()) {
+                String[] parts = chain.split(",");
+                String fallback = null;
+                for (int i = parts.length - 1; i >= 0; i--) {
+                    String candidate = parts[i].trim();
+                    if (candidate.isBlank()) continue;
+                    if (fallback == null) fallback = candidate;
+                    if (!isTrustedProxy(candidate)) {
+                        return candidate;
+                    }
+                }
+                if (fallback != null) return fallback;
+            }
         }
-        return request.getRemoteAddr();
+        return remoteAddr;
+    }
+
+    static boolean isTrustedProxy(String ip) {
+        if (ip == null || ip.isBlank()) return false;
+        String clean = ip.trim();
+        if ("127.0.0.1".equals(clean) || "::1".equals(clean) || "0:0:0:0:0:0:0:1".equals(clean)) return true;
+        if (clean.startsWith("10.") || clean.startsWith("192.168.") || clean.startsWith("169.254.") || clean.startsWith("127.")) {
+            return true;
+        }
+        if (clean.startsWith("172.")) {
+            int dot = clean.indexOf('.', 4);
+            if (dot > 4) {
+                try {
+                    int second = Integer.parseInt(clean.substring(4, dot));
+                    return second >= 16 && second <= 31;
+                } catch (NumberFormatException ignored) {
+                    return false;
+                }
+            }
+        }
+        return false;
     }
 }

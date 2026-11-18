@@ -2,20 +2,25 @@ package com.aitutor.service;
 
 import com.aitutor.controller.ApiException;
 import com.aitutor.entity.User;
+import com.aitutor.repository.PendingRegistrationRepository;
 import com.aitutor.repository.UserRepository;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 
 @Service
 public class AuthService {
     private final UserRepository repo;
+    private final PendingRegistrationRepository pendingRegistrations;
     private final PasswordEncoder encoder;
     private final String adminEmail;
     private final String adminPassword;
@@ -23,19 +28,33 @@ public class AuthService {
     public AuthService(UserRepository r, PasswordEncoder e,
                        @Value("${app.admin.email:}") String adminEmail,
                        @Value("${app.admin.password:}") String adminPassword) {
-        repo = r; encoder = e;
-        this.adminEmail = adminEmail == null ? "" : adminEmail.trim().toLowerCase();
+        this(r, null, e, adminEmail, adminPassword);
+    }
+
+    @Autowired
+    public AuthService(UserRepository r,
+                       PendingRegistrationRepository pendingRegistrations,
+                       PasswordEncoder e,
+                       @Value("${app.admin.email:}") String adminEmail,
+                       @Value("${app.admin.password:}") String adminPassword) {
+        this.repo = r;
+        this.pendingRegistrations = pendingRegistrations;
+        this.encoder = e;
+        this.adminEmail = adminEmail == null ? "" : adminEmail.trim().toLowerCase(Locale.ROOT);
         this.adminPassword = adminPassword == null ? "" : adminPassword;
     }
 
     public record LoginOutcome(User user, boolean adminPasswordRecovered) {}
+    public record PendingDraft(String name, String email, String passwordHash) {}
+    public record RegistrationCompletion(User user, boolean alreadyVerified) {}
 
     /**
-     * Creates a pending, unverified account. An existing unverified account is
-     * returned so the caller can resend its verification link; an existing
-     * verified account is rejected so duplicate accounts can never be created.
+     * Validates a new registration and produces an encoded pending draft WITHOUT
+     * creating or overwriting any row in `users`. Each registration is bound to
+     * its own verification token in `pending_registrations`, preventing both
+     * pre-registration takeover and post-registration password overwrite hijacking.
      */
-    public User register(String name, String email, String password) {
+    public PendingDraft preparePendingRegistration(String name, String email, String password) {
         String cleanEmail = normalizeEmail(email);
         if (name == null || name.isBlank()) throw new ApiException(HttpStatus.BAD_REQUEST, "NAME_REQUIRED", "Name is required");
         if (name.trim().length() > 100) throw new ApiException(HttpStatus.BAD_REQUEST, "NAME_TOO_LONG", "Name is too long");
@@ -44,13 +63,53 @@ public class AuthService {
         }
         if (password.length() > 128) throw new ApiException(HttpStatus.BAD_REQUEST, "PASSWORD_TOO_LONG", "Password is too long");
         Optional<User> existing = repo.findByEmail(cleanEmail);
+        if (existing.isPresent() && existing.get().isEmailVerified()) {
+            throw new ApiException(HttpStatus.CONFLICT, "EMAIL_TAKEN", "An account with this email already exists. Sign in instead.");
+        }
+        return new PendingDraft(name.trim(), cleanEmail, encoder.encode(password));
+    }
+
+    /**
+     * Materializes (or activates a legacy unverified row for) an email ONLY after
+     * its specific verification token has been proven. Never overwrites a verified account.
+     */
+    @Transactional
+    public RegistrationCompletion completeVerifiedRegistration(String name, String email, String passwordHash) {
+        String cleanEmail = normalizeEmail(email);
+        Optional<User> existing = repo.findByEmail(cleanEmail);
         if (existing.isPresent()) {
-            if (existing.get().isEmailVerified()) {
-                throw new ApiException(HttpStatus.CONFLICT, "EMAIL_TAKEN", "An account with this email already exists. Sign in instead.");
+            User u = existing.get();
+            if (u.isEmailVerified()) {
+                return new RegistrationCompletion(u, true);
             }
+            u.setName(name);
+            u.setPassword(passwordHash);
+            u.setEmailVerified(true);
+            u.setVerificationTokenHash(null);
+            u.setVerificationExpiresAt(null);
+            u.setVerificationSentAt(null);
+            u.setResetTokenHash(null);
+            u.setResetExpiresAt(null);
+            applyBootstrapRole(u);
+            return new RegistrationCompletion(repo.save(u), false);
+        }
+        User u = new User(name, cleanEmail, passwordHash);
+        u.setEmailVerified(true);
+        applyBootstrapRole(u);
+        return new RegistrationCompletion(repo.save(u), false);
+    }
+
+    /**
+     * Legacy helper retained for direct unit tests. Rejects verified duplicates and
+     * NEVER overwrites an existing unverified row's password in place.
+     */
+    public User register(String name, String email, String password) {
+        PendingDraft draft = preparePendingRegistration(name, email, password);
+        Optional<User> existing = repo.findByEmail(draft.email());
+        if (existing.isPresent()) {
             return existing.get();
         }
-        User u = new User(name.trim(), cleanEmail, encoder.encode(password));
+        User u = new User(draft.name(), draft.email(), draft.passwordHash());
         u.setEmailVerified(false);
         applyBootstrapRole(u);
         return repo.save(u);
@@ -58,15 +117,16 @@ public class AuthService {
 
     public LoginOutcome login(String email, String password) {
         User u = find(email);
-        if (u.isBlocked() || !u.isActive()) {
-            throw new ApiException(HttpStatus.FORBIDDEN, "ACCOUNT_DISABLED", "This account is inactive or blocked.");
-        }
+        // Verify credentials BEFORE revealing disabled/unverified account state to prevent enumeration.
         boolean recovered = false;
         if (!matchesPassword(password, u.getPassword())) {
             if (!recoverConfiguredAdminPassword(u, password)) {
                 throw new ApiException(HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "Invalid email or password");
             }
             recovered = true;
+        }
+        if (u.isBlocked() || !u.isActive()) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "ACCOUNT_DISABLED", "This account is inactive or blocked.");
         }
         if (!u.isEmailVerified()) {
             throw new ApiException(HttpStatus.FORBIDDEN, "EMAIL_UNVERIFIED",
@@ -120,18 +180,30 @@ public class AuthService {
     }
 
     /** Creates or safely links the account behind a verified Google identity. */
+    @Transactional
     public User googleLogin(String email, String subject, String name) {
         String cleanEmail = normalizeEmail(email);
         if (subject == null || subject.isBlank()) {
             throw new ApiException(HttpStatus.UNAUTHORIZED, "GOOGLE_TOKEN_INVALID", "Google did not return an account identifier.");
         }
+        String displayName = (name == null || name.isBlank()) ? cleanEmail.split("@")[0] : name.trim();
+        if (displayName.length() > 100) displayName = displayName.substring(0, 100);
+
         Optional<User> bySubject = repo.findByGoogleSubject(subject);
         if (bySubject.isPresent()) {
             User u = bySubject.get();
             if (u.isBlocked() || !u.isActive()) {
                 throw new ApiException(HttpStatus.FORBIDDEN, "ACCOUNT_DISABLED", "This account is inactive or blocked.");
             }
-            if (!u.isEmailVerified()) { u.setEmailVerified(true); repo.save(u); }
+            if ("ADMIN".equalsIgnoreCase(u.getRole())) {
+                throw new ApiException(HttpStatus.FORBIDDEN, "PORTAL_MISMATCH",
+                        "Administrator accounts must use the Admin sign-in.");
+            }
+            if (!u.isEmailVerified()) {
+                u.setEmailVerified(true);
+                repo.save(u);
+            }
+            if (pendingRegistrations != null) pendingRegistrations.deleteByEmail(cleanEmail);
             return syncOwnerRole(u);
         }
         Optional<User> byEmail = repo.findByEmail(cleanEmail);
@@ -140,27 +212,49 @@ public class AuthService {
             if (u.isBlocked() || !u.isActive()) {
                 throw new ApiException(HttpStatus.FORBIDDEN, "ACCOUNT_DISABLED", "This account is inactive or blocked.");
             }
+            if ("ADMIN".equalsIgnoreCase(u.getRole()) || isAdminEmail(cleanEmail)) {
+                throw new ApiException(HttpStatus.FORBIDDEN, "PORTAL_MISMATCH",
+                        "Administrator accounts must use the Admin sign-in.");
+            }
             if (u.getGoogleSubject() != null && !u.getGoogleSubject().isBlank()
                     && !u.getGoogleSubject().equals(subject)) {
                 throw new ApiException(HttpStatus.CONFLICT, "ACCOUNT_LINK_CONFLICT",
                         "This email is already linked to a different Google account.");
             }
-            // Google has proven ownership of this address, so link it and mark it verified.
+            // SECURITY (CRITICAL-SEC-02): If the existing row was never email-verified,
+            // an attacker may have pre-registered it with a known password. Rotate the
+            // password to an unguessable random secret, replace display name, and clear
+            // all pending verification/reset tokens before linking Google identity.
+            if (!u.isEmailVerified()) {
+                u.setPassword(encoder.encode(UUID.randomUUID() + "-" + UUID.randomUUID()));
+                u.setName(displayName);
+                u.setVerificationTokenHash(null);
+                u.setVerificationExpiresAt(null);
+                u.setVerificationSentAt(null);
+                u.setResetTokenHash(null);
+                u.setResetExpiresAt(null);
+            }
             u.setGoogleSubject(subject);
             u.setEmailVerified(true);
             repo.save(u);
+            if (pendingRegistrations != null) pendingRegistrations.deleteByEmail(cleanEmail);
             return syncOwnerRole(u);
         }
-        String displayName = (name == null || name.isBlank()) ? cleanEmail.split("@")[0] : name.trim();
-        if (displayName.length() > 100) displayName = displayName.substring(0, 100);
+        if (isAdminEmail(cleanEmail)) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "PORTAL_MISMATCH",
+                    "Administrator accounts must use the Admin sign-in.");
+        }
         User u = new User(displayName, cleanEmail, encoder.encode(UUID.randomUUID() + "-" + UUID.randomUUID()));
         u.setGoogleSubject(subject);
         u.setEmailVerified(true);
         applyBootstrapRole(u);
-        return repo.save(u);
+        User saved = repo.save(u);
+        if (pendingRegistrations != null) pendingRegistrations.deleteByEmail(cleanEmail);
+        return saved;
     }
 
     public User syncOwnerRole(User user) {
+        if (user == null || GuestService.ROLE.equalsIgnoreCase(user.getRole())) return user;
         if (!adminEmail.isBlank()) {
             if (adminEmail.equalsIgnoreCase(user.getEmail()) && !"ADMIN".equalsIgnoreCase(user.getRole())) {
                 user.setRole("ADMIN");
@@ -168,12 +262,7 @@ public class AuthService {
             }
             return user;
         }
-        if ("ADMIN".equalsIgnoreCase(user.getRole())) return user;
-        boolean anyAdmin = repo.findAll().stream().anyMatch(x -> "ADMIN".equalsIgnoreCase(x.getRole()));
-        if (!anyAdmin && repo.count() > 0) {
-            user.setRole("ADMIN");
-            return repo.save(user);
-        }
+        // Never auto-promote arbitrary users when ADMIN_EMAIL is not configured.
         return user;
     }
 
@@ -182,16 +271,17 @@ public class AuthService {
     }
 
     private void applyBootstrapRole(User u) {
+        if (GuestService.ROLE.equalsIgnoreCase(u.getRole())) return;
         if (!adminEmail.isBlank()) {
             if (adminEmail.equalsIgnoreCase(u.getEmail())) u.setRole("ADMIN");
-        } else if (repo.count() == 0 || repo.findAll().stream().noneMatch(x -> "ADMIN".equalsIgnoreCase(x.getRole()))) {
+        } else if (repo.count() == 0 && !repo.existsByRoleIgnoreCase("ADMIN")) {
             u.setRole("ADMIN");
         }
     }
 
-    private String normalizeEmail(String email) {
+    public String normalizeEmail(String email) {
         if (email == null || email.isBlank()) throw new ApiException(HttpStatus.BAD_REQUEST, "EMAIL_REQUIRED", "Email is required");
-        String clean = email.trim().toLowerCase();
+        String clean = email.trim().toLowerCase(Locale.ROOT);
         if (clean.length() > 254 || !clean.matches("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$")) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "EMAIL_INVALID", "Enter a valid email address");
         }

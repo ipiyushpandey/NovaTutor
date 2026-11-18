@@ -1,0 +1,44 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:novatutor_test;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+        format_sql: false
+
+app:
+  jwt:
+    secret: "novatutor-test-suite-signing-secret-must-be-at-least-64-bytes-long-123456"
+    expiration-ms: 3600000
+    max-session-ms: 604800000
+  admin:
+    email: "admin@novatutor.test"
+    password: "AdminTestPassword123!"
+  seed:
+    enabled: false
+  gate:
+    notes-dir: "${java.io.tmpdir}/novatutor-test-gate-notes"
+  code-runner:
+    enabled: false
+    provider: "remote"
+  rate-limit:
+    enabled: true
+    requests-per-minute: 1000
+    auth-per-minute: 30
+    ai-per-minute: 60
+    code-per-minute: 40
+    upload-per-10-minutes: 15
+    admin-per-minute: 1500
+    trust-proxy: false
+  cors:
+    allowed-origins: "http://localhost:5173"
+
+ai:
+  gemini:
+    api-key: ""

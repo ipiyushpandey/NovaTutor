@@ -19,12 +19,15 @@ function StatusMark({st}){
   return <span className="dsa-status" style={{color:'var(--muted)'}}><Target size={13}/>New</span>;
 }
 
-export default function DsaPractice({user,api}){
+export default function DsaPractice({user,api,routeSlug=null,onRouteSlug=null}){
   const [problems,setProblems]=useState(null);
   const [stats,setStats]=useState(null);
   const [progress,setProgress]=useState({});
   const [summary,setSummary]=useState(null);
-  const [slug,setSlug]=useState(null);
+  const [localSlug,setLocalSlug]=useState(routeSlug||null);
+  const slug=onRouteSlug?routeSlug:localSlug;
+  const setSlug=useCallback(next=>{if(onRouteSlug)onRouteSlug(next);else setLocalSlug(next);},[onRouteSlug]);
+  useEffect(()=>{if(!onRouteSlug)setLocalSlug(routeSlug||null)},[routeSlug,onRouteSlug]);
   const [q,setQ]=useState('');
   const [diff,setDiff]=useState('ALL');
   const [topic,setTopic]=useState('ALL');
@@ -62,7 +65,7 @@ export default function DsaPractice({user,api}){
     return (problems||[]).filter(p=>{
       if(diff!=='ALL'&&diffKey(p.difficulty)!==diff)return false;
       if(topic!=='ALL'&&p.topic!==topic)return false;
-      if(needle&&!(p.title.toLowerCase().includes(needle)||p.slug.includes(needle)||(p.tags||[]).join(',').includes(needle)))return false;
+      if(needle&&!(p.title.toLowerCase().includes(needle)||p.slug.includes(needle)||(p.tags||[]).join(',').toLowerCase().includes(needle)))return false;
       if(status!=='ALL'){
         const st=(progress[p.slug]||{}).status||'NEW';
         if(status==='BOOKMARKED'&&!(progress[p.slug]||{}).bookmarked)return false;
@@ -72,8 +75,23 @@ export default function DsaPractice({user,api}){
     });
   },[problems,q,diff,topic,status,progress]);
 
-  if(slug) return <DsaProblemView key={slug} api={api} slug={slug}
-      saved={progress[slug]} onBack={()=>setSlug(null)} onProgress={refreshProgress}/>;
+  const enteredInAppRef=useRef(false);
+  const openProblem=useCallback((next)=>{
+    enteredInAppRef.current=true;
+    setSlug(next);
+  },[setSlug]);
+  const handleBack=useCallback(()=>{
+    if(enteredInAppRef.current&&typeof onRouteSlug==='function'){
+      enteredInAppRef.current=false;
+      window.history.back();
+      return;
+    }
+    enteredInAppRef.current=false;
+    setSlug(null);
+  },[onRouteSlug,setSlug]);
+
+  if(slug) return <DsaProblemView key={slug} user={user} api={api} slug={slug}
+      saved={progress[slug]} onBack={handleBack} onProgress={refreshProgress}/>;
 
   return (
     <div className="dsa-page">
@@ -137,8 +155,8 @@ export default function DsaPractice({user,api}){
               /* role=button div: the row contains a nested bookmark button, which
                  is invalid inside a real <button>. Keyboard + a11y preserved. */
               <div className="dsa-row" role="button" tabIndex={0} key={p.slug}
-                onClick={()=>setSlug(p.slug)}
-                onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setSlug(p.slug)}}}>
+                onClick={()=>openProblem(p.slug)}
+                onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openProblem(p.slug)}}}>
                 <span className="dsa-idx">{String(i+1).padStart(2,'0')}</span>
                 <span className="dsa-row-main">
                   <b>{p.title}</b>
@@ -169,9 +187,15 @@ export default function DsaPractice({user,api}){
 
 /* ------------------------------------------------------------------ */
 
-function DsaProblemView({api,slug,saved,onBack,onProgress}){
+function DsaProblemView({user,api,slug,saved,onBack,onProgress}){
+  const normalizeSavedLang=(raw)=>{
+    if(!raw)return null;
+    const low=String(raw).trim().toLowerCase();
+    const hit=LANGS.find(l=>l[0]===low||l[1].toLowerCase()===low);
+    return hit?hit[0]:null;
+  };
   const [problem,setProblem]=useState(null);
-  const [lang,setLang]=useState(saved?.lastLanguage&&LANGS.some(l=>l[0]===saved.lastLanguage)?saved.lastLanguage:'java');
+  const [lang,setLang]=useState(()=>normalizeSavedLang(saved?.lastLanguage)||'java');
   const [codeByLang,setCodeByLang]=useState({});
   const [code,setCode]=useState('');
   const [result,setResult]=useState(null);
@@ -181,49 +205,108 @@ function DsaProblemView({api,slug,saved,onBack,onProgress}){
   const [loadErr,setLoadErr]=useState('');
   const [bookmarked,setBookmarked]=useState(Boolean(saved?.bookmarked));
   const lastSavedRef=useRef('');
+  const userEditedRef=useRef(false);
+  const langSeqRef=useRef(0);
+  const codeSourceRef=useRef('none'); // 'none' | 'starter' | 'saved' | 'draft' | 'user'
+  const savedAppliedRef=useRef(false);
+  const userScope=user?.id||'guest';
+
+  // Sync bookmark and restore saved language/code when async progress arrives after direct-link mount.
+  // Precedence: user edit > local draft (for savedLang) > saved server lastCode > starter code.
+  useEffect(()=>{
+    if(!saved)return;
+    setBookmarked(Boolean(saved.bookmarked));
+    if(savedAppliedRef.current||userEditedRef.current)return;
+    const savedLang=normalizeSavedLang(saved.lastLanguage);
+    if(!savedLang)return;
+    savedAppliedRef.current=true;
+    const seq=++langSeqRef.current; // cancels any in-flight initial starter fetch
+    const draft=localStorage.getItem(`dsa_code_${userScope}_${slug}_${savedLang}`);
+    if(draft!==null){
+      codeSourceRef.current='draft';
+      setLang(savedLang);
+      setCode(draft);
+      setCodeByLang(m=>({...m,[savedLang]:draft}));
+      return;
+    }
+    if(saved.lastCode){
+      codeSourceRef.current='saved';
+      setLang(savedLang);
+      setCode(saved.lastCode);
+      setCodeByLang(m=>({...m,[savedLang]:saved.lastCode}));
+      return;
+    }
+    // Saved language known with no draft/lastCode: switch language and load its starter cleanly.
+    setLang(savedLang);
+    api(`/dsa/problems/${slug}/starter?language=${encodeURIComponent(savedLang)}`).then(s=>{
+      if(langSeqRef.current!==seq||userEditedRef.current)return;
+      if(s&&s.code){codeSourceRef.current='starter';setCode(s.code);setCodeByLang(m=>({...m,[savedLang]:s.code}));}
+    }).catch(()=>{});
+  },[saved,slug,userScope]);
 
   // Load problem detail + restore/fetch code for the initial language.
   useEffect(()=>{
     let dead=false;
+    const seq=++langSeqRef.current;
     (async()=>{
       try{
         const p=await api(`/dsa/problems/${slug}`);
         if(dead)return;
         setProblem(p);
-        const draft=localStorage.getItem(`dsa_code_${slug}_${lang}`);
-        if(draft!==null){setCode(draft);}
-        else if(saved?.lastLanguage===lang&&saved?.lastCode){setCode(saved.lastCode);}
-        else{
-          const s=await api(`/dsa/problems/${slug}/starter?language=${encodeURIComponent(lang)}`);
-          if(!dead&&s&&s.code)setCode(s.code);
+        if(userEditedRef.current||codeSourceRef.current==='draft'||codeSourceRef.current==='saved'||langSeqRef.current!==seq)return;
+        const startLang=normalizeSavedLang(saved?.lastLanguage)||lang;
+        const draft=localStorage.getItem(`dsa_code_${userScope}_${slug}_${startLang}`);
+        if(draft!==null){
+          codeSourceRef.current='draft';
+          if(startLang!==lang)setLang(startLang);
+          setCode(draft);
+          setCodeByLang(m=>({...m,[startLang]:draft}));
+        }else if(normalizeSavedLang(saved?.lastLanguage)===startLang&&saved?.lastCode){
+          codeSourceRef.current='saved';
+          if(startLang!==lang)setLang(startLang);
+          setCode(saved.lastCode);
+          setCodeByLang(m=>({...m,[startLang]:saved.lastCode}));
+        }else{
+          const s=await api(`/dsa/problems/${slug}/starter?language=${encodeURIComponent(startLang)}`);
+          if(dead||langSeqRef.current!==seq||userEditedRef.current||codeSourceRef.current!=='none')return;
+          if(s&&s.code){codeSourceRef.current='starter';setCode(s.code);setCodeByLang(m=>({...m,[startLang]:s.code}));}
         }
       }catch(e){if(!dead)setLoadErr(String(e.message||e));}
     })();
     return()=>{dead=true};
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[slug]);
+  },[slug,userScope]);
 
-  const draftKey=useMemo(()=>`dsa_code_${slug}_${lang}`,[slug,lang]);
+  const draftKey=useMemo(()=>`dsa_code_${userScope}_${slug}_${lang}`,[userScope,slug,lang]);
 
   const switchLang=useCallback(async(next)=>{
+    const seq=++langSeqRef.current;
+    userEditedRef.current=true;
+    codeSourceRef.current='user';
     setLang(next);
     setResult(null);
-    const draft=localStorage.getItem(`dsa_code_${slug}_${next}`);
+    const draft=localStorage.getItem(`dsa_code_${userScope}_${slug}_${next}`);
     if(draft!==null){setCode(draft);return;}
     if(codeByLang[next]){setCode(codeByLang[next]);return;}
     try{
       const s=await api(`/dsa/problems/${slug}/starter?language=${encodeURIComponent(next)}`);
+      if(langSeqRef.current!==seq)return;
       if(s&&s.code){setCode(s.code);setCodeByLang(m=>({...m,[next]:s.code}));}
-    }catch(e){setCode('// starter unavailable: '+String(e.message||e));}
-  },[api,slug,codeByLang]);
+    }catch(e){
+      if(langSeqRef.current!==seq)return;
+      setCode('// starter unavailable: '+String(e.message||e));
+    }
+  },[api,userScope,slug,codeByLang]);
 
   const persistCode=useCallback(async(text,language)=>{
     try{
-      await api(`/dsa/progress/${slug}/code`,{method:'POST',body:JSON.stringify({language,code:text})});
+      await api(`/dsa/progress/${slug}/code`,{method:'POST',body:JSON.stringify({language,code:text}),silentUpdate:true});
     }catch(e){/* non-fatal */}
   },[api,slug]);
 
   const onEdit=useCallback(text=>{
+    userEditedRef.current=true;
+    codeSourceRef.current='user';
     setCode(text);
     setCodeByLang(m=>({...m,[lang]:text}));
     try{localStorage.setItem(draftKey,text);}catch(e){}
@@ -232,7 +315,7 @@ function DsaProblemView({api,slug,saved,onBack,onProgress}){
   const run=useCallback(async()=>{
     setRunning(true);setResult(null);
     try{
-      const r=await api(`/dsa/problems/${slug}/run`,{method:'POST',body:JSON.stringify({language:lang,code})},{timeoutMs:180000});
+      const r=await api(`/dsa/problems/${slug}/run`,{method:'POST',body:JSON.stringify({language:lang,code}),timeoutMs:180000});
       setResult(r);
       lastSavedRef.current=code;
       persistCode(code,lang);
@@ -245,7 +328,7 @@ function DsaProblemView({api,slug,saved,onBack,onProgress}){
   const askHint=useCallback(async(mode)=>{
     setHintBusy(true);setHint(null);
     try{
-      const r=await api(`/dsa/problems/${slug}/hint`,{method:'POST',body:JSON.stringify({mode,code:mode==='review'?code:undefined})},{timeoutMs:120000});
+      const r=await api(`/dsa/problems/${slug}/hint`,{method:'POST',body:JSON.stringify({mode,code:mode==='review'?code:undefined}),timeoutMs:120000});
       setHint(r?.answer||'AI is unavailable right now.');
     }catch(e){setHint(String(e.message||e));}
     finally{setHintBusy(false);}
@@ -315,7 +398,7 @@ function DsaProblemView({api,slug,saved,onBack,onProgress}){
             <select aria-label="Language" value={lang} onChange={e=>switchLang(e.target.value)}>
               {LANGS.map(l=><option key={l[0]} value={l[0]} disabled={l[0]==='c'&&!problem.cSupported}>{l[1]}{l[0]==='c'&&!problem.cSupported?' (n/a)':''}</option>)}
             </select>
-            <button className="text-btn" onClick={async()=>{const s=await api(`/dsa/problems/${slug}/starter?language=${encodeURIComponent(lang)}`);if(s&&s.code)onEdit(s.code);}}>Reset starter</button>
+            <button className="text-btn" onClick={async()=>{const seq=++langSeqRef.current;const s=await api(`/dsa/problems/${slug}/starter?language=${encodeURIComponent(lang)}`);if(langSeqRef.current===seq&&s&&s.code)onEdit(s.code);}}>Reset starter</button>
           </div>
         </div>
         <textarea spellCheck={false} value={code} onChange={e=>onEdit(e.target.value)}

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'" />
+  <title>NovaTutor HTML Preview</title>
+</head>
+<body>
+  <script>
+    (function () {
+      // Defense-in-depth: refuse to render unless framed inside a sandboxed opaque-origin iframe.
+      if (window.self === window.top || window.origin !== 'null') return;
+      var CSP_META = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src data:; connect-src \'none\'; form-action \'none\'; base-uri \'none\'; object-src \'none\'">';
+      function renderUserHtml(raw) {
+        var html = String(raw || '');
+        var doc = /<head[\s>]/i.test(html)
+          ? html.replace(/<head([^>]*)>/i, '<head$1><meta charset="utf-8">' + CSP_META)
+          : '<!doctype html><html><head><meta charset="utf-8">' + CSP_META + '</head><body>' + html + '</body></html>';
+        document.open();
+        document.write(doc);
+        document.close();
+      }
+      window.addEventListener('message', function (ev) {
+        if (ev.source !== window.parent) return;
+        var msg = ev.data;
+        if (!msg || msg.type !== 'nova-ide-render') return;
+        renderUserHtml(msg.html);
+      });
+      try {
+        window.parent.postMessage({ type: 'nova-ide-ready' }, '*');
+      } catch (e) {}
+    })();
+  </script>
+</body>
+</html>

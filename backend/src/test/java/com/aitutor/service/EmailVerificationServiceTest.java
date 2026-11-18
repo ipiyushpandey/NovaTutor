@@ -119,4 +119,82 @@ class EmailVerificationServiceTest {
         assertEquals("WEAK_PASSWORD", error.code());
         assertNotNull(user.getResetTokenHash());
     }
+
+    @Test
+    void pendingRegistrationBindsPasswordToVerificationTokenAgainstOverwriteAttack() {
+        var pendingRepo = Mockito.mock(com.aitutor.repository.PendingRegistrationRepository.class);
+        var pendingStore = new java.util.ArrayList<com.aitutor.entity.PendingRegistration>();
+        when(pendingRepo.save(any(com.aitutor.entity.PendingRegistration.class))).thenAnswer(inv -> {
+            var p = inv.getArgument(0, com.aitutor.entity.PendingRegistration.class);
+            pendingStore.remove(p);
+            pendingStore.add(p);
+            return p;
+        });
+        when(pendingRepo.findByEmailOrderByCreatedAtDesc(anyString())).thenAnswer(inv -> {
+            String em = inv.getArgument(0, String.class);
+            return pendingStore.stream().filter(p -> p.getEmail().equals(em)).toList();
+        });
+        when(pendingRepo.findByTokenHash(anyString())).thenAnswer(inv -> {
+            String h = inv.getArgument(0, String.class);
+            return pendingStore.stream().filter(p -> p.getTokenHash().equals(h)).findFirst();
+        });
+        Mockito.doAnswer(inv -> {
+            String em = inv.getArgument(0, String.class);
+            pendingStore.removeIf(p -> p.getEmail().equals(em));
+            return null;
+        }).when(pendingRepo).deleteByEmail(anyString());
+
+        var capturedLinks = new java.util.ArrayList<String>();
+        when(mail.verificationEmail(any(), anyString(), anyInt())).thenAnswer(inv -> {
+            capturedLinks.add(inv.getArgument(1, String.class));
+            return "<html>verify</html>";
+        });
+
+        var materialized = new java.util.concurrent.atomic.AtomicReference<User>();
+        var authService = Mockito.mock(AuthService.class);
+        when(authService.completeVerifiedRegistration(anyString(), anyString(), anyString())).thenAnswer(inv -> {
+            if (materialized.get() != null) {
+                return new AuthService.RegistrationCompletion(materialized.get(), true);
+            }
+            User created = new User(inv.getArgument(0), inv.getArgument(1), inv.getArgument(2));
+            created.setEmailVerified(true);
+            materialized.set(created);
+            return new AuthService.RegistrationCompletion(created, false);
+        });
+
+        var svc = new EmailVerificationService(users, pendingRepo, authService, mail, "https://novatutor.test");
+
+        // 1. Victim registers first
+        assertTrue(svc.issuePendingRegistration(new AuthService.PendingDraft("Victim", "victim@example.com", "victim-bcrypt-hash")).sent());
+        // 2. Attacker registers same email with attacker password
+        assertTrue(svc.issuePendingRegistration(new AuthService.PendingDraft("Attacker", "victim@example.com", "attacker-bcrypt-hash")).sent());
+        assertEquals(2, capturedLinks.size());
+
+        // 3. Resend refuses to arbitrarily pick one when competing pending rows exist
+        assertFalse(svc.resendVerification("victim@example.com").sent());
+
+        // 4. Victim clicks Email #1
+        String victimToken = capturedLinks.get(0).substring(capturedLinks.get(0).indexOf("token=") + 6);
+        String attackerToken = capturedLinks.get(1).substring(capturedLinks.get(1).indexOf("token=") + 6);
+        assertEquals(EmailVerificationService.VerificationResult.VERIFIED, svc.verify(victimToken));
+        assertNotNull(materialized.get());
+        assertEquals("Victim", materialized.get().getName());
+        assertEquals("victim-bcrypt-hash", materialized.get().getPassword());
+
+        // 5. Attacker's token was purged and cannot replay
+        assertEquals(EmailVerificationService.VerificationResult.INVALID, svc.verify(attackerToken));
+    }
+
+    @Test
+    void passwordResetSkipsGuestsAndEnforcesCooldown() {
+        User guest = new User("Guest", "guest-1@guest.novatutor.local", "hash");
+        guest.setRole("GUEST");
+        when(users.findByEmail("guest-1@guest.novatutor.local")).thenReturn(Optional.of(guest));
+        assertFalse(service.requestPasswordReset("guest-1@guest.novatutor.local"));
+
+        when(users.findByEmail("asha@example.com")).thenReturn(Optional.of(user));
+        assertTrue(service.requestPasswordReset("asha@example.com"));
+        // Immediate second request inside 60s cooldown must be suppressed
+        assertFalse(service.requestPasswordReset("asha@example.com"));
+    }
 }

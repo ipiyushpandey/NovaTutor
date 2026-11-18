@@ -45,7 +45,7 @@ public class DsaProblemState {
     @Column(length = 24)
     String lastLanguage;
 
-    @Column(columnDefinition = "TEXT")
+    @Column(columnDefinition = "MEDIUMTEXT")
     String lastCode;
 
     @Column(nullable = false)

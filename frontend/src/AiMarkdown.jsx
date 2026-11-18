@@ -1,4 +1,4 @@
-import React,{useState} from 'react';
+import React,{useEffect,useRef,useState} from 'react';
 import {normalizeAiText} from './lib/aiText.js';
 
 /* NovaTutor shared AI markdown renderer.
@@ -39,7 +39,9 @@ export function mdInlineText(text){
 
 function CodeBlock({code}){
   const [copied,setCopied]=useState(false);
-  const copy=async()=>{try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(code)}else{const ta=document.createElement('textarea');ta.value=code;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta)}setCopied(true);setTimeout(()=>setCopied(false),1600)}catch{}} ;
+  const timerRef=useRef(null);
+  useEffect(()=>()=>clearTimeout(timerRef.current),[]);
+  const copy=async()=>{try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(code)}else{const ta=document.createElement('textarea');ta.value=code;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta)}setCopied(true);clearTimeout(timerRef.current);timerRef.current=setTimeout(()=>setCopied(false),1600)}catch{}} ;
   return (
     <div className="ai-md-code">
       <div className="ai-md-code-bar"><span>CODE</span><button type="button" onClick={copy} className={copied?'ok':''}>{copied?'✓ Copied':'Copy'}</button></div>
@@ -54,7 +56,7 @@ function CodeBlock({code}){
    flowing prose. */
 const looksLikeHeading=(t)=>{
   if(/^#{1,6}\s+/.test(t))return true;
-  if(/^\*\*[^*]{1,80}\*:?\*\*:?$/.test(t))return true;
+  if(/^\*\*[^*]{1,80}\*\*:?$/.test(t))return true;
   return false;
 };
 
@@ -118,11 +120,10 @@ export default function AiMarkdown({content}){
       );
       i=tbl.next-1;continue;
     }
-    // Multi-line paragraphs (soft-wrapped model output) are joined.
+    // Flush accumulated paragraph lines before block-level elements; consecutive prose lines join.
     if(
       looksLikeHeading(t)||/^[-*•]\s+/.test(t)||/^\d+[.)]\s+/.test(t)||
-      /^[-—=_*]{3,}$/.test(t)||/^>/.test(t)||
-      (buf.length&&!/^(?:[-*•]\s+|\d+[.)]\s+)/.test(t))
+      /^[-—=_*]{3,}$/.test(t)||/^>/.test(t)
     ){flush()}
 
     let m;
@@ -131,7 +132,7 @@ export default function AiMarkdown({content}){
       out.push(<h4 className={'ai-md-heading h'+level} key={'h'+out.length}>{mdInline(m[2]||'')}</h4>);
       continue;
     }
-    if((m=t.match(/^\*\*([^*]{1,80})\*:?\*\*:?!?$/))){
+    if((m=t.match(/^\*\*([^*]{1,80})\*\*:?!?$/))){
       out.push(<h4 className={'ai-md-heading h2'} key={'h'+out.length}>{mdInline(m[1])}</h4>);
       continue;
     }

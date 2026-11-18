@@ -131,10 +131,12 @@ test.describe('authenticated experience', () => {
     await expect(page.getByRole('heading', { name: /Email verification is unavailable/i })).toHaveCount(0);
     await noHorizontalOverflow(page);
   });
+});
 
+test.describe('guest + portal security', () => {
   test('browser Back restores the previous page and scroll position', async ({ page, request }) => {
     // A disposable, profile-complete guest gives this navigation test a stable
-    // signed-in shell without mutating the shared E2E student.
+    // signed-in shell without mutating any shared student account.
     const created = await request.post('/api/auth/guest');
     const guest = await created.json();
     const headers = { Authorization: `Bearer ${guest.token}` };
@@ -165,9 +167,7 @@ test.describe('authenticated experience', () => {
       await request.delete('/api/auth/guest', { headers });
     }
   });
-});
 
-test.describe('guest + portal security', () => {
   test('guest mode starts an isolated session and cannot open Admin', async ({ page }) => {
     await page.goto('/#/login');
     await page.getByRole('button', { name: 'Continue as guest' }).click();
@@ -207,8 +207,11 @@ test.describe('admin workspace', () => {
       await expect(page.locator('.topnav-sheet .sheet-item').first()).toBeVisible();
       await page.locator('.topnav-sheet').getByRole('button', { name: 'Admin Panel' }).click();
     } else {
-      // The active section's sub-navigation is open on first render.
-      await expect(page.getByRole('button', { name: 'Learn', exact: true })).toHaveAttribute('aria-expanded', 'true');
+      // Desktop TopNav dropdowns start closed to avoid initial CLS, then open cleanly as overlays.
+      const learnBtn = page.getByRole('button', { name: 'Learn', exact: true });
+      await expect(learnBtn).toHaveAttribute('aria-expanded', 'false');
+      await learnBtn.click();
+      await expect(learnBtn).toHaveAttribute('aria-expanded', 'true');
       await expect(page.locator('.topnav-panel').first()).toBeVisible();
       await page.locator('.topnav-menu-btn').filter({ hasText: 'More' }).click();
       await page.getByRole('menuitem', { name: 'Admin Panel' }).click();

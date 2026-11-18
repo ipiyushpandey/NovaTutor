@@ -14,11 +14,12 @@ public interface LearningEventRepository extends JpaRepository<LearningEvent,Lon
     List<LearningEvent> findTop8ByUserIdOrderByCreatedAtDesc(Long userId);
     List<LearningEvent> findTop5ByUserIdAndTypeOrderByCreatedAtDesc(Long userId, String type);
     List<LearningEvent> findByUserIdOrderByCreatedAtAsc(Long userId);
-    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.data.jpa.repository.Modifying(flushAutomatically = true, clearAutomatically = true)
     @org.springframework.data.jpa.repository.Query("delete from LearningEvent e where e.user.id = :userId")
     void deleteByUserId(@org.springframework.data.repository.query.Param("userId") Long userId);
     long countByUserIdAndType(Long userId,String type);
     long countByUserIdAndTypeAndScoreGreaterThanEqual(Long userId,String type,Integer score);
+    long countByUserIdAndTypeInAndCreatedAtGreaterThanEqual(Long userId, Collection<String> types, LocalDateTime since);
     Optional<LearningEvent> findByUserIdAndDedupeKey(Long userId,String dedupeKey);
 
     @Modifying
@@ -51,8 +52,8 @@ public interface LearningEventRepository extends JpaRepository<LearningEvent,Lon
     }
 
     @Query(value = """
-        SELECT user_id AS userId, COALESCE(SUM(
-          CASE UPPER(type)
+        SELECT le.user_id AS userId, COALESCE(SUM(
+          CASE UPPER(le.type)
             WHEN 'LESSON_COMPLETED' THEN 10
             WHEN 'QUIZ_QUESTION' THEN 5
             WHEN 'QUIZ_COMPLETED' THEN 20
@@ -65,12 +66,17 @@ public interface LearningEventRepository extends JpaRepository<LearningEvent,Lon
             WHEN 'TEST_COMPLETED' THEN 35
             WHEN 'EXAM_COMPLETED' THEN 35
             WHEN 'INTERVIEW_COMPLETED' THEN 30
+            WHEN 'DSA_ATTEMPT' THEN 15
             ELSE 0
-          END + CASE WHEN score IS NULL THEN 0 ELSE GREATEST(0, LEAST(10, FLOOR(score/10))) END
+          END + CASE WHEN le.score IS NULL THEN 0 ELSE GREATEST(0, LEAST(10, FLOOR(le.score/10))) END
         ),0) AS xp
-        FROM learning_events
-        WHERE UPPER(type) NOT IN ('ADAPTIVE_AI_GENERATED','ADAPTIVE_SHOWN','DPP_GENERATED')
-        GROUP BY user_id
+        FROM learning_events le
+        INNER JOIN users u ON u.id = le.user_id
+        WHERE u.active = TRUE
+          AND u.blocked = FALSE
+          AND UPPER(u.role) <> 'GUEST'
+          AND UPPER(le.type) NOT IN ('ADAPTIVE_AI_GENERATED','ADAPTIVE_SHOWN','DPP_GENERATED')
+        GROUP BY le.user_id
         ORDER BY xp DESC
         LIMIT 20
         """, nativeQuery = true)

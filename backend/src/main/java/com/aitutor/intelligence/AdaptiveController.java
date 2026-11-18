@@ -67,6 +67,7 @@ public class AdaptiveController {
         List<Revision> revisions=new ArrayList<>();
         List<Concept> map=new ArrayList<>();
         int mastered=0, needs=0, dueCount=0;
+        LocalDateTime nowIst = LocalDateTime.now(ZoneId.of("Asia/Kolkata"));
         for(Map.Entry<String,List<QuizAttempt>> e:bySubject.entrySet()) {
             int total=e.getValue().stream().mapToInt(QuizAttempt::getTotal).sum();
             int correct=e.getValue().stream().mapToInt(QuizAttempt::getCorrect).sum();
@@ -80,16 +81,16 @@ public class AdaptiveController {
             LocalDateTime lastRevision=latestRevision(es,e.getKey());
             LocalDateTime base=lastLearning;
             if(lastRevision!=null && lastRevision.isAfter(base)) base=lastRevision;
-            long days=Duration.between(base,LocalDateTime.now()).toDays();
+            long days=Math.max(0, Duration.between(base, nowIst).toDays());
             int interval=reviewInterval(acc, days);
             LocalDateTime next=base.plusDays(interval);
-            boolean due=!next.isAfter(LocalDateTime.now());
+            boolean due=!next.isAfter(nowIst);
             if(due) dueCount++;
             String label=due?"Due now":(interval<=1?"Due today":"Next review in "+interval+" days");
             String reason=due?(acc<60?"Repeated mistakes need attention":"Memory refresh is due"):(acc<60?"Weak area — keep it in your rotation":(acc<80?"Strengthen this before it fades":"Keep this concept active with a quick recall"));
             revisions.add(new Revision(e.getKey(),"Quiz mastery",reason,label,due?(acc<60?3:2):1,interval+" day"+(interval==1?"":"s"),next.toLocalDate().toString()));
         }
-        for(Course c:courses.findAll()) if(!bySubject.containsKey(c.getTitle())) map.add(new Concept(c.getTitle(),"Course foundations",0,"NOT_STARTED"));
+        for(Course c:courses.findAll()) if(c.isPublished() && !bySubject.containsKey(c.getTitle())) map.add(new Concept(c.getTitle(),"Course foundations",0,"NOT_STARTED"));
         revisions.sort(Comparator.comparingInt(Revision::priority).reversed().thenComparing(Revision::nextReview));
         int readiness=qs.isEmpty()?0:(int)Math.round(qs.stream().mapToInt(QuizAttempt::getScore).average().orElse(0));
         int confidence=Math.min(100, Math.max(0, readiness + Math.min(15, qs.size())));
@@ -100,42 +101,50 @@ public class AdaptiveController {
         revisions.stream().limit(5).forEach(r->rescue.add("20 min — " + r.subject()+": revise " + r.topic()+" and solve 5 focused questions."));
         if(rescue.isEmpty()) rescue.add("Take a 10-question diagnostic quiz, then NovaTutor will build a personalized recovery plan.");
         ScoreCard card=new ScoreCard(readiness,confidence,mastered,needs,dueCount,headline,subjects);
-        List<Question> adaptive=adaptiveQuestions(qs,bySubject,adaptiveLevel,recentlySeen);
+        boolean admin = authenticatedUser.isAdmin(authentication);
+        List<Question> adaptive=adaptiveQuestions(qs,bySubject,adaptiveLevel,recentlySeen,admin);
         return new AdaptiveView(card,adaptive,revisions.stream().limit(12).toList(),map.stream().limit(60).toList(),rescue,adaptiveLevel,adaptiveReason);
     }
 
     @PostMapping("/{userId}/ai-question")
-    @Transactional
     public Question aiQuestion(@PathVariable Long userId, Authentication authentication) {
         authenticatedUser.requireSame(authentication,userId);
+        boolean admin = authenticatedUser.isAdmin(authentication);
         User u=users.findById(userId).orElseThrow();
         List<QuizAttempt> recent=attempts.findTop200ByUserIdOrderBySubmittedAtDesc(userId).stream().limit(50).toList();
-        String subject=recent.stream().filter(a->a.getCourse()!=null).map(a->a.getCourse().getTitle()).findFirst()
-                .orElseGet(()->courses.findAll().stream().map(Course::getTitle).findFirst().orElse("Computer Science"));
+        String subject=recent.stream()
+                .filter(a->a.getCourse()!=null && (admin || a.getCourse().isPublished()))
+                .map(a->a.getCourse().getTitle())
+                .findFirst()
+                .orElseGet(()->courses.findAll().stream().filter(Course::isPublished).map(Course::getTitle).findFirst().orElse("Computer Science"));
         String level=adaptiveLevel(recent);
         String prompt="Generate ONE original, non-trivial exam-style MCQ for a computer-science learner. Subject: "+subject+". Difficulty: "+level+". "
                 +"Use a reasoning/scenario/output-analysis style question rather than trivial recall. It may involve code, algorithms, data structures, systems or a trace. "
                 +"Return ONLY valid JSON with keys question, options (array of exactly 4 strings), correctOption (0-3), explanation, difficulty, topic. "
                 +"Do not copy known exam wording. Make exactly one option correct.";
-        if(!aiProvider.available()) throw new IllegalStateException("AI question generation is unavailable until the Gemini API key is configured.");
+        if(!aiProvider.available()) throw new com.aitutor.controller.ApiException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "AI_UNAVAILABLE", "AI question generation is unavailable until the Gemini API key is configured.");
         String responseLanguage = u.getPreferredAiLanguage() == null || u.getPreferredAiLanguage().isBlank()
                 ? "English" : u.getPreferredAiLanguage();
         String raw=aiProvider.generate(new AiRequest(AiTask.QUIZ,subject,prompt,level.toLowerCase(Locale.ROOT),responseLanguage)).answer();
         JsonNode node=parseJson(raw);
         if(node==null || !node.hasNonNull("question") || !node.has("options") || !node.get("options").isArray() || node.get("options").size()!=4)
-            throw new IllegalStateException("AI returned an invalid quiz question. Please try again.");
+            throw new com.aitutor.controller.ApiException(org.springframework.http.HttpStatus.BAD_GATEWAY, "AI_INVALID_RESPONSE", "AI returned an invalid quiz question. Please try again.");
         String text=node.get("question").asText().trim();
         List<String> opts=new ArrayList<>(); node.get("options").forEach(x->opts.add(x.asText()));
         int correct=node.has("correctOption")?node.get("correctOption").asInt(-1):-1;
-        if(correct<0||correct>3) throw new IllegalStateException("AI returned an invalid answer index.");
-        QuizQuestion q=new QuizQuestion();
-        Course course=courses.findAll().stream().filter(c->Objects.equals(c.getTitle(),subject)).findFirst().orElse(null);
-        q.setCourse(course); q.setQuestion(text); q.setOptionA(opts.get(0)); q.setOptionB(opts.get(1)); q.setOptionC(opts.get(2)); q.setOptionD(opts.get(3));
-        q.setCorrectOption(correct); q.setExplanation(node.path("explanation").asText("Review the reasoning behind the correct option."));
-        q.setDifficulty(node.path("difficulty").asText(level)); q.setTopic(node.path("topic").asText(subject));
-        if(course!=null) questions.save(q);
-        if(course!=null) events.save(new LearningEvent(u,"ADAPTIVE_AI_GENERATED",subject,q.getTopic(),null,0,"questionId="+q.getId()));
-        return new Question(q.getId(),subject,q.getQuestion(),List.of(q.getOptionA(),q.getOptionB(),q.getOptionC(),q.getOptionD()),q.getDifficulty(),q.getTopic());
+        if(correct<0||correct>3) throw new com.aitutor.controller.ApiException(org.springframework.http.HttpStatus.BAD_GATEWAY, "AI_INVALID_RESPONSE", "AI returned an invalid answer index.");
+        String explanation = node.path("explanation").asText("Review the reasoning behind the correct option.");
+        String difficulty = node.path("difficulty").asText(level);
+        String topic = node.path("topic").asText(subject);
+        // Never mutate the shared global quiz_question bank from student/guest AI requests.
+        // Bind the exact transientId to this user's event so answers can only consume real, single-use questions.
+        long transientId = -Math.abs(System.nanoTime());
+        if (transientId == 0L) transientId = -1L;
+        String generatedKey = "ADAPTIVE_AI_GENERATED:" + u.getId() + ":" + transientId;
+        eventService.record(u, "ADAPTIVE_AI_GENERATED", subject, topic, null, 0,
+                "qid=" + transientId + ";correct=" + correct + ";explanation=" + explanation.substring(0, Math.min(explanation.length(), 400)),
+                generatedKey);
+        return new Question(transientId, subject, text, List.copyOf(opts), difficulty, topic);
     }
 
     private JsonNode parseJson(String raw) {
@@ -150,60 +159,161 @@ public class AdaptiveController {
     @Transactional
     public Map<String,Object> shown(@PathVariable Long userId,@RequestBody Map<String,Object> body, Authentication authentication){
         authenticatedUser.requireSame(authentication,userId);
+        boolean admin = authenticatedUser.isAdmin(authentication);
         User u=users.findById(userId).orElseThrow();
-        Object ids=body.get("questionIds");
+        LocalDate todayIst = LocalDate.now(ZoneId.of("Asia/Kolkata"));
+        Object ids=body == null ? null : body.get("questionIds");
+        int recorded = 0;
         if(ids instanceof List<?> list){
+            int processed = 0;
             for(Object id:list){
+                if (++processed > 20) break;
                 try{
                     Long qid=Long.valueOf(String.valueOf(id));
+                    if (qid <= 0) continue;
                     QuizQuestion q=questions.findById(qid).orElse(null);
-                    if(q!=null) events.save(new LearningEvent(u,"ADAPTIVE_SHOWN",q.getCourse()==null?null:q.getCourse().getTitle(),"Adaptive practice",null,0,"questionId="+qid));
+                    if(q==null || q.getCourse()==null || (!admin && !q.getCourse().isPublished())) continue;
+                    boolean inserted = eventService.recordIfAbsent(
+                            u, "ADAPTIVE_SHOWN", q.getCourse().getTitle(), "Adaptive practice",
+                            null, 0, "questionId=" + qid,
+                            "ADAPTIVE_SHOWN:" + u.getId() + ":" + qid + ":" + todayIst);
+                    if (inserted) recorded++;
                 }catch(Exception ignored){}
             }
         }
-        return Map.of("success",true);
+        return Map.of("success",true,"recorded",recorded);
     }
+
+    private static final int DAILY_ADAPTIVE_XP_CAP = 30;
 
     @PostMapping("/{userId}/revision-complete")
     @Transactional
     public Map<String,Object> revisionComplete(@PathVariable Long userId,@RequestBody Map<String,Object> body, Authentication authentication){
         authenticatedUser.requireSame(authentication,userId);
-        User u=users.findById(userId).orElseThrow();
-        String subject=String.valueOf(body.getOrDefault("subject",""));
-        String topic=String.valueOf(body.getOrDefault("topic","Quiz mastery"));
-        eventService.record(u,"REVISION_COMPLETED",subject,topic,100,0,"Student marked this revision as reviewed.","REVISION_COMPLETED:"+u.getId()+":"+subject+":"+topic);
+        boolean admin = authenticatedUser.isAdmin(authentication);
+        User u=users.findByIdForUpdate(userId).orElseThrow();
+        String subject = body == null ? "" : String.valueOf(body.getOrDefault("subject","")).trim();
+        String topic = body == null ? "Quiz mastery" : String.valueOf(body.getOrDefault("topic","Quiz mastery")).trim();
+        if (subject.isBlank() || subject.length() > 120) {
+            throw new IllegalArgumentException("A valid course subject is required for revision completion");
+        }
+        if (topic.isBlank()) topic = "Quiz mastery";
+        if (topic.length() > 180) topic = topic.substring(0, 180);
+        String subjectLower = subject.toLowerCase(Locale.ROOT);
+        boolean validSubject = admin || courses.findAll().stream()
+                .filter(Course::isPublished)
+                .anyMatch(c -> c.getTitle() != null && c.getTitle().trim().toLowerCase(Locale.ROOT).equals(subjectLower));
+        if (!validSubject) {
+            throw new IllegalArgumentException("Revision subject must match an available published course");
+        }
+        LocalDate todayIst = LearningEventAnalyticsService.todayIst();
+        LocalDateTime startOfToday = LearningEventAnalyticsService.startOfTodayIst();
+        long todayRevisions = events.countByUserIdAndTypeInAndCreatedAtGreaterThanEqual(
+                userId, List.of("REVISION_COMPLETED"), startOfToday);
+        boolean saved = false;
+        boolean capped = todayRevisions >= 3;
+        if (!capped) {
+            saved = eventService.recordIfAbsent(
+                    u, "REVISION_COMPLETED", subject, topic, 100, 0,
+                    "Student marked this revision as reviewed.",
+                    "REVISION_COMPLETED:" + u.getId() + ":" + subjectLower + ":" + topic.toLowerCase(Locale.ROOT) + ":" + todayIst);
+        }
         int accuracy=0;
         List<QuizAttempt> subjectAttempts=attempts.findTop200ByUserIdOrderBySubmittedAtDesc(userId).stream()
-                .filter(a->a.getCourse()!=null && Objects.equals(a.getCourse().getTitle(),subject)).toList();
+                .filter(a->a.getCourse()!=null && (admin || a.getCourse().isPublished()) && Objects.equals(a.getCourse().getTitle(),subject)).toList();
         if(!subjectAttempts.isEmpty()){
             int total=subjectAttempts.stream().mapToInt(QuizAttempt::getTotal).sum();
             int correct=subjectAttempts.stream().mapToInt(QuizAttempt::getCorrect).sum();
             accuracy=total==0?0:(int)Math.round(correct*100.0/total);
         }
         int interval=reviewInterval(accuracy,0);
-        String nextReview=LocalDateTime.now().plusDays(interval).toLocalDate().toString();
-        return Map.of("success",true,"message","Revision recorded. Nova will schedule the next review from this session.","interval",interval+" day"+(interval==1?"":"s"),"nextReview",nextReview);
+        String nextReview=todayIst.plusDays(interval).toString();
+        return Map.of("success",true,"saved",saved,"capped",capped,"message",capped?"Daily revision XP cap reached. Review schedule updated.":"Revision recorded. Nova will schedule the next review from this session.","interval",interval+" day"+(interval==1?"":"s"),"nextReview",nextReview);
     }
 
     @PostMapping("/{userId}/answer")
     @Transactional
     public Map<String,Object> answer(@PathVariable Long userId,@RequestBody Map<String,Object> body, Authentication authentication){
         authenticatedUser.requireSame(authentication,userId);
-        User u=users.findById(userId).orElseThrow();
-        Long qid=Long.valueOf(String.valueOf(body.get("questionId")));
-        int selected=Integer.parseInt(String.valueOf(body.get("selectedOption")));
+        if (body == null || body.get("questionId") == null || body.get("selectedOption") == null) {
+            throw new IllegalArgumentException("questionId and selectedOption are required");
+        }
+        Long qid;
+        int selected;
+        try {
+            qid = Long.valueOf(String.valueOf(body.get("questionId")).trim());
+            selected = Integer.parseInt(String.valueOf(body.get("selectedOption")).trim());
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException("Invalid questionId or selectedOption");
+        }
+        if (selected < 0 || selected > 3) {
+            throw new IllegalArgumentException("selectedOption must be between 0 and 3");
+        }
+        User u=users.findByIdForUpdate(userId).orElseThrow();
+        LocalDate todayIst = LearningEventAnalyticsService.todayIst();
+        LocalDateTime startOfToday = LearningEventAnalyticsService.startOfTodayIst();
+        long todayAdaptiveXp = events.countByUserIdAndTypeInAndCreatedAtGreaterThanEqual(
+                userId, List.of("ADAPTIVE_QUESTION"), startOfToday);
+        boolean xpCapped = todayAdaptiveXp >= DAILY_ADAPTIVE_XP_CAP;
+        if (qid <= 0) {
+            String generatedKey = "ADAPTIVE_AI_GENERATED:" + userId + ":" + qid;
+            LearningEvent generated = events.findByUserIdAndDedupeKey(userId, generatedKey)
+                    .orElseThrow(() -> new com.aitutor.controller.ApiException(
+                            org.springframework.http.HttpStatus.BAD_REQUEST, "QUESTION_EXPIRED",
+                            "Question session expired. Generate a fresh question."));
+            String answerKey = "ADAPTIVE_QUESTION:" + u.getId() + ":" + qid;
+            if (events.findByUserIdAndDedupeKey(userId, answerKey).isPresent()) {
+                throw new com.aitutor.controller.ApiException(
+                        org.springframework.http.HttpStatus.CONFLICT, "ALREADY_ANSWERED",
+                        "This question has already been answered.");
+            }
+            int expected = parseCorrectOption(generated.getDetails());
+            boolean correct = selected == expected;
+            if (!xpCapped) {
+                eventService.recordIfAbsent(u, "ADAPTIVE_QUESTION", generated.getSubject(), "Adaptive practice",
+                        correct ? 100 : 0, 0, "aiQuestion;qid=" + qid + ";" + (correct ? "Correct" : "Incorrect"),
+                        answerKey);
+            } else {
+                // Consume the single-use AI question without awarding additional XP once daily cap is reached.
+                eventService.recordIfAbsent(u, "ADAPTIVE_QUESTION_CAPPED", generated.getSubject(), "Adaptive practice",
+                        null, 0, "aiQuestion;qid=" + qid + ";" + (correct ? "Correct" : "Incorrect"),
+                        answerKey);
+            }
+            return Map.of("correct", correct, "correctOption", expected, "xpCapped", xpCapped,
+                    "message", correct ? "Correct. Difficulty can increase." : "Not quite. This concept should be revised before the next attempt.");
+        }
         QuizQuestion q=questions.findById(qid).orElseThrow();
-        boolean correct=selected==q.getCorrectOption();
         Course c=q.getCourse();
-        eventService.record(u,"ADAPTIVE_QUESTION",c==null?null:c.getTitle(),"Adaptive practice",correct?100:0,0,"questionId="+qid+";"+(correct?"Correct":"Incorrect"),"ADAPTIVE_QUESTION:"+u.getId()+":"+qid+":"+System.currentTimeMillis()/60000);
-        return Map.of("correct",correct,"correctOption",q.getCorrectOption(),"message",correct?"Correct. Difficulty can increase.":"Not quite. This concept should be revised before the next attempt.");
+        if (c != null && !c.isPublished() && !authenticatedUser.isAdmin(u)) {
+            throw new NoSuchElementException("Question not found");
+        }
+        boolean correct=selected==q.getCorrectOption();
+        if (!xpCapped) {
+            eventService.recordIfAbsent(u,"ADAPTIVE_QUESTION",c==null?null:c.getTitle(),"Adaptive practice",
+                    correct?100:0,0,"questionId="+qid+";"+(correct?"Correct":"Incorrect"),
+                    "ADAPTIVE_QUESTION:"+u.getId()+":"+qid+":"+todayIst);
+        }
+        return Map.of("correct",correct,"correctOption",q.getCorrectOption(),"xpCapped",xpCapped,"message",correct?"Correct. Difficulty can increase.":"Not quite. This concept should be revised before the next attempt.");
     }
 
-    private List<Question> adaptiveQuestions(List<QuizAttempt> qs, Map<String,List<QuizAttempt>> bySubject, String level, Set<Long> recentlySeen){
+    private static int parseCorrectOption(String details) {
+        if (details == null) throw new IllegalArgumentException("Question metadata missing.");
+        int idx = details.indexOf("correct=");
+        if (idx < 0) throw new IllegalArgumentException("Question metadata invalid.");
+        int start = idx + 8;
+        int semi = details.indexOf(';', start);
+        return Integer.parseInt(details.substring(start, semi > 0 ? semi : details.length()).trim());
+    }
+
+    private List<Question> adaptiveQuestions(List<QuizAttempt> qs, Map<String,List<QuizAttempt>> bySubject, String level, Set<Long> recentlySeen, boolean admin){
         Set<Long> wrong=new HashSet<>();
         qs.stream().flatMap(q->parseWrong(q).stream()).forEach(x->{try{wrong.add(Long.valueOf(x));}catch(Exception ignored){}});
         List<QuizQuestion> pool=new ArrayList<>(questions.findAll());
-        LinkedHashMap<Long,QuizQuestion> unique=new LinkedHashMap<>(); for(QuizQuestion q:pool) unique.putIfAbsent(q.getId(),q);
+        LinkedHashMap<Long,QuizQuestion> unique=new LinkedHashMap<>();
+        for(QuizQuestion q:pool) {
+            if (!admin && q.getCourse() != null && !q.getCourse().isPublished()) continue;
+            unique.putIfAbsent(q.getId(),q);
+        }
         List<QuizQuestion> fresh=new ArrayList<>();
         List<QuizQuestion> review=new ArrayList<>();
         int target=difficultyRank(level);

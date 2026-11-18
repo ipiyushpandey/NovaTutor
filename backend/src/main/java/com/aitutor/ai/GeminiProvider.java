@@ -99,28 +99,43 @@ public class GeminiProvider implements AiProvider {
      * fallback model is attempted once.
      */
     public void stream(AiRequest r, Consumer<String> onChunk) throws Exception {
+        stream(r, onChunk, null);
+    }
+
+    public void stream(AiRequest r, Consumer<String> onChunk, StreamCancellation cancellation) throws Exception {
         if (!available()) throw new IllegalStateException("Gemini API key missing");
+        if (cancellation != null && cancellation.isCancelled()) {
+            throw new IllegalStateException("Client disconnected");
+        }
         String prompt = PromptEngine.build(r);
         Exception last = null;
         for (String modelName : buildModelChain()) {
+            if (cancellation != null && cancellation.isCancelled()) {
+                throw new IllegalStateException("Client disconnected");
+            }
             AtomicBoolean emitted = new AtomicBoolean(false);
             try {
                 streamModel(modelName, prompt, r.task(), chunk -> {
                     emitted.set(true);
                     onChunk.accept(chunk);
-                });
+                }, cancellation);
                 return;
             } catch (Exception e) {
-                last = e;
+                if (cancellation != null && cancellation.isCancelled()) {
+                    throw new IllegalStateException("Client disconnected");
+                }
+                Exception scrubbed = new IllegalStateException(safeMessage(e.getMessage()));
+                last = scrubbed;
                 // Never switch models after partial output: doing so would duplicate
                 // the beginning of the answer in the browser.
-                if (emitted.get()) throw e;
+                if (emitted.get()) throw scrubbed;
             }
         }
         throw last == null ? new IllegalStateException("Gemini streaming request failed") : last;
     }
 
-    private void streamModel(String modelName, String prompt, AiTask task, Consumer<String> onChunk) throws Exception {
+    private void streamModel(String modelName, String prompt, AiTask task, Consumer<String> onChunk,
+                             StreamCancellation cancellation) throws Exception {
         Map<String, Object> body = buildBody(prompt, task, false);
         String json = objectMapper.writeValueAsString(body);
         // The streaming endpoint rejects the x-goog-api-key header for newer
@@ -139,7 +154,10 @@ public class GeminiProvider implements AiProvider {
 
         HttpResponse<java.io.InputStream> response = streamingClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            String error = new String(response.body().readAllBytes(), StandardCharsets.UTF_8);
+            String error;
+            try (java.io.InputStream errBody = response.body()) {
+                error = new String(errBody.readAllBytes(), StandardCharsets.UTF_8);
+            }
             if (response.statusCode() == 408 || response.statusCode() == 429 || response.statusCode() >= 500) {
                 throw new TransientGeminiException(response.statusCode() + " " + safeMessage(error));
             }
@@ -148,9 +166,18 @@ public class GeminiProvider implements AiProvider {
 
         boolean emitted = false;
         String finishReason = "";
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
+        long deadlineNanos = System.nanoTime() + Duration.ofSeconds(180).toNanos();
+        java.io.InputStream rawBody = response.body();
+        if (cancellation != null) cancellation.attachStream(rawBody);
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(rawBody, StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
+                if (cancellation != null && cancellation.isCancelled()) {
+                    throw new IllegalStateException("Client disconnected");
+                }
+                if (System.nanoTime() > deadlineNanos) {
+                    throw new IllegalStateException("Gemini stream exceeded maximum duration");
+                }
                 if (!line.startsWith("data:")) continue;
                 String data = line.substring(5).trim();
                 if (data.isBlank() || "[DONE]".equals(data)) continue;
@@ -168,6 +195,8 @@ public class GeminiProvider implements AiProvider {
                     }
                 }
             }
+        } finally {
+            if (cancellation != null) cancellation.attachStream(null);
         }
         if (!emitted) throw new IllegalStateException("Gemini returned no text");
         // Surface provider-side truncation instead of presenting a partial answer
@@ -190,9 +219,11 @@ public class GeminiProvider implements AiProvider {
 
     private String buildUnavailableMessage(List<String> failures) {
         if (failures.isEmpty()) return "Gemini is temporarily unavailable. Please try again in a few seconds.";
+        org.slf4j.LoggerFactory.getLogger(GeminiProvider.class)
+                .warn("Gemini request failed across candidate models: {}", safeMessage(String.join(" | ", failures)));
         boolean transientOnly = failures.stream().allMatch(this::looksTransient);
         if (transientOnly) return "Gemini is temporarily busy or rate-limited. Please try again in a few seconds.";
-        return "Gemini could not complete the request. " + safeMessage(String.join(" | ", failures));
+        return "Gemini could not complete the request right now. Please try again shortly.";
     }
 
     private boolean looksTransient(String failure) {
@@ -237,8 +268,8 @@ public class GeminiProvider implements AiProvider {
     private Map<String, Object> buildBody(String prompt, AiTask task, boolean compact) {
         int taskOutputTokens = switch (task) {
             case TUTOR, ADAPTIVE_TUTOR -> Math.min(maxOutputTokens, 9000);
-            case CODE -> Math.min(maxOutputTokens, 2800);
-            case STUDY_PLAN -> Math.min(maxOutputTokens, 4500);
+            case CODE, CODING -> Math.min(maxOutputTokens, 3500);
+            case STUDY_PLAN, EXAM_STRATEGY -> Math.min(maxOutputTokens, 4500);
             case SUMMARIZE -> Math.min(maxOutputTokens, 3500);
             case FLASHCARDS, QUIZ -> Math.min(maxOutputTokens, 2400);
             default -> Math.min(maxOutputTokens, 3000);
@@ -296,7 +327,11 @@ public class GeminiProvider implements AiProvider {
 
     private String safeMessage(String value) {
         if (value == null || value.isBlank()) return "request failed";
-        return value.replaceAll("(?i)(api[-_ ]?key|authorization)\\s*[:=]\\s*[^\\s,;]+", "$1=[redacted]");
+        String cleaned = value.replaceAll("(?i)(api[-_ ]?key|authorization|(?<![a-z0-9_])key)\\s*[:=]\\s*[^\\s,&;\"']+", "$1=[redacted]");
+        if (!key.isBlank()) {
+            cleaned = cleaned.replace(key, "[redacted]");
+        }
+        return cleaned;
     }
 
     private record GeminiResult(String text, String finishReason) {}

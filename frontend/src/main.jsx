@@ -1,4 +1,4 @@
-import React,{useEffect,useLayoutEffect,useState,useRef,useMemo,useSyncExternalStore} from 'react';
+import React,{useEffect,useLayoutEffect,useState,useRef,useMemo,useCallback,useSyncExternalStore} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Icon as NovaIcon,BookOpen,BrainCircuit,Code2,FileText,LayoutDashboard,MessageCircle,Target,Sparkles,ChevronRight,Send,Menu,LogOut,Plus,Trash2,CheckCircle2,PlayCircle,BarChart3,RotateCcw,UploadCloud,FileSearch,CalendarDays,Layers3,WandSparkles,Clock3,GraduationCap,Lightbulb,Brain,RefreshCw,Mic,MicOff,Volume2,VolumeX,UserRound,Trophy,StopCircle,Bell,Sun,Moon,Users,Briefcase} from './icons.jsx';
 /* Load order matters: the LEGACY stylesheet first (it still defines its own
@@ -20,8 +20,8 @@ import './ui/premium.css';
 import {readWorkspace,writeWorkspace,workspaceKey,subscribeWorkspace,migrateWorkspaceIfNeeded,removeWorkspace} from './persistence/workspaceStore.js';
 import AiMarkdown, {normalizeAiText, mdInlineText} from './AiMarkdown.jsx';
 import {registerWorkspaceFlusher,beginNavigationPersistence} from './persistence/appWorkspace.js';
-import {readRuntimeState,writeRuntimeState,subscribeRuntimeState,getRuntimeModuleSnapshot,updateRuntimeState,removeRuntimeState} from './persistence/runtimeStore.js';
-import {api,apiStream,readUser,refreshSessionToken} from './lib/api.js';
+import {readRuntimeState,writeRuntimeState,subscribeRuntimeState,getRuntimeModuleSnapshot,updateRuntimeState,removeRuntimeState,clearRuntimeUser} from './persistence/runtimeStore.js';
+import {api,apiStream,readUser,refreshSessionToken,invalidatePendingSessionRefresh} from './lib/api.js';
 /* V69 FOUNDATION REPAIR — production curriculum + stable learning foundation */
 /* V51 VOICE SPEED + CHAT CONTROLS */
 /* V34 FINAL EVENTS */
@@ -43,6 +43,21 @@ const writeModuleState=(userId,module,state)=>writeWorkspace(userId,module,state
  * Restore is completed before autosave is enabled. A schema-versioned
  * workspace is used while V70.11 keys remain readable through migration.
  */
+function applyModuleRestore(restore,savedState){
+ if(!savedState||typeof savedState!=='object')return;
+ if(typeof restore==='function'){
+  try{restore(savedState)}catch{}
+  return;
+ }
+ if(restore&&typeof restore==='object'){
+  for(const [k,fn] of Object.entries(restore)){
+   if(typeof fn==='function'&&Object.prototype.hasOwnProperty.call(savedState,k)){
+    try{fn(savedState[k])}catch{}
+   }
+  }
+ }
+}
+
 function useModulePersistence(userId,module,state,restore){
  const persistenceKey=moduleStateKey(userId,module);
  const [hydratedKey,setHydratedKey]=useState(null);
@@ -50,13 +65,13 @@ function useModulePersistence(userId,module,state,restore){
  const restoreRef=useRef(restore);
  const pendingRestoreRef=useRef(false);
  const stateRef=useRef(state);
+ const durableTimerRef=useRef(null);
  const stateSignature=(()=>{try{return JSON.stringify(state)}catch{return ''}})();
  restoreRef.current=restore;
  stateRef.current=state;
 
- // V70.22: runtime memory is the canonical in-session source. Durable
- // localStorage is only the recovery layer. This means route changes may
- // unmount/remount modules without destroying their learning UI state.
+ // Runtime memory is the canonical in-session source; localStorage is debounced
+ // and flushed synchronously on navigation/pagehide/unmount to avoid 1s timer thrashing.
  useLayoutEffect(()=>{
   let alive=true;
   hydrationRef.current=null;
@@ -68,15 +83,13 @@ function useModulePersistence(userId,module,state,restore){
     ? {state:runtime}
     : migrateWorkspaceIfNeeded(userId,module);
 
-  if(alive&&saved?.state&&typeof restoreRef.current==='function'){
-    restoreRef.current(saved.state);
+  if(alive&&saved?.state&&(typeof restoreRef.current==='function'||(restoreRef.current&&typeof restoreRef.current==='object'))){
+    applyModuleRestore(restoreRef.current,saved.state);
     writeRuntimeState(userId,module,saved.state);
   } else if(alive){
     writeRuntimeState(userId,module,stateRef.current);
   }
 
-  // Restore before enabling autosave. The layout effect runs before paint,
-  // preventing the default module UI from flashing before its saved state.
   queueMicrotask(()=>{
     if(!alive)return;
     hydrationRef.current=persistenceKey;
@@ -85,6 +98,9 @@ function useModulePersistence(userId,module,state,restore){
   });
 
   const flushBeforeNavigation=()=>{
+    clearTimeout(durableTimerRef.current);
+    const active=readUser();
+    if(!active||String(active.id)!==String(userId))return;
     if(hydrationRef.current===persistenceKey&&!pendingRestoreRef.current){
       const latest=stateRef.current;
       writeRuntimeState(userId,module,latest);
@@ -105,6 +121,7 @@ function useModulePersistence(userId,module,state,restore){
   document.addEventListener('visibilitychange',onVisibility);
 
   return()=>{
+    clearTimeout(durableTimerRef.current);
     window.removeEventListener('nova:persist-before-navigation',flushBeforeNavigation);
     window.removeEventListener('pagehide',flushOnPageExit);
     document.removeEventListener('visibilitychange',onVisibility);
@@ -112,6 +129,8 @@ function useModulePersistence(userId,module,state,restore){
     if(typeof window!=='undefined'&&window.__novaWorkspaceFlushers)window.__novaWorkspaceFlushers.delete(persistenceKey);
     alive=false;
     pendingRestoreRef.current=false;
+    const active=readUser();
+    if(!active||String(active.id)!==String(userId))return;
     const latest=stateRef.current;
     writeRuntimeState(userId,module,latest);
     if(hydrationRef.current===persistenceKey)writeModuleState(userId,module,latest);
@@ -119,22 +138,28 @@ function useModulePersistence(userId,module,state,restore){
  },[persistenceKey,userId,module]);
 
  useLayoutEffect(()=>{
-  // V70.23: publish the latest committed UI snapshot synchronously in the
-  // layout phase. This removes the navigation race where React could unmount
-  // a module before a passive autosave effect had executed.
   if(hydratedKey!==persistenceKey||hydrationRef.current!==persistenceKey||pendingRestoreRef.current)return;
+  const active=readUser();
+  if(!active||String(active.id)!==String(userId))return;
   stateRef.current=state;
   writeRuntimeState(userId,module,state);
-  writeModuleState(userId,module,state);
+  clearTimeout(durableTimerRef.current);
+  durableTimerRef.current=setTimeout(()=>{
+    const cur=readUser();
+    if(!cur||String(cur.id)!==String(userId))return;
+    if(hydrationRef.current===persistenceKey&&!pendingRestoreRef.current){
+      writeModuleState(userId,module,stateRef.current);
+    }
+  },1200);
  },[hydratedKey,persistenceKey,userId,module,stateSignature]);
 
  useEffect(()=>{
   if(hydratedKey!==persistenceKey)return;
   return subscribeWorkspace(userId,module,(envelope)=>{
-    if(envelope?.state&&hydrationRef.current===persistenceKey&&typeof restoreRef.current==='function'){
+    if(envelope?.state&&hydrationRef.current===persistenceKey&&(typeof restoreRef.current==='function'||(restoreRef.current&&typeof restoreRef.current==='object'))){
       pendingRestoreRef.current=true;
       writeRuntimeState(userId,module,envelope.state);
-      restoreRef.current(envelope.state);
+      applyModuleRestore(restoreRef.current,envelope.state);
       queueMicrotask(()=>{pendingRestoreRef.current=false});
     }
   });
@@ -183,7 +208,7 @@ const initializeFreshAppSession=()=>{
  const current=readUser();
  if(current?.id){
   resetTransientLearningState(current.id);
-  try{localStorage.removeItem('nova_nav_stack');localStorage.setItem('nova_page',current.role==='ADMIN'?'admin':'dashboard')}catch{}
+  try{localStorage.removeItem('nova_nav_stack');localStorage.setItem('nova_page','dashboard')}catch{}
  }
 };
 initializeFreshAppSession();
@@ -224,10 +249,8 @@ class ErrorBoundary extends React.Component{
  constructor(props){super(props);this.state={error:null,attempt:0}}
  static getDerivedStateFromError(error){return {error}}
  componentDidCatch(error,info){console.error('NovaTutor page error',error,info)}
- componentDidMount(){this.recoverHandler=()=>{if(this.state.error)this.setState({error:null,attempt:this.state.attempt+1})};window.addEventListener('nova-recover',this.recoverHandler)}
- componentWillUnmount(){window.removeEventListener('nova-recover',this.recoverHandler)}
- retry=()=>{this.setState({error:null,attempt:this.state.attempt+1});window.setTimeout(()=>{if(document.visibilityState==='visible')window.dispatchEvent(new Event('nova-recover'))},0)}
- goHome=()=>{this.setState({error:null,attempt:this.state.attempt+1});window.location.hash='/dashboard';localStorage.setItem('nova_page','dashboard')}
+ retry=()=>{this.setState(s=>({error:null,attempt:s.attempt+1}))}
+ goHome=()=>{this.setState(s=>({error:null,attempt:s.attempt+1}));window.location.hash='/dashboard';localStorage.setItem('nova_page','dashboard')}
  render(){if(!this.state.error)return this.props.children;return <div className="page-crash" role="alert"><div className="crash-icon"><RefreshCw size={34}/></div><h2>This section hit a temporary error</h2><p>{this.state.error?.message||'Something went wrong while rendering this section.'}</p><div className="crash-actions"><button className="primary" onClick={this.retry}>Retry section</button><button className="secondary" onClick={this.goHome}>Go to Dashboard</button></div><small>Your account and learning progress are safe. No page reload is required.</small></div>}
 }
 
@@ -254,7 +277,7 @@ function NovaCoach({user,go,courses,initialTab='focus'}){
  const [data,setData]=useState(null); const [analytics,setAnalytics]=useState(null); const [progress,setProgress]=useState([]); const [loading,setLoading]=useState(true); const [command,setCommand]=useState(''); const [room,setRoom]=useState(()=>readJSON(`nova_study_room_${user?.id||'guest'}`,null)); const [timer,setTimer]=useState(1500); const [running,setRunning]=useState(false); const [confidence,setConfidence]=useState(3); const [notice,setNotice]=useState('');
  useModulePersistence(user?.id,`nova-coach-${initialTab}`,{tab,timer,running,confidence,room},{tab:x=>setTab(x||initialTab),timer:x=>setTimer(Number(x)||1500),running:x=>setRunning(Boolean(x)),confidence:x=>setConfidence(Number(x)||3),room:x=>setRoom(x||null)});
  const cacheKey=`nova_coach_cache_${user?.id||'guest'}`;
- useEffect(()=>{let alive=true; setLoading(true); Promise.allSettled([api('/intelligence/'+user.id),api('/analytics/'+user.id),api('/progress/'+user.id)]).then(rs=>{if(!alive)return; const [i,a,p]=rs; const next=i.status==='fulfilled'?i.value:null; setData(next); setAnalytics(a.status==='fulfilled'?a.value:null); setProgress(p.status==='fulfilled'&&Array.isArray(p.value)?p.value:[]); if(next)localStorage.setItem(cacheKey,JSON.stringify({at:Date.now(),data:next,analytics:a.status==='fulfilled'?a.value:null,progress:p.status==='fulfilled'?p.value:[]})); else {const cached=readJSON(cacheKey); if(cached){setData(cached.data);setAnalytics(cached.analytics);setProgress(Array.isArray(cached.progress)?cached.progress:[])}} }).finally(()=>alive&&setLoading(false)); return()=>{alive=false}},[user?.id]);
+ useEffect(()=>{let alive=true; const activeId=String(user.id); setLoading(true); Promise.allSettled([api('/intelligence/'+user.id),api('/analytics/'+user.id),api('/progress/'+user.id)]).then(rs=>{if(!alive)return; const [i,a,p]=rs; const next=i.status==='fulfilled'?i.value:null; setData(next); setAnalytics(a.status==='fulfilled'?a.value:null); setProgress(p.status==='fulfilled'&&Array.isArray(p.value)?p.value:[]); if(next&&String(readUser()?.id||'')===activeId)localStorage.setItem(cacheKey,JSON.stringify({at:Date.now(),data:next,analytics:a.status==='fulfilled'?a.value:null,progress:p.status==='fulfilled'?p.value:[]})); else if(!next) {const cached=readJSON(cacheKey); if(cached){setData(cached.data);setAnalytics(cached.analytics);setProgress(Array.isArray(cached.progress)?cached.progress:[])}} }).finally(()=>alive&&setLoading(false)); return()=>{alive=false}},[user?.id]);
  useEffect(()=>{const fn=()=>{api('/intelligence/'+user.id).then(setData).catch(()=>{});api('/analytics/'+user.id).then(setAnalytics).catch(()=>{});};window.addEventListener('nova:learning-updated',fn);return()=>window.removeEventListener('nova:learning-updated',fn)},[user?.id]);
  useEffect(()=>{if(!running)return;const id=setInterval(()=>setTimer(x=>{if(x<=1){setRunning(false);api('/intelligence/'+user.id+'/events',{method:'POST',body:JSON.stringify({type:'STUDY_SPRINT_COMPLETED',subject:'Nova Focus',topic:'Focus sprint',durationSeconds:1500,details:'Completed a Nova Coach focus sprint.'})}).catch(()=>{});setNotice('Focus sprint complete. Great work — take a short break, then continue the next action.');return 1500}return x-1}),1000);return()=>clearInterval(id)},[running]);
  useEffect(()=>{const onKey=e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();document.getElementById('nova-coach-command')?.focus()} if(e.key==='Escape')setCommand('')};window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey)},[]);
@@ -334,7 +357,7 @@ function CareerHub({user,go}){
     <span className="eyebrow">TARGET ROLE / EXAM</span>
     <h2>{selected.name}</h2>
     <p>{selected.desc}</p>
-    <div className="career-actions"><button className="primary" onClick={()=>go(goal==='gate'?'gatecse':goal==='dsa'?'code':'code')}>Start skill practice <ChevronRight size={15}/></button><button className="secondary" onClick={()=>go('interview')}>Practice interview</button></div>
+    <div className="career-actions"><button className="primary" onClick={()=>go(goal==='gate'?'gatecse':goal==='dsa'?'dsa':'code')}>Start skill practice <ChevronRight size={15}/></button><button className="secondary" onClick={()=>go('interview')}>Practice interview</button></div>
    </div>
    <aside className="career-hero-side">
     <div className="career-score"><div className="score-ring" style={{'--score':score}}><b>{score}</b><span>/100</span></div><small>Career readiness</small><span className="career-score-basis">Weighted from your own quiz, streak and weak-area signals.</span></div>
@@ -389,13 +412,13 @@ function CommunityHub({user,go}){
   c3:[{q:'Which keyword prevents a Java method from being overridden?',o:['static','final','private only','volatile'],a:1},{q:'Which collection does not allow duplicate elements?',o:['List','Set','Queue','ArrayList'],a:1},{q:'What does a NullPointerException commonly indicate?',o:['Invalid SQL','Dereferencing null','Syntax error','Out of memory only'],a:1},{q:'Which interface is used for natural ordering?',o:['Runnable','Comparable','Serializable','Cloneable'],a:1},{q:'Which keyword is used to inherit from a class?',o:['implements','extends','inherits','super'],a:1},{q:'Which is preferred for immutable string values in Java?',o:['String','StringBuilder only','char[] always','Object'],a:0}],
   c4:[{q:'Which clause filters rows before grouping?',o:['HAVING','WHERE','ORDER BY','GROUP BY'],a:1},{q:'Which function returns the number of rows?',o:['SUM','COUNT','AVG','TOTAL'],a:1},{q:'Which clause groups rows with the same values?',o:['GROUP BY','ORDER BY','WHERE','JOIN'],a:0},{q:'Which constraint enforces uniqueness?',o:['UNIQUE','DEFAULT','CHECK only','INDEX only'],a:0},{q:'Which command changes table structure?',o:['SELECT','ALTER','INSERT','COMMIT'],a:1},{q:'Which keyword sorts query results?',o:['SORT','ORDER BY','GROUP','RANK'],a:1}]
  };
- const challenges=[{id:'c1',title:'10-Minute DSA Sprint',meta:'5 questions • Arrays'},{id:'c2',title:'GATE Concept Rush',meta:'10 questions • DBMS'},{id:'c3',title:'Java Debug Battle',meta:'3 bugs • Java'},{id:'c4',title:'SQL Speed Round',meta:'8 questions • SQL'}];
+ const challenges=[{id:'c1',title:'10-Minute DSA Sprint',meta:'6 questions • Arrays & Trees'},{id:'c2',title:'GATE Concept Rush',meta:'6 questions • DBMS'},{id:'c3',title:'Java Debug Battle',meta:'6 questions • Java'},{id:'c4',title:'SQL Speed Round',meta:'6 questions • SQL'}];
  const loadPosts=()=>{setFeedLoading(true);api('/community/posts').then(rows=>setPosts(Array.isArray(rows)?rows:[])).catch(()=>setPosts([])).finally(()=>setFeedLoading(false))};
  useEffect(()=>{loadPosts()},[]);
  useEffect(()=>{if(tab!=='leaderboard')return;let alive=true;setLeaderboardLoading(true);api('/users/leaderboard').then(rows=>{if(alive)setRealLeaderboard(Array.isArray(rows)?rows:[])}).catch(()=>{if(alive)setRealLeaderboard([])}).finally(()=>{if(alive)setLeaderboardLoading(false)});return()=>{alive=false}},[tab]);
  const startChallenge=id=>{if(completed.includes(id))return;const pool=challengePools[id]||[];const seen=readJSON(`nova_challenge_seen_${user?.id||'guest'}_${id}`,[]);let candidates=pool.map((_,i)=>i).filter(i=>!seen.includes(i));if(!candidates.length){candidates=pool.map((_,i)=>i);localStorage.setItem(`nova_challenge_seen_${user?.id||'guest'}_${id}`,JSON.stringify([]))}const first=candidates[Math.floor(Math.random()*candidates.length)];setActiveChallenge(id);setChallengeIndex(first);setChallengeScore(0);setChallengeAnswer(null)};
  const answerChallenge=option=>{if(challengeAnswer!==null||!activeChallenge)return;const q=(challengePools[activeChallenge]||[])[challengeIndex];const correct=option===q.a;setChallengeAnswer({option,correct});setChallengeScore(s=>s+(correct?1:0))};
- const nextChallengeQuestion=()=>{const pool=challengePools[activeChallenge]||[];const seen=readJSON(`nova_challenge_seen_${user?.id||'guest'}_${activeChallenge}`,[]);const updated=[...new Set([...seen,challengeIndex])];localStorage.setItem(`nova_challenge_seen_${user?.id||'guest'}_${activeChallenge}`,JSON.stringify(updated));const candidates=pool.map((_,i)=>i).filter(i=>!updated.includes(i));if(!candidates.length){const next=[...completed,activeChallenge];setCompleted(next);localStorage.setItem(`nova_challenges_${user?.id||'guest'}`,JSON.stringify(next));localStorage.setItem(`nova_challenge_seen_${user?.id||'guest'}_${activeChallenge}`,JSON.stringify([]));setNotice(`Challenge complete! Score: ${challengeScore + (challengeAnswer?.correct?1:0)}/${pool.length}.`);setActiveChallenge(null);setChallengeAnswer(null);setTimeout(()=>setNotice(''),2200);return}const n=candidates[Math.floor(Math.random()*candidates.length)];setChallengeIndex(n);setChallengeAnswer(null)};
+ const nextChallengeQuestion=()=>{const pool=challengePools[activeChallenge]||[];const seen=readJSON(`nova_challenge_seen_${user?.id||'guest'}_${activeChallenge}`,[]);const updated=[...new Set([...seen,challengeIndex])];localStorage.setItem(`nova_challenge_seen_${user?.id||'guest'}_${activeChallenge}`,JSON.stringify(updated));const candidates=pool.map((_,i)=>i).filter(i=>!updated.includes(i));if(!candidates.length){const next=[...completed,activeChallenge];setCompleted(next);localStorage.setItem(`nova_challenges_${user?.id||'guest'}`,JSON.stringify(next));localStorage.setItem(`nova_challenge_seen_${user?.id||'guest'}_${activeChallenge}`,JSON.stringify([]));setNotice(`Challenge complete! Score: ${challengeScore}/${pool.length}.`);setActiveChallenge(null);setChallengeAnswer(null);setTimeout(()=>setNotice(''),2200);return}const n=candidates[Math.floor(Math.random()*candidates.length)];setChallengeIndex(n);setChallengeAnswer(null)};
  const postDiscussion=async()=>{const text=post.trim();if(!text)return;try{const item=await api('/community/posts',{method:'POST',body:JSON.stringify({text})});setPosts(prev=>[item,...prev]);setPost('');setNotice('Discussion posted for everyone.');setTimeout(()=>setNotice(''),1800)}catch(e){setNotice(e.message||'Could not post discussion.')}};
  return <div className="community-page">
   <div className="page-title"><span className="eyebrow">COMMUNITY • LEARN TOGETHER</span><h1>Your <span>Study Community.</span></h1><p>Discuss doubts, compete in challenges and learn with every student on the platform.</p></div>
@@ -457,10 +480,10 @@ function TodayNotifications({user,go}){
 function HubTabs({tabs,active,setActive}){
  return <div className="hub-tabs" role="tablist" aria-label="Section navigation">{tabs.map(([id,label,icon])=>{const Icon=icon;return <button key={id} role="tab" aria-selected={active===id} className={active===id?'active':''} onClick={()=>setActive(id)}>{Icon&&<Icon size={15}/>}<span>{label}</span></button>})}</div>
 }
-function MyLearningHub({courses,progress,refresh,user,go}){
+function MyLearningHub({courses,progress,refresh,user,go,openCourse}){
  const [tab,setTab]=useState('courses');
  useModulePersistence(user?.id,'my-learning',{tab},{tab:x=>setTab(x||'courses')});
- return <><HubTabs tabs={[["courses","Courses",BookOpen],["profile","Learning Profile",Brain],["milestones","Milestones",Trophy]]} active={tab} setActive={setTab}/>{tab==='courses'&&<Courses courses={courses} progress={progress} refresh={refresh} user={user}/>} {tab==='profile'&&<AILearningProfile user={user} courses={courses} go={go}/>} {tab==='milestones'&&<Achievements user={user} go={go}/>}</>
+ return <><HubTabs tabs={[["courses","Courses",BookOpen],["profile","Learning Profile",Brain],["milestones","Milestones",Trophy]]} active={tab} setActive={setTab}/>{tab==='courses'&&<Courses courses={courses} progress={progress} refresh={refresh} user={user} openCourse={openCourse}/>} {tab==='profile'&&<AILearningProfile user={user} courses={courses} go={go}/>} {tab==='milestones'&&<Achievements user={user} go={go}/>}</>
 }
 function TodayHub({user,go}){
  const [tab,setTab]=useState('today');
@@ -493,94 +516,386 @@ function NovaBrain({user,go}){
  </>;
 }
 
+const ALLOWED_PAGES=['login','about','privacy','terms','contact','dashboard','coach','study-room','analytics','courses','course','mentor','learning-studio','tutor','code','quiz','practice','prepare','chat','knowledge','planner','flashcards','interview','voice','settings','gatecse','career','community','notifications','revision','achievements','dpp','profile','exam','nova-os','nova-brain','onboarding','admin','dsa'];
+
+function parseAppHash(rawHash=window.location.hash){
+ const clean=String(rawHash||'').replace(/^#\/?/,'').split('?')[0].replace(/\/+$/,'');
+ const alias={'gate-cse':'gatecse'};
+ const courseLesson=clean.match(/^course\/(\d+)\/lesson\/(\d+)$/i);
+ if(courseLesson){
+  const cid=Number(courseLesson[1]),lid=Number(courseLesson[2]);
+  return {page:'course',courseId:cid,lessonId:lid,dsaSlug:null,gateTab:null,studioTab:null,routeKey:`course/${cid}/lesson/${lid}`};
+ }
+ const courseOnly=clean.match(/^course\/(\d+)$/i);
+ if(courseOnly){
+  const cid=Number(courseOnly[1]);
+  return {page:'course',courseId:cid,lessonId:null,dsaSlug:null,gateTab:null,studioTab:null,routeKey:`course/${cid}`};
+ }
+ const dsaMatch=clean.match(/^dsa\/([a-z0-9-]+)$/i);
+ if(dsaMatch){
+  const slug=dsaMatch[1];
+  return {page:'dsa',courseId:null,lessonId:null,dsaSlug:slug,gateTab:null,studioTab:null,routeKey:`dsa/${slug}`};
+ }
+ const gateMatch=clean.match(/^(?:gatecse|gate-cse)\/(overview|syllabus|notes|pyq)$/i);
+ if(gateMatch){
+  const tab=gateMatch[1].toLowerCase();
+  return {page:'gatecse',courseId:null,lessonId:null,dsaSlug:null,gateTab:tab,studioTab:null,routeKey:`gatecse/${tab}`};
+ }
+ const studioMatch=clean.match(/^learning-studio\/(teacher|voice)$/i);
+ if(studioMatch){
+  const stab=studioMatch[1].toLowerCase();
+  return {page:'learning-studio',courseId:null,lessonId:null,dsaSlug:null,gateTab:null,studioTab:stab,routeKey:stab==='voice'?'learning-studio/voice':'learning-studio'};
+ }
+ const base=alias[clean.toLowerCase()]||clean.toLowerCase();
+ const legacyStudio={tutor:'teacher',notes:'teacher',voice:'voice'};
+ if(legacyStudio[base]){
+  const stab=legacyStudio[base];
+  try{localStorage.setItem('nova_learning_studio_tab',stab)}catch{}
+  return {page:'learning-studio',courseId:null,lessonId:null,dsaSlug:null,gateTab:null,studioTab:stab,routeKey:stab==='voice'?'learning-studio/voice':'learning-studio'};
+ }
+ return {page:base,courseId:null,lessonId:null,dsaSlug:null,gateTab:null,studioTab:null,routeKey:base||'dashboard'};
+}
+
 function App(){
- const [adminDenied,setAdminDenied]=useState(false);
- const [page,setPage]=useState(()=>{const allowed=['login','about','privacy','terms','contact','dashboard','coach','study-room','analytics','courses','course','mentor','learning-studio','tutor','code','quiz','practice','prepare','chat','knowledge','planner','flashcards','interview','voice','settings','gatecse','career','community','notifications','revision','achievements','dpp','profile','exam','nova-os','nova-brain','onboarding','admin','dsa'];const alias={'gate-cse':'gatecse'}; const h0=window.location.hash.replace('#/','');const routeCourse=courseIdFromHash();const h=routeCourse?'course':(alias[h0]||h0);const saved=localStorage.getItem('nova_page')||'dashboard';const session=readUser();if(!session)return 'login';
- // A stored session with an unfinished profile belongs on onboarding, not on
- // the dashboard. Deciding this in the initializer (instead of in an effect)
- // removes the dashboard→onboarding flash on refresh.
- const needsProfile=String(session.role||'STUDENT').toUpperCase()!=='ADMIN'&&session.profileComplete===false;
- if(needsProfile)return 'onboarding';
-   if(h==='onboarding'||h==='login')return 'dashboard';
- if(h==='course'&&!routeCourse)return 'dashboard';
- return allowed.includes(h)?h:(allowed.includes(saved)&&saved!=='login'?saved:'dashboard')});
- const [courseId,setCourseId]=useState(()=>courseIdFromHash());
- // In-page Back was removed (hash routing + browser Back cover it). The stale
- // nova_nav_stack localStorage key is cleared on logout/switch/login below.
+ const initialParsed=useMemo(()=>parseAppHash(window.location.hash),[]);
+ const initialNonAdminBlocked=useMemo(()=>{const s=readUser();return Boolean(s&&initialParsed.page==='admin'&&String(s.role||'STUDENT').toUpperCase()!=='ADMIN')},[]);
+ const [adminDenied,setAdminDenied]=useState(initialNonAdminBlocked);
+ const [page,setPage]=useState(()=>{
+  const session=readUser();if(!session)return 'login';
+  const needsProfile=String(session.role||'STUDENT').toUpperCase()!=='ADMIN'&&session.profileComplete===false;
+  if(needsProfile)return 'onboarding';
+  const h=initialParsed.page;
+  if(h==='admin'&&String(session.role||'STUDENT').toUpperCase()!=='ADMIN')return 'dashboard';
+  const saved=localStorage.getItem('nova_page')||'dashboard';
+  if(h==='onboarding'||h==='login')return 'dashboard';
+  if(h==='course'&&!initialParsed.courseId)return 'dashboard';
+  return ALLOWED_PAGES.includes(h)?h:(ALLOWED_PAGES.includes(saved)&&saved!=='login'?saved:'dashboard');
+ });
+ useEffect(()=>{if(initialNonAdminBlocked&&window.location.hash!=='#/dashboard'){window.location.replace('#/dashboard')}},[initialNonAdminBlocked]);
+ useEffect(()=>{try{if('scrollRestoration' in window.history)window.history.scrollRestoration='manual'}catch{}},[]);
+ const [courseId,setCourseId]=useState(()=>initialParsed.courseId);
+ const [lessonId,setLessonId]=useState(()=>initialParsed.lessonId);
+ const [dsaSlug,setDsaSlug]=useState(()=>initialParsed.dsaSlug);
+ const [gateTab,setGateTab]=useState(()=>initialParsed.gateTab||'overview');
+ const [studioTab,setStudioTab]=useState(()=>initialParsed.studioTab||null);
+ const inAppNavCountRef=useRef(0);
  const [aiStatus,setAiStatus]=useState({configured:false,model:'—'}),[courses,setCourses]=useState([]),[progress,setProgress]=useState([]),[mobile,setMobile]=useState(false),[user,setUser]=useState(readUser);
- /* viewport ≤960px drives the compact header (hamburger + sheet). `mobile` above
-    is only "navigation sheet is open". Resizing back to desktop closes the sheet. */
+ const [wakingServer,setWakingServer]=useState(false);
  const [vp,setVp]=useState(()=>typeof window!=='undefined'&&window.matchMedia('(max-width:960px)').matches);
  useEffect(()=>{const mq=window.matchMedia('(max-width:960px)');const on=e=>{setVp(e.matches);if(!e.matches)setMobile(false)};mq.addEventListener('change',on);return()=>mq.removeEventListener('change',on)},[]);
  const [dark,setDark]=useState(()=>localStorage.getItem('nova_theme')==='dark');
- useEffect(()=>{const expire=()=>{setUser(null);setPage('login');window.location.hash='/login'};window.addEventListener('nova-session-expired',expire);return()=>window.removeEventListener('nova-session-expired',expire)},[]);
- useEffect(()=>{document.documentElement.classList.toggle('dark',dark);localStorage.setItem('nova_theme',dark?'dark':'light')},[dark]);
- // Keep the client-side role in sync with the server before exposing admin UI. The backend remains the final authorization authority.
- useEffect(()=>{if(!user?.token)return; let alive=true; const sync=()=>{if(alive)setUser(readUser())}; window.addEventListener('nova:session-refreshed',sync); refreshSessionToken().then(ok=>{if(alive&&ok)setUser(readUser())}).catch(()=>{}); return()=>{alive=false;window.removeEventListener('nova:session-refreshed',sync)}},[user?.token]);
- const load=()=>{api('/courses').then(x=>{const arr=Array.isArray(x)?x:[];setCourses(arr);localStorage.setItem('nova_courses_cache',JSON.stringify(arr))}).catch(e=>console.warn('courses load failed',e));if(user)api('/progress/'+user.id).then(x=>setProgress(Array.isArray(x)?x:[])).catch(e=>console.warn('progress load failed',e))};
+ const clearUserClientState=useCallback((exitingUser)=>{
+  const exitingId=exitingUser?.id;
+  const isGuest=String(exitingUser?.role||'').toUpperCase()==='GUEST';
+  invalidatePendingSessionRefresh();
+  bootstrappedUserRef.current=null;
+  localStorage.removeItem('ai_user');
+  localStorage.removeItem('nova_page');
+  localStorage.removeItem('nova_nav_stack');
+  ['nova_ai_language','nova_career_goal','nova_career_saved_at','daily_goal',
+   'nova_teaching_mode','nova_prepare_tab','nova_learning_studio_tab',
+   'nova_courses_cache','nova_ai_prefill','nova_open_course','nova_bookmarks','nova_exam_best']
+   .forEach(k=>{try{localStorage.removeItem(k)}catch{}});
+  try{
+   Object.keys(sessionStorage).filter(k=>k.startsWith('nova_scroll_v2:')).forEach(k=>sessionStorage.removeItem(k));
+  }catch{}
+  if(exitingId){
+   resetTransientLearningState(exitingId);
+   clearRuntimeUser(exitingId);
+   if(isGuest){
+    try{
+     const idStr=String(exitingId);
+     Object.keys(localStorage).filter(k=>
+      k.startsWith(`dsa_code_${idStr}_`)
+      || k.startsWith(`nova_runtime_v2_${idStr}_`)
+      || k.startsWith(`nova_workspace_v1_${idStr}_`)
+      || k.startsWith(`nova_workspace_${idStr}_`)
+      || k.startsWith(`nova_module_state_${idStr}_`)
+      || k.startsWith(`nova_quiz_seen_${idStr}_`)
+      || k.startsWith(`nova_today_done_${idStr}_`)
+      || k.startsWith(`nova_challenge_seen_${idStr}_`)
+      || k.endsWith(`_${idStr}`)
+     ).forEach(k=>localStorage.removeItem(k));
+    }catch{}
+   }
+  }
+  setCourses([]);
+  setProgress([]);
+  setCourseId(null);
+  setLessonId(null);
+  setDsaSlug(null);
+  setGateTab('overview');
+  setStudioTab(null);
+  setMobile(false);
+  setUser(null);
+  setPage('login');
+  window.location.hash='#/login';
+ },[]);
+ const userRef=useRef(user);
+ userRef.current=user;
+ useEffect(()=>{const expire=()=>{clearUserClientState(userRef.current)};window.addEventListener('nova-session-expired',expire);return()=>window.removeEventListener('nova-session-expired',expire)},[clearUserClientState]);
+ useEffect(()=>{document.documentElement.classList.toggle('dark',dark);document.documentElement.setAttribute('data-theme',dark?'dark':'light');localStorage.setItem('nova_theme',dark?'dark':'light')},[dark]);
+
+ const routeKey=useMemo(()=>{
+  if(page==='course'&&courseId)return lessonId?`course/${courseId}/lesson/${lessonId}`:`course/${courseId}`;
+  if(page==='dsa'&&dsaSlug)return `dsa/${dsaSlug}`;
+  if(page==='gatecse'&&gateTab&&gateTab!=='overview')return `gatecse/${gateTab}`;
+  if(page==='learning-studio'&&studioTab==='voice')return 'learning-studio/voice';
+  return page;
+ },[page,courseId,lessonId,dsaSlug,gateTab,studioTab]);
+ const routeKeyRef=useRef(routeKey);
+ routeKeyRef.current=routeKey;
+ const navModeRef=useRef('init');
+ const restoringScrollRef=useRef(false);
+ const scrollStoreKey=(key)=>`nova_scroll_v2:${key}`;
+ const saveCurrentScroll=()=>{if(restoringScrollRef.current||routeKeyRef.current==='login')return;try{sessionStorage.setItem(scrollStoreKey(routeKeyRef.current),String(Math.max(0,Math.round(window.scrollY||0))))}catch{}};
+
+ // Single authoritative session bootstrap + token-refresh listener.
+ // Runs once per distinct signed-in user id so /auth/me never loops.
+ const bootstrappedUserRef=useRef(null);
  useEffect(()=>{
-  if(user?.role!=='ADMIN' && page==='admin'){setPage('dashboard');localStorage.setItem('nova_page','dashboard');window.location.hash='/dashboard'}
- },[user,page]);
- useEffect(()=>{if(user?.id && user?.role!=='ADMIN' && user.profileComplete===false && page!=='onboarding'){setPage('onboarding');localStorage.setItem('nova_page','onboarding');window.location.hash='/onboarding'}},[user?.id,user?.profileComplete,page]);
- // The /users entity response does not carry the computed profileComplete flag,
- // so a blind merge wrote `undefined` over a known-true value and bounced
- // completed users back into onboarding. Only an explicit boolean may override.
- useEffect(()=>{if(user?.id){api('/users/'+user.id).then(profile=>{if(!profile||typeof profile!=='object')return;const next={...user,...profile};if(typeof profile.profileComplete!=='boolean')next.profileComplete=user.profileComplete;localStorage.setItem('ai_user',JSON.stringify(next));setUser(next);if(profile.preferredAiLanguage)localStorage.setItem(AI_LANGUAGE_KEY,profile.preferredAiLanguage)}).catch(()=>{})}},[user?.id]);
- // Authoritative bootstrap: one /auth/me round-trip reconciles the stored
- // session with the server before we trust where the user should land. A
- // transient network failure keeps the session; only a real 401 (handled in
- // lib/api.js) signs the user out.
- useEffect(()=>{if(!user?.token)return;let alive=true;refreshSessionToken().then(ok=>{if(!alive||!ok)return;const fresh=readUser();if(!fresh)return;setUser(fresh);if(String(fresh.role||'STUDENT').toUpperCase()!=='ADMIN'&&fresh.profileComplete===false){if(page!=='onboarding'){setPage('onboarding');localStorage.setItem('nova_page','onboarding');window.location.hash='/onboarding'}return}if(page==='onboarding'||page==='login'){setPage('dashboard');localStorage.setItem('nova_page','dashboard');window.location.hash='/dashboard'}}).catch(()=>{});return()=>{alive=false}},[user?.token]);
- useEffect(load,[user]); useEffect(()=>{if(user?.id&&page==='dashboard')load()},[page,user?.id]); // Lesson-to-AI-Teacher navigation uses the same central history stack as every other module.
- useEffect(()=>{ // The status probe runs at mount, which can beat backend startup on a
-  // cold machine. While unreachable, retry every 15s so the header reflects
-  // reality once Spring Boot is up instead of showing a stale warning forever.
-  // /ai/status is authenticated, so probing it while signed out only produced
-  // 401 noise in the console on the login screen.
+  const sync=()=>{const fresh=readUser();if(!fresh)return;setUser(prev=>{if(!prev||String(prev.id)!==String(fresh.id))return prev;return prev.token===fresh.token&&prev.role===fresh.role&&prev.profileComplete===fresh.profileComplete&&prev.name===fresh.name?prev:fresh})};
+  window.addEventListener('nova:session-refreshed',sync);
+  return()=>window.removeEventListener('nova:session-refreshed',sync);
+ },[]);
+ useEffect(()=>{
+  if(!user?.token||!user?.id)return;
+  if(bootstrappedUserRef.current===user.id)return;
+  const activeId=String(user.id);
+  const activeToken=user.token;
+  bootstrappedUserRef.current=user.id;
+  let alive=true;
+  const wakeTimer=setTimeout(()=>{if(alive)setWakingServer(true)},2500);
+  refreshSessionToken().then(ok=>{
+   if(!alive)return;
+   setWakingServer(false);
+   if(!ok)return;
+   const fresh=readUser();
+   if(!fresh||String(fresh.id)!==activeId)return;
+   setUser(prev=>{if(!prev||String(prev.id)!==activeId)return prev;return prev.token===fresh.token&&prev.role===fresh.role&&prev.profileComplete===fresh.profileComplete&&prev.name===fresh.name?prev:fresh});
+   if(String(fresh.role||'STUDENT').toUpperCase()!=='ADMIN'&&fresh.profileComplete===false){
+    setPage(p=>{if(p!=='onboarding'){localStorage.setItem('nova_page','onboarding');window.location.hash='#/onboarding';return 'onboarding'}return p});
+    return;
+   }
+   setPage(p=>{if(p==='onboarding'||p==='login'){localStorage.setItem('nova_page','dashboard');window.location.hash='#/dashboard';return 'dashboard'}return p});
+  }).catch(()=>{if(alive)setWakingServer(false)}).finally(()=>clearTimeout(wakeTimer));
+  return()=>{alive=false;clearTimeout(wakeTimer)};
+ },[user?.id,user?.token]);
+
+ const load=useCallback(()=>{
+  const activeId=user?.id;
+  api('/courses').then(x=>{if(!readUser()||String(readUser()?.id)!==String(activeId))return;const arr=Array.isArray(x)?x:[];setCourses(arr);try{localStorage.setItem('nova_courses_cache',JSON.stringify(arr))}catch{}}).catch(e=>console.warn('courses load failed',e));
+  if(activeId)api('/progress/'+activeId).then(x=>{if(!readUser()||String(readUser()?.id)!==String(activeId))return;setProgress(Array.isArray(x)?x:[])}).catch(e=>console.warn('progress load failed',e));
+ },[user?.id]);
+ useEffect(()=>{if(user?.id)load()},[user?.id,load]);
+ useEffect(()=>{
+  if(user?.role!=='ADMIN' && page==='admin'){setPage('dashboard');localStorage.setItem('nova_page','dashboard');window.location.hash='#/dashboard'}
+ },[user?.role,page]);
+ useEffect(()=>{if(user?.id && user?.role!=='ADMIN' && user.profileComplete===false && page!=='onboarding'){setPage('onboarding');localStorage.setItem('nova_page','onboarding');window.location.hash='#/onboarding'}},[user?.id,user?.role,user?.profileComplete,page]);
+ useEffect(()=>{
+  if(!user?.id)return;
+  const activeId=String(user.id);
+  let alive=true;
+  api('/users/'+user.id).then(profile=>{
+   const cur=readUser();
+   if(!alive||!profile||typeof profile!=='object'||!cur||String(cur.id)!==activeId)return;
+   setUser(prev=>{
+    if(!prev||String(prev.id)!==activeId)return prev;
+    const next={...prev,...profile};
+    if(typeof profile.profileComplete!=='boolean')next.profileComplete=prev.profileComplete;
+    try{localStorage.setItem('ai_user',JSON.stringify(next))}catch{}
+    return next;
+   });
+   if(profile.preferredAiLanguage&&String(readUser()?.id||'')===activeId)localStorage.setItem(AI_LANGUAGE_KEY,profile.preferredAiLanguage);
+  }).catch(()=>{});
+  return()=>{alive=false};
+ },[user?.id]);
+ useEffect(()=>{
   if(!user?.token)return;
   let cancelled=false,timer=null;
-  const check=()=>{api('/ai/status').then(s=>{if(!cancelled){setAiStatus(s);if(timer){clearTimeout(timer);timer=null;}}}).catch(()=>{if(!cancelled){setAiStatus({configured:false,model:'backend offline'});timer=setTimeout(check,15000);}})};
+  const check=()=>{api('/ai/status').then(s=>{if(!cancelled){setAiStatus(s);if(timer){clearTimeout(timer);timer=null;}}}).catch(()=>{if(!cancelled){setAiStatus({configured:false,model:'backend offline'});timer=setTimeout(check,20000);}})};
   check();
   return()=>{cancelled=true;if(timer)clearTimeout(timer)};
- },[user?.token]);
+ },[user?.id]);
+
  const persistBeforeNavigation=(reason='navigation')=>{
   try{
     beginNavigationPersistence(reason);
     window.dispatchEvent(new Event('nova:persist-before-navigation'));
   }catch{}
  };
- const openCourse=id=>{if(!user||!id)return;if(page!=='course'||String(courseId)!==String(id)){persistBeforeNavigation();sessionStorage.setItem('nova_scroll_course','0')}setCourseId(Number(id));setPage('course');localStorage.setItem('nova_page','course');const hash='/course/'+id;if(window.location.hash!==hash)window.location.hash=hash;setMobile(false)};
- const go=id=>{if(!user)return;if(id==='admin'&&role!=='ADMIN')return;const legacyStudio={tutor:'teacher',notes:'teacher',voice:'voice'};const target=legacyStudio[id]?'learning-studio':id;if(legacyStudio[id])localStorage.setItem('nova_learning_studio_tab',legacyStudio[id]);if(target!==page){persistBeforeNavigation();sessionStorage.setItem('nova_scroll_'+target,'0');}setPage(target);localStorage.setItem('nova_page',target);if(window.location.hash!=='/'+target)window.location.hash='/'+target;setMobile(false)};
- /* Scroll restoration: every route keeps its own position; a deliberate new
-    navigation starts at the top, while browser Back re-enters at the saved
-    position. This runs after the route has rendered so the page has height. */
+ const pushHash=(nextKey)=>{
+  const nextHash='#/'+nextKey;
+  if(window.location.hash!==nextHash)window.location.hash=nextHash;
+ };
+ const openCourse=(id,nextLessonId=null)=>{
+  if(!user||!id)return;
+  saveCurrentScroll();
+  const numId=Number(id);
+  const numLesson=nextLessonId?Number(nextLessonId):null;
+  const nextKey=numLesson?`course/${numId}/lesson/${numLesson}`:`course/${numId}`;
+  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';inAppNavCountRef.current+=1;}
+  setCourseId(numId);
+  setLessonId(numLesson);
+  setPage('course');
+  localStorage.setItem('nova_page','course');
+  pushHash(nextKey);
+  setMobile(false);
+ };
+ const openLesson=(cid,lid)=>{openCourse(cid,lid)};
+ const onDsaSlug=useCallback((nextSlug)=>{
+  saveCurrentScroll();
+  const nextKey=nextSlug?`dsa/${nextSlug}`:'dsa';
+  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';inAppNavCountRef.current+=1;}
+  setDsaSlug(nextSlug||null);
+  setPage('dsa');
+  localStorage.setItem('nova_page','dsa');
+  pushHash(nextKey);
+ },[]);
+ const onGateTab=useCallback((nextTab)=>{
+  saveCurrentScroll();
+  const cleanTab=nextTab||'overview';
+  const nextKey=cleanTab==='overview'?'gatecse':`gatecse/${cleanTab}`;
+  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';inAppNavCountRef.current+=1;}
+  setGateTab(cleanTab);
+  setPage('gatecse');
+  localStorage.setItem('nova_page','gatecse');
+  pushHash(nextKey);
+ },[]);
+ const onStudioTab=useCallback((nextTab)=>{
+  saveCurrentScroll();
+  const cleanTab=nextTab==='voice'?'voice':'teacher';
+  const nextKey=cleanTab==='voice'?'learning-studio/voice':'learning-studio';
+  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';inAppNavCountRef.current+=1;}
+  setStudioTab(cleanTab);
+  setPage('learning-studio');
+  localStorage.setItem('nova_learning_studio_tab',cleanTab);
+  localStorage.setItem('nova_page','learning-studio');
+  pushHash(nextKey);
+ },[]);
+ const go=id=>{
+  if(!user)return;
+  if(id==='admin'&&role!=='ADMIN')return;
+  saveCurrentScroll();
+  const legacyStudio={tutor:'teacher',notes:'teacher',voice:'voice'};
+  const target=legacyStudio[id]?'learning-studio':id;
+  const nextStudioTab=legacyStudio[id]||(target==='learning-studio'?'teacher':null);
+  const nextKey=target==='learning-studio'&&nextStudioTab==='voice'?'learning-studio/voice':target;
+  if(nextStudioTab){localStorage.setItem('nova_learning_studio_tab',nextStudioTab);setStudioTab(nextStudioTab);}
+  if(target==='dsa')setDsaSlug(null);
+  if(target==='gatecse')setGateTab('overview');
+  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';inAppNavCountRef.current+=1;}
+  setPage(target);
+  localStorage.setItem('nova_page',target);
+  pushHash(nextKey);
+  setMobile(false);
+ };
+
+ // Continuous scroll tracking keyed by full routeKey (e.g. course/1/lesson/27, dsa/two-sum, dashboard).
  useEffect(()=>{
   let frame=0;
-  const save=()=>{if(frame)return;frame=requestAnimationFrame(()=>{frame=0;sessionStorage.setItem('nova_scroll_'+page,String(window.scrollY||0))})};
+  const save=()=>{if(frame)return;frame=requestAnimationFrame(()=>{frame=0;saveCurrentScroll()})};
   window.addEventListener('scroll',save,{passive:true});
   return()=>{window.removeEventListener('scroll',save);if(frame)cancelAnimationFrame(frame)};
- },[page]);
+ },[routeKey]);
+
+ // Deterministic scroll restoration: forward pushes start at 0; Back/Forward restores
+ // the saved scrollY using ResizeObserver until async content reaches target height.
  useEffect(()=>{
-  const saved=Number(sessionStorage.getItem('nova_scroll_'+page));
-  const top=Number.isFinite(saved)?saved:0;
-  let cancelled=false,frame=0,timer=0,tries=0;
-  // Cards and other async sections add height after the first paint. If the
-  // target is not reachable yet, retry briefly instead of leaving Back at 0.
-  const apply=()=>{if(cancelled)return;window.scrollTo({top,left:0,behavior:'auto'});if(Math.abs(window.scrollY-top)>2&&tries++<20)timer=setTimeout(apply,40)};
-  frame=requestAnimationFrame(apply);
-  return()=>{cancelled=true;cancelAnimationFrame(frame);clearTimeout(timer)};
- },[page]);
- useEffect(()=>{const f=()=>go('tutor');window.addEventListener('nova-go-tutor',f);return()=>window.removeEventListener('nova-go-tutor',f)},[page]);
+  const mode=navModeRef.current;
+  navModeRef.current='pop';
+  if(mode==='push'){
+   restoringScrollRef.current=false;
+   window.scrollTo({top:0,left:0,behavior:'auto'});
+   return;
+  }
+  const raw=sessionStorage.getItem(scrollStoreKey(routeKey));
+  const target=Number(raw);
+  if(!Number.isFinite(target)||target<=0){
+   restoringScrollRef.current=false;
+   window.scrollTo({top:0,left:0,behavior:'auto'});
+   return;
+  }
+  restoringScrollRef.current=true;
+  let cancelled=false,userInteracted=false,raf=0;
+  const startedAt=Date.now();
+  const stopUser=()=>{userInteracted=true;cleanup();};
+  const apply=()=>{
+   if(cancelled||userInteracted)return;
+   window.scrollTo({top:target,left:0,behavior:'auto'});
+   if(Math.abs(window.scrollY-target)<=2||Date.now()-startedAt>2500){
+    cleanup();
+   }
+  };
+  let ro=null;
+  if(typeof ResizeObserver!=='undefined'){
+   ro=new ResizeObserver(()=>{if(!cancelled&&!userInteracted){cancelAnimationFrame(raf);raf=requestAnimationFrame(apply)}});
+   ro.observe(document.body);
+  }
+  const timer=setInterval(()=>{if(!cancelled&&!userInteracted)apply()},60);
+  const maxTimer=setTimeout(()=>cleanup(),2600);
+  const cleanup=()=>{
+   cancelled=true;
+   restoringScrollRef.current=false;
+   cancelAnimationFrame(raf);
+   clearInterval(timer);
+   clearTimeout(maxTimer);
+   ro?.disconnect();
+   window.removeEventListener('wheel',stopUser);
+   window.removeEventListener('touchstart',stopUser);
+   window.removeEventListener('keydown',stopUser);
+   window.removeEventListener('pointerdown',stopUser);
+  };
+  window.addEventListener('wheel',stopUser,{passive:true});
+  window.addEventListener('touchstart',stopUser,{passive:true});
+  window.addEventListener('keydown',stopUser,{passive:true});
+  window.addEventListener('pointerdown',stopUser,{passive:true});
+  raf=requestAnimationFrame(apply);
+  return cleanup;
+ },[routeKey]);
+
+ useEffect(()=>{const f=()=>go('tutor');window.addEventListener('nova-go-tutor',f);return()=>window.removeEventListener('nova-go-tutor',f)},[page,user?.id]);
  useEffect(()=>{if(!adminDenied)return;const t=setTimeout(()=>setAdminDenied(false),4200);return()=>clearTimeout(t)},[adminDenied]);
- useEffect(()=>{const onHash=()=>{const session=readUser();if(!session){setPage('login');return}const allowed=['dashboard','coach','study-room','analytics','courses','course','mentor','learning-studio','tutor','code','quiz','practice','prepare','chat','knowledge','planner','flashcards','interview','voice','settings','gatecse','career','community','notifications','revision','achievements','dpp','profile','exam','nova-os','nova-brain','onboarding','admin','dsa'];const alias={'gate-cse':'gatecse'};const h0=window.location.hash.replace('#/','');const routeCourse=courseIdFromHash();const normalized0=routeCourse?'course':(alias[h0]||h0);const legacyStudio={tutor:'teacher',notes:'teacher',voice:'voice'};if(legacyStudio[normalized0])localStorage.setItem('nova_learning_studio_tab',legacyStudio[normalized0]);const normalized=legacyStudio[normalized0]?'learning-studio':normalized0;const h=normalized==='login'?'dashboard':(allowed.includes(normalized)?normalized:'dashboard');if(routeCourse)setCourseId(routeCourse);if(h==='admin'&&String(session.role||'STUDENT').toUpperCase()!=='ADMIN'){setPage('dashboard');window.location.hash='/dashboard';setAdminDenied(true);return}if(h!==page)persistBeforeNavigation();setPage(h);localStorage.setItem('nova_page',h)};window.addEventListener('hashchange',onHash);if(!window.location.hash)window.location.hash='/'+page;return()=>window.removeEventListener('hashchange',onHash)},[page,user?.role]);
- // A successful sign-in always starts on Home. Admin Panel is reached only by
- // the explicit navigation item, so this fallback must never route to /admin.
- useEffect(()=>{if(user&&page==='login'){const r=String(user.role||'STUDENT').toUpperCase();const target=r!=='ADMIN'&&user.profileComplete===false?'onboarding':'dashboard';setPage(target);localStorage.setItem('nova_page',target);window.location.hash='/'+target}},[user,page]);
+
+ useEffect(()=>{
+  const onHash=()=>{
+   const session=readUser();
+   if(!session){setPage('login');return}
+   const parsed=parseAppHash(window.location.hash);
+   const h=parsed.page==='login'?'dashboard':(ALLOWED_PAGES.includes(parsed.page)?parsed.page:'dashboard');
+   if(h==='admin'&&String(session.role||'STUDENT').toUpperCase()!=='ADMIN'){
+    setPage('dashboard');window.location.replace('#/dashboard');setAdminDenied(true);return;
+   }
+   if(h==='course'&&!parsed.courseId){
+    setPage('dashboard');window.location.replace('#/dashboard');return;
+   }
+   const finalRouteKey=h==='course'?(parsed.lessonId?`course/${parsed.courseId}/lesson/${parsed.lessonId}`:`course/${parsed.courseId}`)
+    :h==='dsa'?(parsed.dsaSlug?`dsa/${parsed.dsaSlug}`:'dsa')
+    :h==='gatecse'?(parsed.gateTab&&parsed.gateTab!=='overview'?`gatecse/${parsed.gateTab}`:'gatecse')
+    :h==='learning-studio'?(parsed.studioTab==='voice'?'learning-studio/voice':'learning-studio')
+    :h;
+   if(navModeRef.current!=='push'&&finalRouteKey!==routeKeyRef.current){
+    restoringScrollRef.current=true;
+   }
+   if(h==='course'){
+    setCourseId(parsed.courseId);
+    setLessonId(parsed.lessonId||null);
+   }
+   if(h==='dsa')setDsaSlug(parsed.dsaSlug||null);
+   if(h==='gatecse')setGateTab(parsed.gateTab||'overview');
+   if(h==='learning-studio')setStudioTab(parsed.studioTab||null);
+   if(finalRouteKey!==routeKeyRef.current)persistBeforeNavigation();
+   setPage(h);
+   localStorage.setItem('nova_page',h);
+  };
+  window.addEventListener('hashchange',onHash);
+  if(!window.location.hash)window.location.hash='#/'+routeKeyRef.current;
+  return()=>window.removeEventListener('hashchange',onHash);
+ },[user?.role]);
+
+ useEffect(()=>{if(user&&page==='login'){const r=String(user.role||'STUDENT').toUpperCase();const target=r!=='ADMIN'&&user.profileComplete===false?'onboarding':'dashboard';setPage(target);localStorage.setItem('nova_page',target);window.location.hash='#/'+target}},[user,page]);
  const role=String(user?.role||'STUDENT').toUpperCase();
- if(page==='onboarding') return <Onboarding user={user} onComplete={next=>{localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page','dashboard');setUser(next);setPage('dashboard');window.location.hash='/dashboard'}}/>;
- /* Global navigation model. Desktop renders Learn/Practice/AI/Community as
-    horizontal menu buttons with dropdown panels; mobile renders the same
-    model inside a sheet. Only real routes are listed. */
+ if(page==='onboarding') return <Onboarding user={user} onComplete={next=>{localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page','dashboard');setUser(next);setPage('dashboard');window.location.hash='#/dashboard'}}/>;
  const navModel=[
   {id:'learn',label:'Learn',items:[['dashboard','Home',LayoutDashboard],['notifications','Today',Bell],['courses','Courses',BookOpen],['knowledge','Knowledge Hub',FileSearch]]},
   {id:'practice',label:'Practice',items:[['practice','Practice hub',Target],['dsa','DSA Practice',Code2],['exam','Exam Simulator',Trophy],['gatecse','GATE CSE',GraduationCap],['revision','Revision',RotateCcw]]},
@@ -588,12 +903,10 @@ function App(){
   {id:'community',label:'More',items:[['community','Community',Users],['achievements','Achievements',Trophy],['career','Career',Briefcase],['about','About NovaTutor',Lightbulb],...(role==='ADMIN'?[['admin','Admin Panel',WandSparkles]]:[])]},
  ];
  const navActiveGroup=navModel.find(g=>g.items.some(([id])=>id===page))?.id;
- const logout=()=>{persistBeforeNavigation('logout');if(role==='GUEST')api('/auth/guest',{method:'DELETE'}).catch(()=>{});resetTransientLearningState(user?.id);localStorage.removeItem('ai_user');localStorage.removeItem('nova_page');localStorage.removeItem('nova_nav_stack');setUser(null);setMobile(false);setPage('login');window.location.hash='/login'};
- const switchAccount=()=>{persistBeforeNavigation('switch-account');if(role==='GUEST')api('/auth/guest',{method:'DELETE'}).catch(()=>{});resetTransientLearningState(user?.id);localStorage.removeItem('ai_user');localStorage.removeItem('nova_page');localStorage.removeItem('nova_nav_stack');setUser(null);setMobile(false);setPage('login');window.location.hash='/login'};
+ const logout=()=>{if(role!=='GUEST'){persistBeforeNavigation('logout')}else{api('/auth/guest',{method:'DELETE'}).catch(()=>{})}clearUserClientState(user)};
+ const switchAccount=()=>{if(role!=='GUEST'){persistBeforeNavigation('switch-account')}else{api('/auth/guest',{method:'DELETE'}).catch(()=>{})}clearUserClientState(user)};
  const updateUser=next=>{const normalized={...(user||{}),...(next||{}),role:String(next?.role||user?.role||'STUDENT').toUpperCase()};localStorage.setItem('ai_user',JSON.stringify(normalized));setUser(normalized)};
- if(!user)return <Auth onLogin={u=>{const next={...u,role:String(u.role||'STUDENT').toUpperCase()};resetTransientLearningState(next.id);localStorage.removeItem('nova_nav_stack');const needsProfile=next.role!=='ADMIN'&&next.profileComplete===false;const target=needsProfile?'onboarding':'dashboard';localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page',target);setUser(next);setPage(target);window.location.hash='/'+target}} dark={dark} setDark={setDark}/>;
- const renderNavItem=([id,label,I])=><button className={page===id?'active':''} onClick={()=>go(id)} key={id}><I size={18}/>{label}{id==='admin'&&role==='ADMIN'?<span className="nav-badge">OWNER</span>:null}</button>;
- const renderNavGroups=()=>navGroups.map(g=><div className="nav-group" key={g.label}><div className="nav-section-title">{g.label}</div><nav className="main-nav" aria-label={g.label.toLowerCase()}>{g.items.map(renderNavItem)}</nav></div>);
+ if(!user)return <Auth onLogin={u=>{invalidatePendingSessionRefresh();bootstrappedUserRef.current=null;inAppNavCountRef.current=0;const next={...u,role:String(u.role||'STUDENT').toUpperCase()};resetTransientLearningState(next.id);localStorage.removeItem('nova_nav_stack');const needsProfile=next.role!=='ADMIN'&&next.profileComplete===false;const target=needsProfile?'onboarding':'dashboard';localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page',target);setUser(next);setPage(target);window.location.hash='#/'+target}} dark={dark} setDark={setDark}/>;
  return <div className="app app-topnav">
  <TopNav
   user={user} role={role} page={page} go={go} dark={dark} setDark={setDark}
@@ -602,10 +915,9 @@ function App(){
  />
  {mobile&&<div className="nav-shade" onClick={()=>setMobile(false)}/>}
  <main className="main-topnav">
- {/* In-page Back button removed: hash routing + browser Back already provide
-     full navigation history, and the sidebar/navbar owns in-app navigation. */}
- <div className="page-transition"><ErrorBoundary key={page}>{adminDenied&&<div className="nv-toast" role="status">Admin area is restricted to administrator accounts.</div>}{page==='dashboard'&&<Dashboard courses={courses} progress={progress} go={go} openCourse={openCourse} user={user}/>} {page==='course'&&<CoursePage courseId={courseId} courses={courses} progress={progress} refresh={load} onBack={()=>go('dashboard')}/>} {page==='coach'&&<NovaCoach user={user} go={go} courses={courses}/>} {page==='study-room'&&<NovaCoach user={user} go={go} courses={courses} initialTab="community"/>} {page==='analytics'&&<Analytics user={user}/>} {page==='nova-os'&&<NovaBrain user={user} go={go}/>} {page==='nova-brain'&&<NovaBrain user={user} go={go}/>} {page==='practice'&&<PracticeHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='prepare'&&<PrepareHub user={user} go={go}/>} {page==='courses'&&<MyLearningHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='learning-studio'&&<LearningStudio user={user}/>} {page==='tutor'&&<LearningStudio user={user} initialTab="teacher"/>} {page==='code'&&<CodeLab user={user}/>} {page==='quiz'&&<Quiz courses={courses} progress={progress} refresh={load} user={user}/>} {page==='chat'&&<ChatWorkspace user={user}/>} {page==='knowledge'&&<KnowledgeHub user={user}/>}
- {page==='mentor'&&<AdaptiveMentor user={user} courses={courses}/>} {page==='planner'&&<StudyPlanner user={user}/>} {page==='flashcards'&&<Flashcards user={user}/>} {page==='achievements'&&<Achievements user={user} go={go}/>} {page==='profile'&&<AILearningProfile user={user} courses={courses} go={go}/>} {page==='interview'&&<Interviewer user={user}/>} {page==='voice'&&<LearningStudio user={user} initialTab="voice"/>} {page==='dpp'&&<CourseDppIde user={user} courses={courses}/>} {page==='exam'&&<ExamSimulator user={user}/>} {page==='gatecse'&&<GateCse/>} {page==='dsa'&&<DsaPractice user={user} api={api}/>} {page==='career'&&<CareerHub user={user} go={go}/>} {page==='community'&&<CommunityHub user={user} go={go}/>} {page==='notifications'&&<TodayHub user={user} go={go}/>} {page==='revision'&&<RevisionHub user={user} go={go}/>} {page==='settings'&&<SettingsPage user={user} dark={dark} setDark={setDark} logout={logout} switchAccount={switchAccount} onUserUpdate={updateUser} aiStatus={aiStatus}/>} {page==='about'&&<PublicPage page="about" signedIn onBack={()=>go('dashboard')}/>} {page==='privacy'&&<PublicPage page="privacy" signedIn onBack={()=>go('settings')}/>} {page==='terms'&&<PublicPage page="terms" signedIn onBack={()=>go('settings')}/>} {page==='contact'&&<PublicPage page="contact" signedIn onBack={()=>go('dashboard')}/>} {page==='admin'&&(role==='ADMIN'?<Admin user={user} courses={courses} refreshCourses={load} onBack={()=>go('dashboard')}/>:<AdminLocked go={go}/>)}</ErrorBoundary></div></main></div>
+ {wakingServer&&<div className="nv-toast" role="status">Waking up NovaTutor server… this can take a few seconds after idle.</div>}
+ <div className="page-transition"><ErrorBoundary key={page}>{adminDenied&&<div className="nv-toast" role="status">Admin area is restricted to administrator accounts.</div>}{page==='dashboard'&&<Dashboard courses={courses} progress={progress} go={go} openCourse={openCourse} user={user}/>} {page==='course'&&<CoursePage courseId={courseId} lessonId={lessonId} onSelectLesson={lid=>openLesson(courseId,lid)} courses={courses} progress={progress} refresh={load} onBack={()=>inAppNavCountRef.current>0?window.history.back():go('courses')}/>} {page==='coach'&&<NovaCoach user={user} go={go} courses={courses}/>} {page==='study-room'&&<NovaCoach user={user} go={go} courses={courses} initialTab="community"/>} {page==='analytics'&&<Analytics user={user}/>} {page==='nova-os'&&<NovaBrain user={user} go={go}/>} {page==='nova-brain'&&<NovaBrain user={user} go={go}/>} {page==='practice'&&<PracticeHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='prepare'&&<PrepareHub user={user} go={go} gateTab={gateTab} onGateTab={onGateTab} dsaSlug={dsaSlug} onDsaSlug={onDsaSlug}/>} {page==='courses'&&<MyLearningHub courses={courses} progress={progress} refresh={load} user={user} go={go} openCourse={openCourse}/>} {page==='learning-studio'&&<LearningStudio user={user} routeTab={studioTab} onRouteTab={onStudioTab}/>} {page==='tutor'&&<LearningStudio user={user} initialTab="teacher" onRouteTab={onStudioTab}/>} {page==='code'&&<CodeLab user={user}/>} {page==='quiz'&&<Quiz courses={courses} progress={progress} refresh={load} user={user}/>} {page==='chat'&&<ChatWorkspace user={user}/>} {page==='knowledge'&&<KnowledgeHub user={user}/>}
+ {page==='mentor'&&<AdaptiveMentor user={user} courses={courses}/>} {page==='planner'&&<StudyPlanner user={user}/>} {page==='flashcards'&&<Flashcards user={user}/>} {page==='achievements'&&<Achievements user={user} go={go}/>} {page==='profile'&&<AILearningProfile user={user} courses={courses} go={go}/>} {page==='interview'&&<Interviewer user={user}/>} {page==='voice'&&<LearningStudio user={user} initialTab="voice" onRouteTab={onStudioTab}/>} {page==='dpp'&&<CourseDppIde user={user} courses={courses}/>} {page==='exam'&&<ExamSimulator user={user}/>} {page==='gatecse'&&<GateCse routeTab={gateTab} onRouteTab={onGateTab}/>} {page==='dsa'&&<DsaPractice user={user} api={api} routeSlug={dsaSlug} onRouteSlug={onDsaSlug}/>} {page==='career'&&<CareerHub user={user} go={go}/>} {page==='community'&&<CommunityHub user={user} go={go}/>} {page==='notifications'&&<TodayHub user={user} go={go}/>} {page==='revision'&&<RevisionHub user={user} go={go}/>} {page==='settings'&&<SettingsPage user={user} dark={dark} setDark={setDark} logout={logout} switchAccount={switchAccount} onUserUpdate={updateUser} aiStatus={aiStatus}/>} {page==='about'&&<PublicPage page="about" signedIn onBack={()=>go('dashboard')}/>} {page==='privacy'&&<PublicPage page="privacy" signedIn onBack={()=>go('settings')}/>} {page==='terms'&&<PublicPage page="terms" signedIn onBack={()=>go('settings')}/>} {page==='contact'&&<PublicPage page="contact" signedIn onBack={()=>go('dashboard')}/>} {page==='admin'&&(role==='ADMIN'?<Admin user={user} courses={courses} refreshCourses={load} onBack={()=>go('dashboard')}/>:<AdminLocked go={go}/>)}</ErrorBoundary></div></main></div>
 }
 function readHashRoute(){
  const raw=String(window.location.hash||'').replace(/^#\/?/,'');
@@ -613,11 +925,8 @@ function readHashRoute(){
  return {path:(path||'').toLowerCase(),params:new URLSearchParams(query||'')};
 }
 
-/* Direct course routes ("#/course/12") let Home open the requested course's
-   lectures without mounting the My Learning catalog first. */
 function courseIdFromHash(){
- const match=String(window.location.hash||'').replace(/^#\//,'').match(/^course\/(\d+)$/);
- return match?Number(match[1]):null;
+ return parseAppHash(window.location.hash).courseId;
 }
 
 /* Google Identity Services button. The backend verifies the returned ID token
@@ -952,20 +1261,27 @@ function Onboarding({user,onComplete}){
  return <div className="onboarding-page"><div className="onboarding-card"><div className="onboarding-head"><div className="onboarding-orb"><Sparkles size={22}/></div><div><span className="eyebrow">NOVA PERSONALIZATION</span><h1>Let Nova <span>know you.</span></h1><p>Answer a few questions once. Your AI teacher, practice and study recommendations will use this profile.</p></div></div><div className="onboarding-progress"><span className={step>=1?'on':''}/><span className={step>=2?'on':''}/><span className={step>=3?'on':''}/></div>{step===1&&<div className="onboarding-grid"><label>EDUCATION LEVEL<select value={form.educationLevel} onChange={e=>setForm({...form,educationLevel:e.target.value})}><option>B.Tech / College</option><option>School</option><option>Graduate</option><option>Working professional</option><option>Other</option></select></label><label>MAIN GOAL<input value={form.learningGoal} onChange={e=>setForm({...form,learningGoal:e.target.value})} placeholder="e.g. GATE CSE + Java placement preparation"/></label><label>TARGET EXAM <span>optional</span><input value={form.targetExam} onChange={e=>setForm({...form,targetExam:e.target.value})} placeholder="GATE, placement, university exams…"/></label><label>DAILY STUDY TIME<select value={form.dailyStudyMinutes} onChange={e=>setForm({...form,dailyStudyMinutes:e.target.value})}><option value="30">30 minutes</option><option value="60">1 hour</option><option value="90">1.5 hours</option><option value="120">2 hours</option><option value="180">3+ hours</option></select></label></div>}{step===2&&<div className="onboarding-grid"><label>INTERESTS<textarea value={form.interests} onChange={e=>setForm({...form,interests:e.target.value})} placeholder="Java, DSA, AI, web development, GATE…"/></label><label>STRENGTHS<textarea value={form.strengths} onChange={e=>setForm({...form,strengths:e.target.value})} placeholder="What are you already comfortable with?"/></label><label>WEAKNESSES<textarea value={form.weaknesses} onChange={e=>setForm({...form,weaknesses:e.target.value})} placeholder="What topics confuse you or need improvement?"/></label><label>LEARNING STYLE<div className="choice-grid">{styles.map(x=><button type="button" className={form.learningStyle===x?'choice active':'choice'} onClick={()=>setForm({...form,learningStyle:x})} key={x}><b>{x}</b><small>{x==='Visual + practical'?'Diagrams + examples':x==='Step-by-step'?'Slow guided teaching':x==='Practice first'?'Learn by solving':'Concept before practice'}</small></button>)}</div></label></div>}{step===3&&<div className="onboarding-final"><div className="profile-preview"><div className="profile-preview-icon"><BrainCircuit size={24}/></div><div><b>Your Nova profile</b><p><strong>Goal:</strong> {form.learningGoal||'—'}</p><p><strong>Interests:</strong> {form.interests||'—'}</p><p><strong>Weaknesses:</strong> {form.weaknesses||'—'}</p><p><strong>Style:</strong> {form.learningStyle} • <strong>Study:</strong> {form.dailyStudyMinutes} min/day</p></div></div><label>AI TEACHING LANGUAGE<select value={form.preferredAiLanguage} onChange={e=>setForm({...form,preferredAiLanguage:e.target.value})}>{AI_LANGUAGES.map(x=><option key={x}>{x}</option>)}</select></label><div className="visual-teaching-note"><Sparkles size={18}/><div><b>Visual teaching is on</b><small>Nova will prefer diagrams, examples, flowcharts and visual explanations when they make a concept easier to understand.</small></div></div></div>}{error&&<div className="error">{error}</div>}<div className="onboarding-actions">{step>1?<button className="secondary" onClick={()=>setStep(step-1)}>Back</button>:<span/>}{step<3?<button className="primary" onClick={()=>{setError('');setStep(step+1)}}>Continue <ChevronRight size={15}/></button>:<button className="primary" onClick={save} disabled={loading}>{loading?'Saving your profile…':'Start my personalized NovaTutor'} <Sparkles size={15}/></button>}</div></div></div>
 }
 function CourseDppIde({user,courses}){
- const dppInitial=React.useMemo(()=>({courseId:courses[0]?.id||'',dpp:null,answers:{},skipped:{},submitted:false,language:'Java',code:'public class Main {\n    public static void main(String[] args) {\n        System.out.println("Hello NovaTutor");\n    }\n}',analysis:'',htmlPreview:false,ideTask:null}),[courses[0]?.id]);
+ const dppInitial=React.useMemo(()=>({courseId:courses[0]?.id||'',dpp:null,answers:{},skipped:{},submitted:false,language:'Java',code:'public class Main {\n    public static void main(String[] args) {\n        System.out.println("Hello NovaTutor");\n    }\n}',analysis:'',ideTask:null}),[courses[0]?.id]);
  const [session,setSession]=useLiveRuntimeSession(user?.id,'practice.dppIde',dppInitial);
- const courseId=session.courseId||courses[0]?.id||'',dpp=session.dpp||null,answers=session.answers||{},skipped=session.skipped||{},submitted=Boolean(session.submitted),language=session.language||'Java',code=session.code||'',analysis=session.analysis||'',htmlPreview=Boolean(session.htmlPreview),ideTask=session.ideTask||null;
+ const courseId=session.courseId||courses[0]?.id||'',dpp=session.dpp||null,answers=session.answers||{},skipped=session.skipped||{},submitted=Boolean(session.submitted),language=session.language||'Java',code=session.code||'',analysis=session.analysis||'',ideTask=session.ideTask||null;
+ const [htmlPreview,setHtmlPreview]=useState(false);
+ const [previewKey,setPreviewKey]=useState(0);
+ const previewFrameRef=useRef(null);
+ const previewCodeRef=useRef('');
+ previewCodeRef.current=code;
+ const sendPreviewToIframe=React.useCallback(()=>{
+  try{previewFrameRef.current?.contentWindow?.postMessage({type:'nova-ide-render',html:previewCodeRef.current},'*');}catch{}
+ },[]);
  const update=React.useCallback((patch)=>setSession(s=>({...s,...(typeof patch==='function'?patch(s):patch)})),[setSession]);
- const setCourseId=x=>update({courseId:typeof x==='function'?x(courseId):x});
- const setDpp=x=>update({dpp:typeof x==='function'?x(dpp):x});
- const setAnswers=x=>update({answers:typeof x==='function'?x(answers):x});
- const setSkipped=x=>update({skipped:typeof x==='function'?x(skipped):x});
- const setSubmitted=x=>update({submitted:typeof x==='function'?x(submitted):x});
- const setLanguage=x=>update({language:typeof x==='function'?x(language):x});
- const setCode=x=>update({code:typeof x==='function'?x(code):x});
- const setAnalysis=x=>update({analysis:typeof x==='function'?x(analysis):x});
- const setHtmlPreview=x=>update({htmlPreview:typeof x==='function'?x(htmlPreview):x});
- const setIdeTask=x=>update({ideTask:typeof x==='function'?x(ideTask):x});
+ const setCourseId=x=>update(s=>({courseId:typeof x==='function'?x(s.courseId):x}));
+ const setDpp=x=>update(s=>({dpp:typeof x==='function'?x(s.dpp):x}));
+ const setAnswers=x=>update(s=>({answers:typeof x==='function'?x(s.answers||{}):x}));
+ const setSkipped=x=>update(s=>({skipped:typeof x==='function'?x(s.skipped||{}):x}));
+ const setSubmitted=x=>update(s=>({submitted:typeof x==='function'?x(Boolean(s.submitted)):x}));
+ const setLanguage=x=>update(s=>({language:typeof x==='function'?x(s.language||'Java'):x}));
+ const setCode=x=>update(s=>({code:typeof x==='function'?x(s.code||''):x}));
+ const setAnalysis=x=>update(s=>({analysis:typeof x==='function'?x(s.analysis||''):x}));
+ const setIdeTask=x=>update(s=>({ideTask:typeof x==='function'?x(s.ideTask||null):x}));
  const [loading,setLoading]=useState(false),[error,setError]=useState(''),[running,setRunning]=useState(false);
  const selected=courses.find(c=>String(c.id)===String(courseId));
  useEffect(()=>{if(!courseId&&courses[0])setCourseId(courses[0].id)},[courses]);
@@ -1005,7 +1321,7 @@ function CourseDppIde({user,courses}){
  const earnedMarks=submitted?resultItems.filter(Boolean).length:0;
  const percent=submitted&&totalMarks?Math.round((earnedMarks/totalMarks)*100):0;
  function explainTask(t){setIdeTask(t);setAnalysis('');window.setTimeout(()=>document.querySelector('.course-ide')?.scrollIntoView({behavior:'smooth',block:'start'}),0)}
- async function runCode(){setRunning(true);setAnalysis('');try{if(language==='HTML'){setHtmlPreview(true);setAnalysis(ideTask?`Live preview updated for: ${ideTask.question}`:'HTML preview updated.');return}const taskQuestion=ideTask?.question||'Explain the current course coding task and how to approach it without giving a full copy-paste solution.';const r=await api('/code/analyze',{method:'POST',body:JSON.stringify({mode:'DEBUG',language,level:'intermediate',question:taskQuestion,code,responseLanguage:getAiLanguage()})});setAnalysis(r.answer||'No analysis returned.')}catch(e){setAnalysis(e.message||'Could not analyze code.')}finally{setRunning(false)}}
+ async function runCode(){setRunning(true);setAnalysis('');try{if(language==='HTML'){setHtmlPreview(true);setPreviewKey(k=>k+1);setAnalysis(ideTask?`Live preview updated for: ${ideTask.question}`:'HTML preview updated.');return}const taskQuestion=ideTask?.question||'Explain the current course coding task and how to approach it without giving a full copy-paste solution.';const r=await api('/code/analyze',{method:'POST',body:JSON.stringify({mode:'DEBUG',language,level:'intermediate',question:taskQuestion,code,responseLanguage:getAiLanguage()})});setAnalysis(r.answer||'No analysis returned.')}catch(e){setAnalysis(e.message||'Could not analyze code.')}finally{setRunning(false)}}
  return <><div className="page-title"><span className="eyebrow">COURSE PRACTICE SYSTEM</span><h1>DPP <span>& IDE.</span></h1><p>Practice every day inside the course. Nova generates targeted problems from your course and learning profile, then gives you a focused workspace.</p></div>
  <div className="dpp-hero"><div><span className="eyebrow">DAILY PRACTICE PROBLEMS</span><h2>{selected?.title||'Choose a course'} • Today's set</h2><p>6 tasks • 3 concepts • 2 practical problems • 1 challenge</p></div><div className="dpp-hero-actions"><select aria-label="Course" value={courseId} onChange={e=>{setCourseId(e.target.value);setDpp(null);setAnswers({});setSkipped({});setSubmitted(false);setError('');setIdeTask(null);setAnalysis('')}}>{courses.map(c=><option key={c.id} value={c.id}>{c.title}</option>)}</select><button className="primary" onClick={generate} disabled={loading||!courseId}>{loading?'Creating DPP…':'Generate today’s DPP'} <Target size={15}/></button></div></div>
  {error&&<div className="error">{error}</div>}
@@ -1017,7 +1333,7 @@ function CourseDppIde({user,courses}){
  </div>{submitted&&t.explanation&&<div className="dpp-explanation"><Lightbulb size={16}/><span><b>Nova's explanation:</b> {t.explanation}</span></div>}{submitted&&!result&&<div className="dpp-wrong-note">Your answer was marked <b>Wrong</b>. Review the explanation and retry this concept.</div>}</article>})}</div><div className="dpp-submit-bar"><span>{submitted?'All answers submitted. Review your results.':'No answer is marked correct before final submission.'}</span><button className="primary" onClick={submitDpp} disabled={submitted||(Object.keys(answers).length+Object.keys(skipped).length)<dpp.length}>{submitted?'Submitted ✓':'Submit all answers'} <CheckCircle2 size={15}/></button></div></>}</section>
  <section className="panel course-ide"><div className="panel-head"><div><span className="eyebrow">COURSE IDE</span><h3>{ideTask?'Explain this DPP question.':'Build, test, improve.'}</h3>{ideTask&&<small className="ide-task-label">{ideTask.question}</small>}</div><Code2 size={20}/></div><div className="ide-toolbar"><select aria-label="Language" value={language} onChange={e=>{setLanguage(e.target.value);setCode(starter(e.target.value));setHtmlPreview(false);setAnalysis('')}}><option>Java</option><option>HTML</option><option>CSS</option><option>JavaScript</option><option>Python</option><option>C++</option></select><span>{ideTask?'Question-specific guidance':'Choose a question from the DPP to get targeted guidance'}</span><button className="secondary" onClick={()=>setCode(starter(language))}>Starter code</button></div>
  <div className="ide-howto"><b>How to use the Course IDE</b><span>1. Pick a language → 2. Choose a DPP question → 3. Write or edit code → 4. Run/Analyze → 5. Use Nova's feedback to improve.</span></div>
- <textarea aria-label="Code editor" className="course-ide-editor" value={code} onChange={e=>setCode(e.target.value)} spellCheck="false"/><div className="ide-actions"><button className="primary" onClick={runCode} disabled={running}>{running?'Analyzing…':language==='HTML'?'Run preview':'Explain & analyze'} <PlayCircle size={15}/></button><button className="secondary" onClick={()=>{setCode('');setAnalysis('');setHtmlPreview(false)}}>Clear</button></div>{htmlPreview&&language==='HTML'&&<iframe title="NovaTutor HTML preview" className="html-preview" srcDoc={code}/>} {analysis&&<div className="ide-analysis"><b>Nova IDE feedback</b><AiMarkdown content={analysis}/></div>}</section></div></>
+ <textarea aria-label="Code editor" className="course-ide-editor" value={code} onChange={e=>setCode(e.target.value)} spellCheck="false"/><div className="ide-actions"><button className="primary" onClick={runCode} disabled={running}>{running?'Analyzing…':language==='HTML'?'Run preview':'Explain & analyze'} <PlayCircle size={15}/></button><button className="secondary" onClick={()=>{setCode('');setAnalysis('');setHtmlPreview(false)}}>Clear</button></div>{htmlPreview&&language==='HTML'&&<iframe key={previewKey} ref={previewFrameRef} title="NovaTutor HTML preview" className="html-preview" sandbox="allow-scripts" referrerPolicy="no-referrer" allow="" src="/ide-preview.html" onLoad={sendPreviewToIframe}/>} {analysis&&<div className="ide-analysis"><b>Nova IDE feedback</b><AiMarkdown content={analysis}/></div>}</section></div></>
 }
 
 function Admin({user,courses,refreshCourses,onBack}){ return <AdminControlCenter user={user} courses={courses} refreshCourses={refreshCourses} api={api} onBack={onBack}/> }
@@ -1027,7 +1343,15 @@ function Analytics({user}){
  const [data,setData]=useState(null),[error,setError]=useState(''),[goal,setGoal]=useState(()=>Number(localStorage.getItem('daily_goal')||60));
  useModulePersistence(user?.id,'analytics',{goal},{goal:x=>setGoal(Number(x)||60)});
  const loadAnalytics=(showLoading=false)=>{if(showLoading)setData(null);setError('');api('/analytics/'+user.id).then(setData).catch(e=>setError(e.message))};
- useEffect(()=>{loadAnalytics(true);const timer=setInterval(()=>loadAnalytics(false),3000);const refresh=()=>loadAnalytics(false);window.addEventListener('nova:learning-updated',refresh);return()=>{clearInterval(timer);window.removeEventListener('nova:learning-updated',refresh)}},[user.id]);
+ useEffect(()=>{
+  loadAnalytics(true);
+  const timer=setInterval(()=>{if(!document.hidden)loadAnalytics(false)},60000);
+  const refresh=()=>loadAnalytics(false);
+  const onVis=()=>{if(!document.hidden)loadAnalytics(false)};
+  window.addEventListener('nova:learning-updated',refresh);
+  document.addEventListener('visibilitychange',onVis);
+  return()=>{clearInterval(timer);window.removeEventListener('nova:learning-updated',refresh);document.removeEventListener('visibilitychange',onVis)};
+ },[user.id]);
  if(error)return <div className="page-crash"><RefreshCw size={40}/><h2>Analytics could not load</h2><p>{error}</p><button className="primary" onClick={loadAnalytics}>Retry</button></div>;
  if(!data)return <div className="empty-page"><RefreshCw/><h3>Loading your learning analytics…</h3><p>We're calculating your progress from saved course activity.</p></div>;
  const max=Math.max(1,...data.courses.map(c=>c.percent));
@@ -1050,9 +1374,12 @@ function Analytics({user}){
 }
 function IntelligencePanel({user}){const [data,setData]=useState(null),[loading,setLoading]=useState(true);const load=()=>{setLoading(true);api('/intelligence/'+user.id).then(setData).catch(()=>setData(null)).finally(()=>setLoading(false))};useEffect(load,[user.id]);if(loading)return <section className="panel intelligence-panel"><div className="panel-head"><div><span className="eyebrow">MEMORY ENGINE</span><h3>Learning memory is updating…</h3></div><RefreshCw size={19}/></div></section>;if(!data)return null;return <section className="panel intelligence-panel"><div className="panel-head"><div><span className="eyebrow">MEMORY ENGINE • V13</span><h3>NovaTutor understands your learning patterns.</h3></div><Brain size={20}/></div><div className="memory-stats"><div><b>{data.learningEvents}</b><span>learning events</span></div><div><b>{data.quizzes}</b><span>quiz attempts</span></div><div><b>{data.studyMinutes}</b><span>study minutes</span></div><div><b>{data.streak}</b><span>day streak</span></div></div><div className="intelligence-columns"><div><span className="eyebrow">WEAKNESS DETECTOR</span>{data.weakAreas?.length?<div className="weak-list">{data.weakAreas.slice(0,4).map((w,i)=><div className="weak-row" key={w.subject+w.topic+i}><div><b>{w.subject}</b><small>{w.topic} • {w.reason}</small></div><strong>{w.accuracy}%</strong></div>)}</div>:<div className="empty small"><CheckCircle2/><b>No weakness detected yet</b><span>Keep taking quizzes and completing lessons.</span></div>}</div><div><span className="eyebrow">NEXT BEST ACTIONS</span><div className="recommendation-list">{data.recommendations?.slice(0,3).map((r,i)=><div className="recommendation" key={r.type+i}><div className="rec-number">{i+1}</div><div><b>{r.title}</b><p>{r.description}</p><small>{r.action}</small></div></div>)}</div></div></div></section>}
 
-function NovaLearningBrain({user,go,courses}){
- const [data,setData]=useState(null); const [loading,setLoading]=useState(true);
- useEffect(()=>{let alive=true;const load=()=>api('/intelligence/'+user.id).then(x=>{if(alive)setData(x)}).catch(()=>{}).finally(()=>{if(alive)setLoading(false)});load();const on=()=>load();window.addEventListener('nova:learning-updated',on);return()=>{alive=false;window.removeEventListener('nova:learning-updated',on)}},[user.id]);
+function NovaLearningBrain({user,go,courses,sharedIntel,sharedLoading}){
+ const usesShared=sharedIntel!==undefined;
+ const [ownData,setOwnData]=useState(null); const [ownLoading,setOwnLoading]=useState(!usesShared);
+ useEffect(()=>{if(usesShared)return;let alive=true;const load=()=>api('/intelligence/'+user.id).then(x=>{if(alive)setOwnData(x)}).catch(()=>{}).finally(()=>{if(alive)setOwnLoading(false)});load();const on=()=>load();window.addEventListener('nova:learning-updated',on);return()=>{alive=false;window.removeEventListener('nova:learning-updated',on)}},[user.id,usesShared]);
+ const data=usesShared?sharedIntel:ownData;
+ const loading=usesShared?Boolean(sharedLoading):ownLoading;
  if(loading)return <section className="panel nova-brain loading"><div><span className="eyebrow">NOVA BRAIN</span><h3>Reading your learning signals…</h3><p>Building a next-best-action plan from your real activity.</p></div><RefreshCw className="spin" size={22}/></section>;
  const weak=(data?.weakAreas||[])[0]; const recs=Array.isArray(data?.recommendations)?data.recommendations.slice(0,3):[];
  const goal=user.learningGoal||'your current learning goal';
@@ -1071,13 +1398,33 @@ function GlobalSearch({courses,go}){
  return <div className="global-search"><div className="global-search-input"><FileSearch size={16}/><input value={q} onFocus={()=>setOpen(true)} onChange={e=>{setQ(e.target.value);setOpen(true)}} onKeyDown={e=>{if(e.key==='Escape'){setOpen(false);setQ('')}if(e.key==='Enter'&&results[0]){go(results[0].id);setOpen(false);setQ('')}}} placeholder="Search NovaTutor…" aria-label="Search NovaTutor"/>{q&&<button onClick={()=>{setQ('');setOpen(false)}} aria-label="Clear search">×</button>}</div>{open&&term&&<div className="global-search-results">{results.length?results.map(r=><button key={r.id+r.label} onClick={()=>{go(r.id);setOpen(false);setQ('')}}><span className="search-kind">{r.kind}</span><b>{r.label}</b><ChevronRight size={13}/></button>):<div className="search-empty">No matching NovaTutor module or course.</div>}</div>}</div>
 }
 
-function Dashboard({courses,progress,go,openCourse,user}){const [live,setLive]=useState(null),[liveProgress,setLiveProgress]=useState(progress||[]);const currentProgress=liveProgress.length?liveProgress:progress;
+function Dashboard({courses,progress,go,openCourse,user}){const [live,setLive]=useState(null),[liveProgress,setLiveProgress]=useState(progress||[]),[intel,setIntel]=useState(null),[intelLoading,setIntelLoading]=useState(true),[intelUpdatedAt,setIntelUpdatedAt]=useState(null);const currentProgress=liveProgress.length?liveProgress:progress;
  /* Dashboard composition (redesign): a calm morning strip, one Continue band
     for the course in progress, a Today block, then secondary sections on
-    scroll. Same data hooks as before — presentation only. */
+    scroll. Single shared intelligence fetch prevents 3x duplicate /intelligence
+    requests and pauses background refresh while the tab is hidden. */
  const total=currentProgress.reduce((a,p)=>a+p.totalLessons,0),done=currentProgress.reduce((a,p)=>a+p.completedLessons,0),pct=total?Math.round(done/total*100):0;
  const visible=courses.slice(0,3);
- useEffect(()=>{if(!user?.id)return;let alive=true;const pull=()=>Promise.all([api('/analytics/'+user.id),api('/progress/'+user.id)]).then(([a,p])=>{if(alive){setLive(a);setLiveProgress(Array.isArray(p)?p:[])}}).catch(()=>{});pull();const timer=setInterval(pull,15000);const refresh=()=>pull();window.addEventListener('nova:learning-updated',refresh);return()=>{alive=false;clearInterval(timer);window.removeEventListener('nova:learning-updated',refresh)}},[user?.id]);
+ useEffect(()=>{
+  if(!user?.id)return;
+  let alive=true;
+  const pull=()=>{
+   Promise.allSettled([api('/analytics/'+user.id),api('/progress/'+user.id),api('/intelligence/'+user.id)]).then(([aRes,pRes,iRes])=>{
+    if(!alive)return;
+    if(aRes.status==='fulfilled')setLive(aRes.value);
+    if(pRes.status==='fulfilled'&&Array.isArray(pRes.value))setLiveProgress(pRes.value);
+    if(iRes.status==='fulfilled'){setIntel(iRes.value);setIntelUpdatedAt(new Date());}
+    setIntelLoading(false);
+   });
+  };
+  pull();
+  const timer=setInterval(()=>{if(!document.hidden)pull()},60000);
+  const refresh=()=>pull();
+  const onVis=()=>{if(!document.hidden)pull()};
+  window.addEventListener('nova:learning-updated',refresh);
+  document.addEventListener('visibilitychange',onVis);
+  return()=>{alive=false;clearInterval(timer);window.removeEventListener('nova:learning-updated',refresh);document.removeEventListener('visibilitychange',onVis)};
+ },[user?.id]);
  const hour=new Date().getHours();const dayPhase=hour<12?'Good morning':hour<17?'Good afternoon':'Good evening';
  const dateStr=new Date().toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'});
  const inProgress=currentProgress.map(p=>({p,c:courses.find(c=>c.id===p.courseId)})).filter(x=>x.c&&x.p.percent>0&&x.p.percent<100).sort((a,b)=>b.p.percent-a.p.percent)[0]||null;
@@ -1102,58 +1449,65 @@ function Dashboard({courses,progress,go,openCourse,user}){const [live,setLive]=u
     <p className="dash-next">{nextLesson?<>Next up · Lesson <b>{(Number(featured?.p?.completedLessons)||0)+1}</b> — {String(nextLesson.title||'').replace(/^Lesson\s*\d+\s*[—–-]\s*/i,'')}</>:'Pick up from your first lesson whenever you are ready.'}</p>
     <div className="dash-continue-progress"><div className="progress slim"><span style={{width:(featured.p?.percent||0)+'%'}}/></div><small>{Math.round(featured.p?.percent||0)}% complete{featured.c.totalLessons?` · ${featured.c.totalLessons} lessons`:''}</small></div>
    </div>
-   <div className="dash-continue-action"><button className="primary" onClick={()=>go('courses')}>Continue <ChevronRight size={15}/></button><button className="text-btn" onClick={()=>go('courses')}>All courses</button></div>
+   <div className="dash-continue-action"><button className="primary" onClick={()=>openCourse?openCourse(featured.c.id):go('courses')}>Continue <ChevronRight size={15}/></button><button className="text-btn" onClick={()=>go('courses')}>All courses</button></div>
   </section>}
-  <NovaLearningBrain user={user} go={go} courses={courses}/>
-  <IntelligenceSnapshot user={user} go={go}/>
-  <MasterySnapshot user={user} go={go}/>
+  <NovaLearningBrain user={user} go={go} courses={courses} sharedIntel={intel} sharedLoading={intelLoading}/>
+  <IntelligenceSnapshot user={user} go={go} sharedIntel={intel} sharedUpdatedAt={intelUpdatedAt}/>
+  <MasterySnapshot user={user} go={go} sharedIntel={intel}/>
   <div className="section-head"><div><span className="eyebrow">YOUR PATH</span><h3>Continue learning</h3></div><button className="text-btn" onClick={()=>go('courses')}>View all</button></div>
   <div className="course-grid">{visible.map((c,i)=><CourseCard key={c.id} c={c} p={currentProgress.find(x=>x.courseId===c.id)} openCourse={openCourse} i={i}/>)}{!visible.length&&<div className="empty course-grid-empty"><BookOpen size={28}/><b>No courses to show yet.</b><span>Your library appears here as soon as the catalog is available. The full catalog stays reachable from My Learning.</span><button className="secondary" onClick={()=>go('courses')}>Open My Learning</button></div>}</div>
  </>}
-function IntelligenceSnapshot({user,go}){
- const [data,setData]=useState(null);
- const [updatedAt,setUpdatedAt]=useState(null);
+function IntelligenceSnapshot({user,go,sharedIntel,sharedUpdatedAt}){
+ const usesShared=sharedIntel!==undefined;
+ const [ownData,setOwnData]=useState(null);
+ const [ownUpdatedAt,setOwnUpdatedAt]=useState(null);
  useEffect(()=>{
-  if(!user?.id)return;
+  if(usesShared||!user?.id)return;
   let alive=true;
-  const load=async()=>{try{const next=await api('/intelligence/'+user.id);if(alive){setData(next);setUpdatedAt(new Date())}}catch{}};
+  const load=async()=>{try{const next=await api('/intelligence/'+user.id);if(alive){setOwnData(next);setOwnUpdatedAt(new Date())}}catch{}};
   load();
   const onUpdate=()=>load();
   window.addEventListener('nova:learning-updated',onUpdate);
-  const timer=setInterval(load,10000);
+  const timer=setInterval(()=>{if(!document.hidden)load()},60000);
   return()=>{alive=false;window.removeEventListener('nova:learning-updated',onUpdate);clearInterval(timer)};
- },[user?.id]);
+ },[user?.id,usesShared]);
+ const data=usesShared?sharedIntel:ownData;
+ const updatedAt=usesShared?sharedUpdatedAt:ownUpdatedAt;
  if(!data)return <section className="intelligence-snapshot loading"><div><span className="eyebrow">NOVA INTELLIGENCE</span><h3>Building your learning memory…</h3><p>NovaTutor is learning from your course, quiz and coding activity.</p></div><Brain size={28}/></section>;
  const weak=data.weakAreas?.[0];const rec=data.recommendations?.[0];
  return <section className="intelligence-snapshot"><div className="intel-main"><span className="eyebrow">NOVA INTELLIGENCE • LIVE</span><h3>Here’s what you should do next.</h3><p>{rec?.description||'Keep learning and NovaTutor will personalize your next steps.'}</p><div className="intel-actions">{rec&&<button className="primary" onClick={()=>go(rec.target||'analytics')}>{rec.action}<ChevronRight size={14}/></button>}<button className="secondary" onClick={()=>go('analytics')}>View learning memory</button></div><small className="intel-updated">{updatedAt?`Updated ${updatedAt.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`:'Updating…'}</small></div><div className="intel-mini"><div><b>{data.streak}</b><span>day streak</span></div><div><b>{data.quizzes}</b><span>quiz attempts</span></div><div><b>{data.studyMinutes}</b><span>study minutes</span></div>{weak&&<div className="intel-weak"><span>Weakest area</span><b>{weak.subject}</b><small>{weak.accuracy}% accuracy</small></div>}</div></section>}
-function MasterySnapshot({user,go}){
- const [data,setData]=useState(null);
- useEffect(()=>{if(!user?.id)return;const load=()=>api('/intelligence/'+user.id).then(setData).catch(()=>{});load();window.addEventListener('nova:learning-updated',load);return()=>window.removeEventListener('nova:learning-updated',load)},[user?.id]);
+function MasterySnapshot({user,go,sharedIntel}){
+ const usesShared=sharedIntel!==undefined;
+ const [ownData,setOwnData]=useState(null);
+ useEffect(()=>{if(usesShared||!user?.id)return;const load=()=>api('/intelligence/'+user.id).then(setOwnData).catch(()=>{});load();window.addEventListener('nova:learning-updated',load);return()=>window.removeEventListener('nova:learning-updated',load)},[user?.id,usesShared]);
+ const data=usesShared?sharedIntel:ownData;
  const items=(data?.mastery||[]).slice(0,5);
  return <section className="mastery-snapshot panel"><div className="panel-head"><div><span className="eyebrow">NOVA BRAIN • MASTERY</span><h3>Know what to improve next</h3><small>Mastery is based on your recent quiz performance and changes as you practice.</small></div><Brain size={20}/></div>{items.length?<div className="mastery-list">{items.map((x,i)=><div className="mastery-row" key={x.subject+i}><div className="mastery-label"><b>{x.subject}</b><small>{x.state} • {x.trend}</small></div><div className="mastery-track"><span style={{width:Math.max(2,Math.min(100,Number(x.accuracy)||0))+'%'}}/></div><strong>{x.accuracy}%</strong></div>)}</div>:<div className="mastery-empty"><Brain size={25}/><div><b>Nova is still learning your pattern.</b><span>Complete a quiz or practice session and your mastery map will appear here.</span></div><button className="secondary" onClick={()=>go('quiz')}>Start a quiz <ChevronRight size={13}/></button></div>}<div className="mastery-footer"><span><CheckCircle2 size={13}/> <b>85%+</b> mastered</span><span><Lightbulb size={13}/> <b>65–84%</b> learning</span><span><Target size={13}/> <b>&lt;65%</b> needs work</span><button className="text-btn" onClick={()=>go('mentor')}>Open adaptive mentor <ChevronRight size={13}/></button></div></section>}
 
 
 function Stat({n,t}){return <div className="stat"><b>{n}</b><span>{t}</span></div>}
 function CourseCard({c,p,openCourse,i}){const percent=Math.round(p?.percent||0);const open=()=>openCourse(c.id);return <div className="course-card" onClick={open} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open()}}} role="button" tabIndex={0}><div className={'course-icon i'+i}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:percent+'%'}}/></div><div className="course-foot"><small>{percent}% complete • {c.totalLessons} lessons</small><button onClick={e=>{e.stopPropagation();open()}}>Open <ChevronRight size={13}/></button></div></div>}
-function CoursePage({courseId,courses,progress,refresh,onBack}){
+function CoursePage({courseId,lessonId,onSelectLesson,courses,progress,refresh,onBack}){
  const [detail,setDetail]=useState(null),[error,setError]=useState('');
  const summary=courses.find(c=>String(c.id)===String(courseId));
  useEffect(()=>{if(!courseId)return;let alive=true;setDetail(null);setError('');api('/courses/'+courseId).then(d=>{if(alive)setDetail(d)}).catch(e=>{if(alive)setError(e.message||'Could not load course.')});return()=>{alive=false}},[courseId]);
  if(error)return <div className="page-crash"><RefreshCw size={40}/><h2>Course could not load</h2><p>{error}</p><button className="secondary" onClick={onBack}>Back to Home</button></div>;
  if(!detail)return <><div className="page-title"><span className="eyebrow">COURSE</span><h1>{summary?.title||'Opening course…'}</h1><p>Loading lectures for this course.</p></div><div className="lesson-layout"><div className="panel skeleton-card"/><div className="panel skeleton-card"/></div></>;
- return <CourseDetail detail={detail} progress={progress.find(x=>x.courseId===detail.course.id)} refresh={refresh} back={onBack}/>;
+ return <CourseDetail detail={detail} routeLessonId={lessonId} onSelectLesson={onSelectLesson} progress={progress.find(x=>x.courseId===detail.course.id)} refresh={refresh} back={onBack}/>;
 }
-function Courses({courses,progress,refresh,user}){
+function Courses({courses,progress,refresh,user,openCourse}){
  const [selected,setSelected]=useState(()=>{const v=localStorage.getItem('nova_open_course');localStorage.removeItem('nova_open_course');return v?Number(v):null;}),[detail,setDetail]=useState(null),[error,setError]=useState(''),[query,setQuery]=useState(''),[level,setLevel]=useState('All');
- useModulePersistence(user?.id,'courses',{selected,query,level},{selected:x=>setSelected(x||null),query:x=>setQuery(x||''),level:x=>setLevel(x||'All')});
+ useModulePersistence(user?.id,'courses',{selected:openCourse?null:selected,query,level},{selected:x=>{if(!openCourse)setSelected(x||null)},query:x=>setQuery(x||''),level:x=>setLevel(x||'All')});
  const visible=courses.filter(c=>(!query||c.title.toLowerCase().includes(query.toLowerCase())||c.description?.toLowerCase().includes(query.toLowerCase()))&&(level==='All'||c.level===level));
  useEffect(()=>{
+  if(openCourse&&selected){openCourse(selected);setSelected(null);return;}
   if(selected){setError('');setDetail(null);api('/courses/'+selected).then(setDetail).catch(e=>setError(e.message||'Could not load course.'));}
- },[selected]);
+ },[selected,openCourse]);
+ const handleOpen=id=>{if(openCourse){openCourse(id)}else{setSelected(id)}};
  if(error)return <div className="page-crash"><RefreshCw size={40}/><h2>Course could not load</h2><p>{error}</p><button className="secondary" onClick={()=>{setError('');setSelected(null)}}>Back</button></div>;
  if(detail)return <CourseDetail detail={detail} progress={progress.find(x=>x.courseId===detail.course.id)} refresh={refresh} back={()=>{setSelected(null);setDetail(null)}}/>;
  return <><div className="page-title"><span className="eyebrow">CURRICULUM</span><h1>My <span>Learning.</span></h1><p>Detailed theory, examples and AI help — no videos required.</p></div><div className="course-filters"><input placeholder="Search courses…" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="Level" value={level} onChange={e=>setLevel(e.target.value)}><option>All</option><option>Beginner</option><option>Intermediate</option><option>Advanced</option></select></div>
-  {courses.length===0?<div className="empty-page"><BookOpen size={48}/><h3>No courses found</h3><p>Start Spring Boot with MySQL running so the course seed can create the curriculum.</p><button className="primary" onClick={refresh}>Reload courses</button></div>:<div className="course-grid">{visible.map((c,i)=><div className="course-card big" key={c.id}><div className={'course-icon i'+i}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:(progress.find(x=>x.courseId===c.id)?.percent||0)+'%'}}/></div><div className="course-foot"><small>{progress.find(x=>x.courseId===c.id)?.completedLessons||0}/{c.totalLessons} lessons done</small><button onClick={()=>setSelected(c.id)}>Open course <ChevronRight size={13}/></button></div></div>)}</div>}
+  {courses.length===0?<div className="empty-page"><BookOpen size={48}/><h3>No courses available yet</h3><p>Courses could not be loaded from the server right now. Check your connection and try reloading.</p><button className="primary" onClick={refresh}>Reload courses</button></div>:<div className="course-grid">{visible.map((c,i)=><div className="course-card big" key={c.id}><div className={'course-icon i'+i}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:(progress.find(x=>x.courseId===c.id)?.percent||0)+'%'}}/></div><div className="course-foot"><small>{progress.find(x=>x.courseId===c.id)?.completedLessons||0}/{c.totalLessons} lessons done</small><button onClick={()=>handleOpen(c.id)}>Open course <ChevronRight size={13}/></button></div></div>)}</div>}
  </>;
 }
 function TheoryContent({content}){
@@ -1168,25 +1522,41 @@ function TheoryContent({content}){
  lines.forEach((raw,i)=>{const line=raw.trimEnd();if(line.trim().startsWith('```')){if(inCode){flushCode();inCode=false} else if(strayFence){strayFence=false} else {flushList();inCode=true}return}if(inCode){if(/^#{2,6}\s/.test(line)){flushCode();inCode=false;strayFence=true}else{code.push(line);return}}if(!line.trim()){flushList();out.push(<div className="theory-spacer" key={'s'+i}/>);return}if(line.startsWith('### ')){flushList();out.push(<h4 key={i}>{mdInlineText(line.slice(4))}</h4>);return}if(line.startsWith('## ')){flushList();out.push(<h3 key={i}>{mdInlineText(line.slice(3))}</h3>);return}if(line.startsWith('# ')){flushList();out.push(<h2 key={i}>{mdInlineText(line.slice(2))}</h2>);return}if(/^[-*] /.test(line)){list.push(line.slice(2));return}if(/^\d+\. /.test(line)){list.push(line.replace(/^\d+\. /,''));return}out.push(<p key={i}>{mdInlineText(line)}</p>)});flushList();flushCode();return <div className="theory-render">{out}</div>
 }
 
-function CourseDetail({detail,progress,refresh,back}){
- const [working,setWorking]=useState(false),[selectedLesson,setSelectedLesson]=useState(detail.lessons?.[0]||null),[localProgress,setLocalProgress]=useState(progress||null),[error,setError]=useState('');
+function CourseDetail({detail,routeLessonId,onSelectLesson,progress,refresh,back}){
+ const currentUser=readUser();
+ const bookmarkKey=`nova_bookmarks_${currentUser?.id||'guest'}`;
+ const readBookmarks=()=>{const list=readJSON(bookmarkKey,null);if(Array.isArray(list))return list;const legacy=readJSON('nova_bookmarks',[]);return Array.isArray(legacy)?legacy:[]};
  const topicName=l=>l?.topic||String(l?.title||'Core Concepts').replace(/^Lesson\s+\d+\s*[—-]\s*/,'').replace(/\s*•\s*(Deep Dive|Worked Example|Practice Lab)$/,'').trim()||'Core Concepts';
  // Older seeded courses reuse orderIndex inside each topic. Keep topic order
  // from the API's original lesson insertion order, then sort within each topic.
  const topicGroups=Object.entries((detail.lessons||[]).reduce((acc,l)=>{const key=topicName(l);if(!acc[key])acc[key]=[];acc[key].push(l);return acc},{}));
  const groupedLessons=topicGroups.map(([topic,items])=>[topic,[...items].sort((a,b)=>{const ao=Number(a.orderIndex||0),bo=Number(b.orderIndex||0);return ao-bo||Number(a.id||0)-Number(b.id||0)})]);
  const orderedLessons=groupedLessons.flatMap(([,items])=>items);
+ const findInitialLesson=()=>{if(routeLessonId){const hit=(detail.lessons||[]).find(l=>String(l.id)===String(routeLessonId));if(hit)return hit;}return orderedLessons[0]||detail.lessons?.[0]||null;};
+ const [working,setWorking]=useState(false),[selectedLesson,setSelectedLesson]=useState(findInitialLesson),[localProgress,setLocalProgress]=useState(progress||null),[error,setError]=useState('');
+ const prevRouteLessonIdRef=useRef(routeLessonId);
+ useEffect(()=>{
+  const prev=prevRouteLessonIdRef.current;
+  prevRouteLessonIdRef.current=routeLessonId;
+  if(routeLessonId){
+   const hit=(detail.lessons||[]).find(l=>String(l.id)===String(routeLessonId));
+   if(hit&&String(hit.id)!==String(selectedLesson?.id))setSelectedLesson(hit);
+  }else if(prev){
+   const first=orderedLessons[0]||detail.lessons?.[0]||null;
+   if(first&&String(first.id)!==String(selectedLesson?.id))setSelectedLesson(first);
+  }
+ },[routeLessonId,detail.lessons]);
  const sequenceFor=lesson=>{const index=orderedLessons.findIndex(x=>String(x.id)===String(lesson?.id));return index<0?1:index+1};
  const lectureLabel=(lesson,index)=>{const raw=String(lesson?.title||'').replace(/^Lesson\s+\d+\s*[—-]\s*/,'').replace(/^Lecture\s+\d+\s*[—-]\s*/,'').trim();return `Lecture ${index+1}${raw?` — ${raw}`:''}`};
  const lectureNumberFor=lesson=>{const topic=topicName(lesson);const group=groupedLessons.find(([name])=>name===topic)?.[1]||[];const index=group.findIndex(x=>String(x.id)===String(lesson?.id));return index<0?1:index+1};
  const cleanLessonContent=content=>String(content||'').replace(/^\s*#{0,6}\s*Lesson\s+\d+\s*[—-]\s*[^\n]+\n?/i,'').replace(/^\s*#{0,6}\s*Lecture\s+\d+\s*[—-]\s*[^\n]+\n?/i,'');
- const [bookmarked,setBookmarked]=useState(()=>JSON.parse(localStorage.getItem('nova_bookmarks')||'[]').includes(selectedLesson?.id));
- useModulePersistence(localStorage.getItem('ai_user')?JSON.parse(localStorage.getItem('ai_user')).id:null,`course-detail-${detail.course.id}`,{selectedLessonId:selectedLesson?.id||null,bookmarked},{selectedLessonId:x=>{const found=(detail.lessons||[]).find(l=>String(l.id)===String(x));if(found)setSelectedLesson(found)},bookmarked:x=>setBookmarked(Boolean(x))});
+ const [bookmarked,setBookmarked]=useState(()=>readBookmarks().includes(selectedLesson?.id));
+ useModulePersistence(currentUser?.id||null,`course-detail-${detail.course.id}`,{selectedLessonId:selectedLesson?.id||null,bookmarked},{selectedLessonId:x=>{if(routeLessonId)return;const found=(detail.lessons||[]).find(l=>String(l.id)===String(x));if(found)setSelectedLesson(found)},bookmarked:x=>setBookmarked(Boolean(x))});
  const c=detail.course;
  useEffect(()=>{setLocalProgress(progress||null)},[progress]);
- useEffect(()=>{setBookmarked(JSON.parse(localStorage.getItem('nova_bookmarks')||'[]').includes(selectedLesson?.id))},[selectedLesson]);
- async function complete(id){if(working)return null;setWorking(true);setError('');try{const user=JSON.parse(localStorage.getItem('ai_user')||'null');if(!user)throw new Error('Please sign in again.');const result=await api(`/progress/${user.id}/course/${c.id}/lesson/${id}/complete`,{method:'POST',body:'{}'});setLocalProgress(result);if(refresh)refresh();window.dispatchEvent(new Event('nova:learning-updated'));return result}catch(e){setError(e.message||'Could not save progress.');return null}finally{setWorking(false)}}
- function toggleBookmark(){const list=JSON.parse(localStorage.getItem('nova_bookmarks')||'[]');const next=list.includes(selectedLesson.id)?list.filter(x=>x!==selectedLesson.id):[...list,selectedLesson.id];localStorage.setItem('nova_bookmarks',JSON.stringify(next));setBookmarked(!bookmarked)}
+ useEffect(()=>{setBookmarked(readBookmarks().includes(selectedLesson?.id))},[selectedLesson]);
+ async function complete(id){if(working)return null;setWorking(true);setError('');try{const user=readUser();if(!user)throw new Error('Please sign in again.');const result=await api(`/progress/${user.id}/course/${c.id}/lesson/${id}/complete`,{method:'POST',body:'{}'});setLocalProgress(result);if(refresh)refresh();window.dispatchEvent(new Event('nova:learning-updated'));return result}catch(e){setError(e.message||'Could not save progress.');return null}finally{setWorking(false)}}
+ function toggleBookmark(){if(!selectedLesson)return;const list=readBookmarks();const next=list.includes(selectedLesson.id)?list.filter(x=>x!==selectedLesson.id):[...list,selectedLesson.id];localStorage.setItem(bookmarkKey,JSON.stringify(next));setBookmarked(!bookmarked)}
  async function launchTeacher(lesson){
   if(!lesson||working)return;
   const lessonContext=String(lesson?.content||'').slice(0,12000);
@@ -1217,27 +1587,27 @@ ${lessonContext}`;
  const nextLesson=lessonIndex>=0&&lessonIndex<flatLessons.length-1?flatLessons[lessonIndex+1]:null;
  const isDone=selectedLesson?sequenceFor(selectedLesson)<=completed:false;
  const [chaptersOpen,setChaptersOpen]=useState(false);
- const gotoLesson=l=>{if(l){setSelectedLesson(l);setChaptersOpen(false);window.scrollTo({top:0});}};
- return <><div className="page-title"><span className="eyebrow">{c.level} • {c.totalLessons} THEORY LESSONS</span><h1>{c.title}</h1><p>{c.description}</p><div className="course-meta"><span>📚 {detail.lessons?.length||0} lessons</span><span>⏱️ ~{Math.max(5,(selectedLesson?.content||'').split(/\s+/).length/160|0)} min reading</span></div></div>{error&&<div className="error-banner">{error}</div>}<div className={'lesson-layout'+(chaptersOpen?' chapters-open':'')}><div className="lesson-list"><button className="chapters-toggle" onClick={()=>setChaptersOpen(o=>!o)} aria-expanded={chaptersOpen}>{chaptersOpen?'Hide chapters':'Chapters'} <ChevronRight size={14}/></button><div className="lesson-chapters"><div className="lesson-summary"><b>{Math.round(localProgress?.percent||0)}%</b><span>course progress • {detail.lessons?.length||0} lessons</span><div className="progress"><span style={{width:(localProgress?.percent||0)+'%'}}/></div></div>{groupedLessons.map(([topic,items],groupIndex)=><section className="lesson-topic-group" key={topic}><div className="lesson-topic-head"><span>{String(groupIndex+1).padStart(2,'0')}</span><div><b>{topic}</b><small>{items.length} lectures</small></div></div>{items.map((l,lectureIndex)=>{const lDone=sequenceFor(l)<=completed;return <div className={'lesson-item '+(selectedLesson?.id===l.id?'selected':'')+(lDone?' done':'')} key={l.id} onClick={()=>gotoLesson(l)}><div className="lesson-number">{lDone?'✓':lectureIndex+1}</div><div><b>{lectureLabel(l,lectureIndex)}</b><small>{lDone?'Completed • review anytime':'Theory ready • open anytime'}</small></div><button className="icon-btn" disabled={working} onClick={e=>{e.stopPropagation();launchTeacher(l)}} title="Open AI Teacher & learn"><PlayCircle size={18}/></button></div>})}</section>)}</div></div><div className="lesson-ai">{selectedLesson?<><div className="lesson-top-actions"><span className="eyebrow">LECTURE {lectureNumberFor(selectedLesson)} OF {flatLessons.length}</span><button className={'round-btn '+(bookmarked?'saved':'')} onClick={toggleBookmark} title="Bookmark lesson">★</button></div><h3>{lectureLabel(selectedLesson,lectureNumberFor(selectedLesson)-1)}</h3><div className="lesson-reading"><div className="lesson-content">{selectedLesson.content?<TheoryContent content={cleanLessonContent(selectedLesson.content)}/>:<div className="empty"><BookOpen/><b>No lesson content yet</b><span>Ask the AI teacher to explain the topic.</span></div>}</div></div><div className="lesson-bottombar"><button className="nv-icon-btn" disabled={!prevLesson} onClick={()=>gotoLesson(prevLesson)} aria-label="Previous lesson">←</button><button className={'primary '+(isDone?'ghosted':'')} disabled={working} onClick={()=>complete(selectedLesson.id)}>{working?'Saving…':isDone?'✓ Completed':'Mark lesson complete'}</button><button className="nv-icon-btn" disabled={!nextLesson} onClick={()=>gotoLesson(nextLesson)} aria-label="Next lesson">→</button></div><div className="lesson-actions"><button className="secondary" disabled={working} onClick={askAI}><Sparkles size={15}/> Explain with AI</button><button className="secondary" disabled={working} onClick={()=>launchTeacher(selectedLesson)}>{working?'Opening AI Teacher…':'Learn with AI Teacher'} <BrainCircuit size={15}/></button></div></>:<><BrainCircuit size={28}/><h3>Select a lesson</h3><p>Choose a theory lesson from the list.</p></>}</div></div></>;
+ const gotoLesson=l=>{if(l){setSelectedLesson(l);setChaptersOpen(false);if(onSelectLesson){onSelectLesson(l.id)}else{window.scrollTo({top:0})}}};
+ return <><div className="page-title">{back&&<div style={{marginBottom:6}}><button type="button" className="text-btn course-back-btn" onClick={back}>← Back</button></div>}<span className="eyebrow">{c.level} • {c.totalLessons} THEORY LESSONS</span><h1>{c.title}</h1><p>{c.description}</p><div className="course-meta"><span>📚 {detail.lessons?.length||0} lessons</span><span>⏱️ ~{Math.max(5,(selectedLesson?.content||'').split(/\s+/).length/160|0)} min reading</span></div></div>{error&&<div className="error-banner">{error}</div>}<div className={'lesson-layout'+(chaptersOpen?' chapters-open':'')}><div className="lesson-list"><button className="chapters-toggle" onClick={()=>setChaptersOpen(o=>!o)} aria-expanded={chaptersOpen}>{chaptersOpen?'Hide chapters':'Chapters'} <ChevronRight size={14}/></button><div className="lesson-chapters"><div className="lesson-summary"><b>{Math.round(localProgress?.percent||0)}%</b><span>course progress • {detail.lessons?.length||0} lessons</span><div className="progress"><span style={{width:(localProgress?.percent||0)+'%'}}/></div></div>{groupedLessons.map(([topic,items],groupIndex)=><section className="lesson-topic-group" key={topic}><div className="lesson-topic-head"><span>{String(groupIndex+1).padStart(2,'0')}</span><div><b>{topic}</b><small>{items.length} lectures</small></div></div>{items.map((l,lectureIndex)=>{const lDone=sequenceFor(l)<=completed;return <div className={'lesson-item '+(selectedLesson?.id===l.id?'selected':'')+(lDone?' done':'')} key={l.id} onClick={()=>gotoLesson(l)}><div className="lesson-number">{lDone?'✓':lectureIndex+1}</div><div><b>{lectureLabel(l,lectureIndex)}</b><small>{lDone?'Completed • review anytime':'Theory ready • open anytime'}</small></div><button className="icon-btn" disabled={working} onClick={e=>{e.stopPropagation();launchTeacher(l)}} title="Open AI Teacher & learn"><PlayCircle size={18}/></button></div>})}</section>)}</div></div><div className="lesson-ai">{selectedLesson?<><div className="lesson-top-actions"><span className="eyebrow">LECTURE {lectureNumberFor(selectedLesson)} OF {flatLessons.length}</span><button className={'round-btn '+(bookmarked?'saved':'')} onClick={toggleBookmark} title="Bookmark lesson">★</button></div><h3>{lectureLabel(selectedLesson,lectureNumberFor(selectedLesson)-1)}</h3><div className="lesson-reading"><div className="lesson-content">{selectedLesson.content?<TheoryContent content={cleanLessonContent(selectedLesson.content)}/>:<div className="empty"><BookOpen/><b>No lesson content yet</b><span>Ask the AI teacher to explain the topic.</span></div>}</div></div><div className="lesson-bottombar"><button className="nv-icon-btn" disabled={!prevLesson} onClick={()=>gotoLesson(prevLesson)} aria-label="Previous lesson">←</button><button className={'primary '+(isDone?'ghosted':'')} disabled={working} onClick={()=>complete(selectedLesson.id)}>{working?'Saving…':isDone?'✓ Completed':'Mark lesson complete'}</button><button className="nv-icon-btn" disabled={!nextLesson} onClick={()=>gotoLesson(nextLesson)} aria-label="Next lesson">→</button></div><div className="lesson-actions"><button className="secondary" disabled={working} onClick={askAI}><Sparkles size={15}/> Explain with AI</button><button className="secondary" disabled={working} onClick={()=>launchTeacher(selectedLesson)}>{working?'Opening AI Teacher…':'Learn with AI Teacher'} <BrainCircuit size={15}/></button></div></>:<><BrainCircuit size={28}/><h3>Select a lesson</h3><p>Choose a theory lesson from the list.</p></>}</div></div></>;
 }
 function CodeLab({user}){
  const codeInitial=React.useMemo(()=>({language:'Java',mode:'EXPLAIN',hintLevel:1,code:'public class Main {\n    public static void main(String[] args) {\n        int[] nums = {2, 4, 6, 8};\n        int sum = 0;\n        for (int n : nums) sum += n;\n        System.out.println(sum);\n    }\n}',question:'',level:'beginner',answer:'',runResult:null}),[]);
  const [session,setSession]=useLiveRuntimeSession(user?.id,'practice.codeLab',codeInitial);
  const language=session.language||'Java',mode=session.mode||'EXPLAIN',hintLevel=Number(session.hintLevel)||1,code=session.code||'',question=session.question||'',level=session.level||'beginner',answer=session.answer||'',runResult=session.runResult||null;
  const update=React.useCallback((patch)=>setSession(s=>({...s,...(typeof patch==='function'?patch(s):patch)})),[setSession]);
- const setLanguage=x=>update({language:typeof x==='function'?x(language):x});
- const setMode=x=>update({mode:typeof x==='function'?x(mode):x});
- const setHintLevel=x=>update({hintLevel:typeof x==='function'?x(hintLevel):x});
- const setCode=x=>update({code:typeof x==='function'?x(code):x});
- const setQuestion=x=>update({question:typeof x==='function'?x(question):x});
- const setLevel=x=>update({level:typeof x==='function'?x(level):x});
- const setAnswer=x=>update({answer:typeof x==='function'?x(answer):x});
- const setRunResult=x=>update({runResult:typeof x==='function'?x(runResult):x});
+ const setLanguage=x=>update(s=>({language:typeof x==='function'?x(s.language||'Java'):x}));
+ const setMode=x=>update(s=>({mode:typeof x==='function'?x(s.mode||'EXPLAIN'):x}));
+ const setHintLevel=x=>update(s=>({hintLevel:typeof x==='function'?x(Number(s.hintLevel)||1):x}));
+ const setCode=x=>update(s=>({code:typeof x==='function'?x(s.code||''):x}));
+ const setQuestion=x=>update(s=>({question:typeof x==='function'?x(s.question||''):x}));
+ const setLevel=x=>update(s=>({level:typeof x==='function'?x(s.level||'beginner'):x}));
+ const setAnswer=x=>update(s=>({answer:typeof x==='function'?x(s.answer||''):x}));
+ const setRunResult=x=>update(s=>({runResult:typeof x==='function'?x(s.runResult||null):x}));
  const [loading,setLoading]=useState(false),[runLoading,setRunLoading]=useState(false);
  const modes=[['EXPLAIN','Explain'],['DEBUG','Debug'],['FIX','Fix code'],['IMPROVE','Improve'],['HINT','Give hint'],['PRACTICE','Practice']];
- async function run(){if(!code.trim()&&mode!=='PRACTICE')return;setLoading(true);setAnswer('');if(mode==='HINT')setHintLevel(1);try{const r=await api('/code/analyze',{method:'POST',body:JSON.stringify({language,mode,code,question,level,responseLanguage:getAiLanguage()})});setAnswer(r.answer)}catch(e){setAnswer('Code AI request failed. Check that Spring Boot is running and GEMINI_API_KEY is configured.')}finally{setLoading(false)}}
+ async function run(){if(!code.trim()&&mode!=='PRACTICE')return;setLoading(true);setAnswer('');if(mode==='HINT')setHintLevel(1);try{const r=await api('/code/analyze',{method:'POST',body:JSON.stringify({language,mode,code,question,level,responseLanguage:getAiLanguage()})});setAnswer(r.answer)}catch(e){setAnswer(e.message||'Code AI request failed. Please try again in a moment.')}finally{setLoading(false)}}
  async function execute(){if(!code.trim())return;setRunLoading(true);try{setRunResult(await api('/code/execute',{method:'POST',body:JSON.stringify({language,code,stdin:''})}))}catch(e){setRunResult({status:'ERROR',message:e.message})}finally{setRunLoading(false)}}
- return <><div className="page-title"><span className="eyebrow">V0.7 • ADVANCED CODING TUTOR</span><h1>Code <span>Lab.</span></h1><p>Explain, debug, fix and improve code with an AI mentor that adapts to your level.</p></div><div className="code-lab code-workspace"><div className="code-editor-card"><div className="code-toolbar"><div><b>Workspace</b><small>Write or paste your code</small></div><div className="code-selects"><select aria-label="Language" value={language} onChange={e=>setLanguage(e.target.value)}><option>Java</option><option>Python</option><option>C++</option><option>JavaScript</option><option>SQL</option></select><select aria-label="Level" value={level} onChange={e=>setLevel(e.target.value)}><option value="beginner">Beginner</option><option value="intermediate">Intermediate</option><option value="advanced">Advanced</option></select></div></div><div className="mode-grid code-modes">{modes.map(([id,label])=><button className={'mode '+(mode===id?'active':'')} onClick={()=>setMode(id)} key={id}><Code2 size={15}/><b>{label}</b><small>{id==='EXPLAIN'?'Understand it':id==='DEBUG'?'Find bugs':id==='FIX'?'Repair it':id==='IMPROVE'?'Refactor it':id==='HINT'?'Learn with hints':'Get a challenge'}</small></button>)}</div><label className="code-label">CODE</label><textarea aria-label="Code editor" className="code-area" value={code} onChange={e=>setCode(e.target.value)} spellCheck="false"/><label className="code-label">QUESTION / CONTEXT <span>optional</span></label><input className="code-question" value={question} onChange={e=>setQuestion(e.target.value)} placeholder={mode==='PRACTICE'?'e.g. Give me a Java linked-list problem':'e.g. Why is this loop slow?'}/><button className="primary full" onClick={run} disabled={loading}>{loading?'Analyzing…':'Run Code Mentor'} <Send size={14}/></button><button className="secondary full" onClick={execute} disabled={runLoading||!code.trim()||language==='SQL'} title={language==='SQL'?'SQL sandbox execution is not enabled in this coding runner. Use Code Mentor to analyze SQL.':''}>{runLoading?'Running sandbox…':'Run in Sandbox'} <PlayCircle size={14}/></button>{runResult&&<div className="sandbox-result"><b>{runResult.status==='PASSED'?'Execution successful':runResult.status==='TIMEOUT'?'Time limit exceeded':runResult.status==='RUNTIME_ERROR'?'Runtime / compilation error':runResult.status==='RUNNER_UNAVAILABLE'?'Sandbox unavailable':runResult.status==='SANDBOX_NOT_ENABLED'?'Sandbox not enabled':runResult.status}</b><small>{runResult.message||runResult.stderr||runResult.detail||''}</small>{runResult.stdout&&<pre>{runResult.stdout}</pre>}{runResult.stderr&&runResult.status!=='RUNTIME_ERROR'&&<pre>{runResult.stderr}</pre>}{runResult.status==='SANDBOX_NOT_ENABLED'&&<small>Start Docker Desktop and keep CODE_RUNNER_ENABLED=true, then restart Spring Boot.</small>}{runResult.status==='RUNNER_UNAVAILABLE'&&<small>Make sure Docker Desktop is running and the configured runner images can be pulled.</small>}</div>}</div><div className="code-answer-card"><div className="answer-head"><div className="ai-avatar"><Sparkles size={17}/></div><div><b>Nova Code AI</b><small>{mode==='EXPLAIN'?'Line-by-line learning':mode==='DEBUG'?'Bug detection':mode==='FIX'?'Safe repair':mode==='IMPROVE'?'Code review':mode==='HINT'?'Guided problem solving':'Practice generator'}</small></div></div>{answer?<><div className="answer code-answer"><AiMarkdown content={answer}/></div>{mode==='HINT'&&<div className="hint-ladder"><div><b>Hint ladder</b><small>Reveal help gradually instead of jumping to the solution.</small></div><div className="hint-actions"><button className="secondary" disabled={loading||hintLevel>=3} onClick={async()=>{setHintLevel(2);setLoading(true);try{const r=await api('/ai/ask',{method:'POST',body:JSON.stringify({task:'CODING',topic:question||'Coding problem',message:`Give ONLY the next-level hint (level 2) for this coding task. Do not give code or the final solution. Previous hint was:
+ return <><div className="page-title"><span className="eyebrow">V0.7 • ADVANCED CODING TUTOR</span><h1>Code <span>Lab.</span></h1><p>Explain, debug, fix and improve code with an AI mentor that adapts to your level.</p></div><div className="code-lab code-workspace"><div className="code-editor-card"><div className="code-toolbar"><div><b>Workspace</b><small>Write or paste your code</small></div><div className="code-selects"><select aria-label="Language" value={language} onChange={e=>setLanguage(e.target.value)}><option>Java</option><option>Python</option><option>C++</option><option>JavaScript</option><option>SQL</option></select><select aria-label="Level" value={level} onChange={e=>setLevel(e.target.value)}><option value="beginner">Beginner</option><option value="intermediate">Intermediate</option><option value="advanced">Advanced</option></select></div></div><div className="mode-grid code-modes">{modes.map(([id,label])=><button className={'mode '+(mode===id?'active':'')} onClick={()=>setMode(id)} key={id}><Code2 size={15}/><b>{label}</b><small>{id==='EXPLAIN'?'Understand it':id==='DEBUG'?'Find bugs':id==='FIX'?'Repair it':id==='IMPROVE'?'Refactor it':id==='HINT'?'Learn with hints':'Get a challenge'}</small></button>)}</div><label className="code-label">CODE</label><textarea aria-label="Code editor" className="code-area" value={code} onChange={e=>setCode(e.target.value)} spellCheck="false"/><label className="code-label">QUESTION / CONTEXT <span>optional</span></label><input className="code-question" value={question} onChange={e=>setQuestion(e.target.value)} placeholder={mode==='PRACTICE'?'e.g. Give me a Java linked-list problem':'e.g. Why is this loop slow?'}/><button className="primary full" onClick={run} disabled={loading}>{loading?'Analyzing…':'Run Code Mentor'} <Send size={14}/></button><button className="secondary full" onClick={execute} disabled={runLoading||!code.trim()||language==='SQL'} title={language==='SQL'?'SQL sandbox execution is not enabled in this coding runner. Use Code Mentor to analyze SQL.':''}>{runLoading?'Running sandbox…':'Run in Sandbox'} <PlayCircle size={14}/></button>{runResult&&<div className="sandbox-result"><b>{runResult.status==='PASSED'?'Execution successful':runResult.status==='TIMEOUT'?'Time limit exceeded':runResult.status==='RUNTIME_ERROR'?'Runtime / compilation error':runResult.status==='RUNNER_UNAVAILABLE'?'Sandbox unavailable':runResult.status==='SANDBOX_NOT_ENABLED'?'Sandbox not enabled':runResult.status}</b><small>{runResult.message||runResult.stderr||runResult.detail||''}</small>{runResult.stdout&&<pre>{runResult.stdout}</pre>}{runResult.stderr&&runResult.status!=='RUNTIME_ERROR'&&<pre>{runResult.stderr}</pre>}{runResult.status==='SANDBOX_NOT_ENABLED'&&<small>Code execution sandbox is currently disabled on this server. You can still use Run Code Mentor for AI analysis.</small>}{runResult.status==='RUNNER_UNAVAILABLE'&&<small>The code execution runner is temporarily unavailable. Please retry in a moment or use Run Code Mentor.</small>}</div>}</div><div className="code-answer-card"><div className="answer-head"><div className="ai-avatar"><Sparkles size={17}/></div><div><b>Nova Code AI</b><small>{mode==='EXPLAIN'?'Line-by-line learning':mode==='DEBUG'?'Bug detection':mode==='FIX'?'Safe repair':mode==='IMPROVE'?'Code review':mode==='HINT'?'Guided problem solving':'Practice generator'}</small></div></div>{answer?<><div className="answer code-answer"><AiMarkdown content={answer}/></div>{mode==='HINT'&&<div className="hint-ladder"><div><b>Hint ladder</b><small>Reveal help gradually instead of jumping to the solution.</small></div><div className="hint-actions"><button className="secondary" disabled={loading||hintLevel>=3} onClick={async()=>{setHintLevel(2);setLoading(true);try{const r=await api('/ai/ask',{method:'POST',body:JSON.stringify({task:'CODING',topic:question||'Coding problem',message:`Give ONLY the next-level hint (level 2) for this coding task. Do not give code or the final solution. Previous hint was:
 ${answer}`,level,language:getAiLanguage()})});setAnswer(r.answer||answer)}catch(e){}finally{setLoading(false)}}}>Deeper hint</button><button className="secondary" disabled={loading||hintLevel>=3} onClick={async()=>{setHintLevel(3);setLoading(true);try{const r=await api('/ai/ask',{method:'POST',body:JSON.stringify({task:'CODING',topic:question||'Coding problem',message:`Give the solution approach and pseudocode for this coding task. Do not provide full copy-paste code. Build from the previous hint:
 ${answer}`,level,language:getAiLanguage()})});setAnswer(r.answer||answer)}catch(e){}finally{setLoading(false)}}}>Show approach</button></div><small className="hint-level">Level {hintLevel} / 3</small></div>}</>:<div className="empty"><Code2 size={42}/><b>Your coding feedback will appear here</b><span>Choose a mode, add code and run the mentor.</span></div>}</div></div></>
 }
@@ -1260,11 +1630,17 @@ function AiPanel({task,title,subtitle,icon,user,modeHint}){
  const [feedback,setFeedback]=useState(usePrefillState?'':(initialMemory.contextKey===initialContextKey?(initialMemory.feedback||''):''));
  const [loading,setLoading]=useState(false);const [checking,setChecking]=useState(false);
  const [answerSubmitted,setAnswerSubmitted]=useState(usePrefillState?false:Boolean(initialMemory.contextKey===initialContextKey&&initialMemory.answerSubmitted));
- const responseRef=useRef(null);const requestSeqRef=useRef(0);const answerBoxRef=useRef(null);const lastAskRef=useRef(null);
+ const [lessonContext,setLessonContext]=useState(()=>({lessonId:initialPrefill?.lessonId||null,courseId:initialPrefill?.courseId||null,topic:initialPrefill?.topic||''}));
+ const [lessonDoubt,setLessonDoubt]=useState('');
+ const [lessonDoubtHistory,setLessonDoubtHistory]=useState([]);
+ const [lessonDoubtLoading,setLessonDoubtLoading]=useState(false);
+ const [lessonDoubtError,setLessonDoubtError]=useState('');
+ const responseRef=useRef(null);const requestSeqRef=useRef(0);const answerBoxRef=useRef(null);const lastAskRef=useRef(null);const streamAbortRef=useRef(null);const askRef=useRef(null);const prefillTimerRef=useRef(null);
  const [askError,setAskError]=useState('');
  useEffect(()=>{if(user?.id)api('/intelligence/'+user.id).then(setLearningContext).catch(()=>setLearningContext(null));},[user?.id]);
+ useEffect(()=>()=>{if(prefillTimerRef.current){clearTimeout(prefillTimerRef.current);prefillTimerRef.current=null;}try{streamAbortRef.current?.abort()}catch{}},[]);
  useEffect(()=>{const apply=()=>{const m=readTutorMemory(user?.id);if(contextKey&&m.contextKey&&m.contextKey!==contextKey)return;setTopic(m.topic||'');setMessage(m.message||'');setAnswer(m.contextKey===contextKey?m.answer:'');setStudentAnswer(m.contextKey===contextKey?m.studentAnswer:'');setFeedback(m.contextKey===contextKey?m.feedback:'');setAnswerSubmitted(Boolean(m.contextKey===contextKey&&m.answerSubmitted));};window.addEventListener('nova:tutor-memory-updated',apply);return()=>window.removeEventListener('nova:tutor-memory-updated',apply)},[user?.id,contextKey]);
- useEffect(()=>{const apply=()=>{try{const x=readJSON('nova_ai_prefill',null);if(x){const nextContextKey=x.contextKey||'';setContextKey(nextContextKey);setTopic(x.topic||'');setMessage(x.message||'');internalContextRef.current=typeof x.contextPrompt==='string'?x.contextPrompt:'';setAnswer('');setFeedback('');setStudentAnswer('');setAnswerSubmitted(false);localStorage.removeItem('nova_ai_prefill');if(x.autoAsk&&x.message){setTimeout(()=>ask(x.message,x.topic,nextContextKey),80)}}}catch{}};apply();window.addEventListener('nova-ai-prefill',apply);return()=>window.removeEventListener('nova-ai-prefill',apply)},[]);
+ useEffect(()=>{const apply=()=>{try{const x=readJSON('nova_ai_prefill',null);if(x){const nextContextKey=x.contextKey||'';setContextKey(nextContextKey);setTopic(x.topic||'');setMessage(x.message||'');internalContextRef.current=typeof x.contextPrompt==='string'?x.contextPrompt:'';if(x.lessonId&&x.courseId){setLessonContext({lessonId:x.lessonId,courseId:x.courseId,topic:x.topic||''});setLessonDoubtHistory([]);setLessonDoubtError('');}setAnswer('');setFeedback('');setStudentAnswer('');setAnswerSubmitted(false);localStorage.removeItem('nova_ai_prefill');if(x.autoAsk&&x.message){if(prefillTimerRef.current)clearTimeout(prefillTimerRef.current);prefillTimerRef.current=setTimeout(()=>{prefillTimerRef.current=null;askRef.current?.(x.message,x.topic,nextContextKey)},80)}}}catch{}};apply();window.addEventListener('nova-ai-prefill',apply);return()=>{window.removeEventListener('nova-ai-prefill',apply);if(prefillTimerRef.current){clearTimeout(prefillTimerRef.current);prefillTimerRef.current=null;}}},[]);
  /* Smart scroll: the reply box is brought into view once per NEW request.
     The old effect re-ran on every streamed chunk and pinned the reader to the
     top of long answers mid-stream; during streaming the user now scrolls
@@ -1276,30 +1652,33 @@ function AiPanel({task,title,subtitle,icon,user,modeHint}){
   const msgArg=typeof messageOverride==='string'?messageOverride:null;
   const topArg=typeof topicOverride==='string'?topicOverride:null;
   const ctxArg=typeof contextKeyOverride==='string'?contextKeyOverride:null;
-  const effectiveMessage=msgArg??message;const effectiveTopic=topArg??topic;const effectiveContextKey=ctxArg??contextKey;if(!effectiveMessage.trim())return;const requestId=++requestSeqRef.current;lastAskRef.current={message:effectiveMessage,topic:effectiveTopic,contextKey:effectiveContextKey};setLoading(true);setAskError('');setAnswer('');setFeedback('');setStudentAnswer('');setAnswerSubmitted(false);requestAnimationFrame(()=>{answerBoxRef.current?.scrollIntoView({behavior:'smooth',block:'start'})});try{const profile=user?.profileComplete?`\nStudent profile: goal=${user.learningGoal||'not specified'}, interests=${user.interests||'not specified'}, strengths=${user.strengths||'not specified'}, weaknesses=${user.weaknesses||'not specified'}, learning style=${user.learningStyle||'not specified'}. Teach in a way that matches this profile and prefer visual explanations, diagrams, flowcharts or concrete examples when they improve understanding.`:'';const intelligenceContext=learningContext?`\nLearning memory: streak=${learningContext.streak||0}, studyMinutes=${learningContext.studyMinutes||0}, quizAttempts=${learningContext.quizzes||0}, weakAreas=${(learningContext.weakAreas||[]).slice(0,3).map(x=>`${x.subject||x.topic} (${x.accuracy||0}% accuracy)`).join(', ')||'none detected'}, nextAction=${learningContext.recommendations?.[0]?.title||'keep learning'}. Use this context only when it helps; do not invent activity.`:'';// Internal lesson context (from a course launch) is appended ONLY to the
+  const effectiveMessage=msgArg??message;const effectiveTopic=topArg??topic;const effectiveContextKey=ctxArg??contextKey;if(!effectiveMessage.trim())return;const requestId=++requestSeqRef.current;try{streamAbortRef.current?.abort()}catch{}const ac=new AbortController();streamAbortRef.current=ac;lastAskRef.current={message:effectiveMessage,topic:effectiveTopic,contextKey:effectiveContextKey};setLoading(true);setAskError('');setAnswer('');setFeedback('');setStudentAnswer('');setAnswerSubmitted(false);requestAnimationFrame(()=>{answerBoxRef.current?.scrollIntoView({behavior:'smooth',block:'start'})});try{const profile=user?.profileComplete?`\nStudent profile: goal=${user.learningGoal||'not specified'}, interests=${user.interests||'not specified'}, strengths=${user.strengths||'not specified'}, weaknesses=${user.weaknesses||'not specified'}, learning style=${user.learningStyle||'not specified'}. Teach in a way that matches this profile and prefer visual explanations, diagrams, flowcharts or concrete examples when they improve understanding.`:'';const intelligenceContext=learningContext?`\nLearning memory: streak=${learningContext.streak||0}, studyMinutes=${learningContext.studyMinutes||0}, quizAttempts=${learningContext.quizzes||0}, weakAreas=${(learningContext.weakAreas||[]).slice(0,3).map(x=>`${x.subject||x.topic} (${x.accuracy||0}% accuracy)`).join(', ')||'none detected'}, nextAction=${learningContext.recommendations?.[0]?.title||'keep learning'}. Use this context only when it helps; do not invent activity.`:'';// Internal lesson context (from a course launch) is appended ONLY to the
 // outgoing AI request — never to the visible composer, tutor memory, or logs.
-const lessonContext=internalContextRef.current?`\n\nLESSON CONTEXT (background for teaching; the student may not repeat it):\n${internalContextRef.current}`:'';const teacherRequest=task==='TUTOR'?message+profile+(modeHint?`\n\nTEACHING MODE: ${modeHint}. Adapt the explanation and examples to this mode.`:'')+lessonContext+'\n\nTEACHER RESPONSE REQUIREMENT: Answer the student request directly and thoroughly. Do not artificially shorten the explanation to save tokens. Preserve the full teaching depth requested by the student. Use clear headings, step-by-step reasoning, examples or analogies when useful, formulas/code/diagrams when relevant, common mistakes, and a concise recap. Finish with exactly one short **Mini Question:**. Avoid filler and repetition, but do not omit useful teaching detail merely to make the response shorter.':message+profile+lessonContext;const finalTeacherRequest=`CURRENT STUDENT REQUEST (answer this request directly; do not reuse or continue an older answer):\n${teacherRequest}${intelligenceContext}`; let nextAnswer='';
+const lessonBg=internalContextRef.current?`\n\nLESSON CONTEXT (background for teaching; the student may not repeat it):\n${internalContextRef.current}`:'';const teacherRequest=task==='TUTOR'?effectiveMessage+profile+(modeHint?`\n\nTEACHING MODE: ${modeHint}. Adapt the explanation and examples to this mode.`:'')+lessonBg+'\n\nTEACHER RESPONSE REQUIREMENT: Answer the student request directly and thoroughly. Do not artificially shorten the explanation to save tokens. Preserve the full teaching depth requested by the student. Use clear headings, step-by-step reasoning, examples or analogies when useful, formulas/code/diagrams when relevant, common mistakes, and a concise recap. Finish with exactly one short **Mini Question:**. Avoid filler and repetition, but do not omit useful teaching detail merely to make the response shorter.':effectiveMessage+profile+lessonBg;const finalTeacherRequest=`CURRENT STUDENT REQUEST (answer this request directly; do not reuse or continue an older answer):\n${teacherRequest}${intelligenceContext}`; let nextAnswer='';
  if(task==='TUTOR'){
   try{
-   await apiStream('/ai/ask/stream',{method:'POST',body:JSON.stringify({task,topic:effectiveTopic,message:finalTeacherRequest,level:'beginner',language:getAiLanguage()})},chunk=>{if(requestId!==requestSeqRef.current)return;nextAnswer+=chunk;setAnswer(nextAnswer);});
+   await apiStream('/ai/ask/stream',{method:'POST',signal:ac.signal,body:JSON.stringify({task,topic:effectiveTopic,message:finalTeacherRequest,level:'beginner',language:getAiLanguage()})},chunk=>{if(requestId!==requestSeqRef.current)return;nextAnswer+=chunk;setAnswer(nextAnswer);});
   }catch(streamError){
-   // Keep any already streamed answer. If nothing arrived, transparently fall back
-   // to the normal JSON endpoint so a transient SSE/proxy failure does not surface
-   // as the generic "AI request failed" state.
+   if(streamError?.name==='AbortError'||requestId!==requestSeqRef.current)return;
+   // Keep any already streamed answer and surface a clear notice. If nothing arrived,
+   // transparently fall back to the standard JSON endpoint.
    if(!nextAnswer.trim()){
-    const r=await api('/ai/ask',{method:'POST',body:JSON.stringify({task,topic:effectiveTopic,message:finalTeacherRequest,level:'beginner',language:getAiLanguage()})});
+    const r=await api('/ai/ask',{method:'POST',signal:ac.signal,body:JSON.stringify({task,topic:effectiveTopic,message:finalTeacherRequest,level:'beginner',language:getAiLanguage()})});
     nextAnswer=r.answer||'';
+   }else{
+    setAskError('Connection interrupted before the answer finished — the partial response is kept below.');
    }
   }
  }else{
-  const r=await api('/ai/ask',{method:'POST',body:JSON.stringify({task,topic:effectiveTopic,message:finalTeacherRequest,level:'beginner',language:getAiLanguage()})});
+  const r=await api('/ai/ask',{method:'POST',signal:ac.signal,body:JSON.stringify({task,topic:effectiveTopic,message:finalTeacherRequest,level:'beginner',language:getAiLanguage()})});
   nextAnswer=r.answer||'No response returned.';
  }
  if(requestId!==requestSeqRef.current)return;
  setAnswer(nextAnswer||'No response returned.');setStudentAnswer('');setFeedback('');setAnswerSubmitted(false);
  saveTutorMemory(user?.id,{topic:effectiveTopic,message:effectiveMessage,answer:nextAnswer,feedback:'',studentAnswer:'',answerSubmitted:false,contextKey:effectiveContextKey});
  appendTutorTurn(user?.id,'USER',effectiveMessage,{topic:effectiveTopic,source:'ai-teacher',contextKey:effectiveContextKey});
- appendTutorTurn(user?.id,'ASSISTANT',nextAnswer,{topic:effectiveTopic,source:'ai-teacher',contextKey:effectiveContextKey});}catch(e){if(requestId===requestSeqRef.current)setAskError(e.message||'Nova could not be reached. Check that the backend and Gemini API key are configured.')}finally{if(requestId===requestSeqRef.current)setLoading(false)}}
+ appendTutorTurn(user?.id,'ASSISTANT',nextAnswer,{topic:effectiveTopic,source:'ai-teacher',contextKey:effectiveContextKey});}catch(e){if(e?.name==='AbortError')return;if(requestId===requestSeqRef.current)setAskError(e.message||'Nova could not be reached right now. Please try again.')}finally{if(requestId===requestSeqRef.current)setLoading(false)}}
+ askRef.current=ask;
  const previousTeachingModeRef=useRef(modeHint||'');
  useEffect(()=>{
   const previous=previousTeachingModeRef.current;
@@ -1315,18 +1694,6 @@ const lessonContext=internalContextRef.current?`\n\nLESSON CONTEXT (background f
  const rawTeacherMiniQuestion=task==='TUTOR'&&answer?(answer.match(/(?:^|\n)\s*(?:#{1,6}\s*)?(?:\*{0,2})Mini\s+Question(?:\*{0,2})\s*[:：-]\s*([\s\S]*?)(?=\n\s*(?:#{1,6}\s*)?(?:\*{0,2})(?:Recap|Summary|Answer|Follow[- ]?up|Key Takeaway)\b|$)/i)?.[1]?.trim()||''):'';
  const teacherMiniQuestion=rawTeacherMiniQuestion|| (task==='TUTOR'&&answer ? `In your own words, what is the main idea of **${topic||'this lesson'}** that you learned from the explanation?` : '');
  const teacherAnswerBody=rawTeacherMiniQuestion?answer.replace(/(?:^|\n)\s*(?:#{1,6}\s*)?(?:\*{0,2})Mini\s+Question(?:\*{0,2})\s*[:：-]\s*[\s\S]*?(?=\n\s*(?:#{1,6}\s*)?(?:\*{0,2})(?:Recap|Summary|Answer|Follow[- ]?up|Key Takeaway)\b|$)/i,'').trim():answer;
- const initialLessonPrefill=readJSON('nova_ai_prefill',null)||{};
- const [lessonContext,setLessonContext]=useState(()=>({lessonId:initialLessonPrefill.lessonId||null,courseId:initialLessonPrefill.courseId||null,topic:initialLessonPrefill.topic||''}));
- const [lessonDoubt,setLessonDoubt]=useState('');
- const [lessonDoubtHistory,setLessonDoubtHistory]=useState([]);
- const [lessonDoubtLoading,setLessonDoubtLoading]=useState(false);
- const [lessonDoubtError,setLessonDoubtError]=useState('');
- useEffect(()=>{
-  const sync=()=>{const x=readJSON('nova_ai_prefill',null)||{};if(x.lessonId&&x.courseId)setLessonContext({lessonId:x.lessonId,courseId:x.courseId,topic:x.topic||''});};
-  sync();
-  window.addEventListener('nova-ai-prefill',sync);
-  return()=>window.removeEventListener('nova-ai-prefill',sync);
- },[]);
  async function askTeacherLessonDoubt(){
   const question=lessonDoubt.trim();
   if(!question||lessonDoubtLoading)return;
@@ -1351,16 +1718,38 @@ Answer only this specific doubt using the current lesson as context. Explain the
  }
  return <div className="ai-workspace"><aside className="ai-composer"><label>TOPIC</label><input value={topic} onChange={e=>setTopic(e.target.value)} placeholder="e.g. Java inheritance"/><textarea value={message} onChange={e=>setMessage(e.target.value)} rows="9" aria-label="Message to Nova" placeholder="Ask Nova to teach you, explain a concept, or test you…"/><button className="primary full" onClick={ask} disabled={loading}>{loading?'Thinking…':'Ask Nova'} <Send size={14}/></button><small className="ai-composer-hint">Nova teaches at your level, then checks your understanding.</small></aside><section ref={answerBoxRef} className={"ai-transcript ai-teacher-answer-box "+(task==='TUTOR'?'is-teacher':'')} aria-live="polite"><div className="ai-transcript-head"><div className="ai-avatar">{icon}</div><div><b>{title}</b><small>Teaching → check → feedback</small></div><span className="ai-live-dot" aria-hidden="true"/></div>{askError&&<div className="error-banner ai-teacher-error" role="alert"><span><b>Nova couldn't finish this answer.</b> {askError} Your previous teaching content is safe.</span><button className="secondary compact" onClick={()=>{const r=lastAskRef.current;if(r)ask(r.message,r.topic,r.contextKey)}}>Try again</button></div>}{loading&&!answer&&<div className="ai-teacher-thinking"><span className="nova-thinking-dots" aria-hidden="true"><i/><i/><i/></span>Nova is thinking…</div>}{answer?<div className="ai-transcript-body"><div className="ai-turn ai-turn-teacher"><div ref={responseRef} className="answer ai-teacher-response"><AiMarkdown content={teacherAnswerBody}/></div></div>{teacherMiniQuestion&&<div className="teacher-mini-question"><span>Mini question for you</span><AiMarkdown content={teacherMiniQuestion}/></div>}{answerSubmitted&&teacherMiniQuestion&&<div className="teacher-feedback teacher-submitted"><b>✓ Answer submitted</b><div><AiMarkdown content={feedback||'Your teacher has already evaluated this response.'}/></div></div>}{teacherMiniQuestion&&<div className="teacher-check"><div className="teacher-check-head"><b>Your turn</b><small>Answer above to continue the lesson.</small></div><textarea value={studentAnswer} onChange={e=>setStudentAnswer(e.target.value)} rows="5" placeholder="Write your answer here…"/><button className="primary" onClick={submitStudentAnswer} disabled={checking||!studentAnswer.trim()}>{checking?'Checking your answer…':'Reply to teacher'} <CheckCircle2 size={15}/></button></div>}</div>:<div className="empty ai-empty-motion"><LottiePlayer src={lottieLogoUrl} className="ai-empty-lottie" ariaLabel="Nova thinking"/><b>Your lesson appears here</b><span>Ask a focused question and Nova will teach you, then check your understanding.</span></div>}</section>{task==='TUTOR'&&<section className="ai-lesson-doubt" aria-label="Ask a doubt about this lesson"><div className="lesson-doubt-head"><div><span className="eyebrow">LESSON DOUBT</span><h4>Still stuck on this lesson?</h4><p>Each answer stays in its own section below; ask another doubt anytime.</p></div></div>{lessonDoubtHistory.map((item,index)=><div className="lesson-doubt-answer" key={index}><div className="lesson-doubt-question"><span>YOUR DOUBT</span><b>{item.question}</b></div><div className="answer-head"><div className="ai-avatar">{icon}</div><div><b>Nova's explanation</b><small>Based on this lesson</small></div></div><AiMarkdown content={item.answer}/></div>)}<div className="lesson-doubt-composer"><textarea value={lessonDoubt} onChange={e=>setLessonDoubt(e.target.value)} rows="3" aria-label="Type your doubt about this lesson" placeholder="Type your doubt here — e.g. “Why does the loop stop at n-1 instead of n?”"/><button className="primary" onClick={askTeacherLessonDoubt} disabled={lessonDoubtLoading||!lessonDoubt.trim()}>{lessonDoubtLoading?'Clearing doubt…':'Ask'} <Send size={14}/></button></div><small className="lesson-doubt-context">{lessonContext.topic||'Current lesson'}</small>{lessonDoubtError&&<div className="error-banner">{lessonDoubtError}</div>}</section>}</div>}
 
-function LearningStudio({user,initialTab='teacher'}){
- const [tab,setTab]=useState(()=>initialTab||localStorage.getItem('nova_learning_studio_tab')||'teacher'); const [teachingMode,setTeachingMode]=useState(()=>localStorage.getItem('nova_teaching_mode')||'Step-by-step');
- useModulePersistence(user?.id,'learning-studio',{tab,teachingMode},{tab:x=>setTab(x||initialTab||'teacher'),teachingMode:x=>setTeachingMode(x||'Step-by-step')});
+function LearningStudio({user,initialTab=null,routeTab=null,onRouteTab}){
+ const [tab,setTab]=useState(()=>{
+  if(readJSON('nova_ai_prefill',null))return 'teacher';
+  return routeTab||initialTab||localStorage.getItem('nova_learning_studio_tab')||'teacher';
+ });
+ const [teachingMode,setTeachingMode]=useState(()=>localStorage.getItem('nova_teaching_mode')||'Step-by-step');
+ const prevRouteTabRef=useRef(routeTab);
+ useEffect(()=>{
+  const prev=prevRouteTabRef.current;
+  prevRouteTabRef.current=routeTab;
+  if(routeTab){
+   if(routeTab!==tab)setTab(routeTab);
+  }else if(prev){
+   setTab('teacher');
+  }
+ },[routeTab]);
+ useEffect(()=>{
+  const onPrefill=()=>{setTab('teacher');localStorage.setItem('nova_learning_studio_tab','teacher');};
+  window.addEventListener('nova-ai-prefill',onPrefill);
+  return()=>window.removeEventListener('nova-ai-prefill',onPrefill);
+ },[]);
+ useModulePersistence(user?.id,'learning-studio',{tab,teachingMode},{
+  tab:x=>{if(routeTab||initialTab||readJSON('nova_ai_prefill',null))return;setTab(x||'teacher');},
+  teachingMode:x=>setTeachingMode(x||'Step-by-step')
+ });
  const tabs=[
   {id:'teacher',label:'AI Teacher',eyebrow:'TEACH • PRACTICE',icon:<BrainCircuit size={17}/>,title:'Learn with Nova like a personal teacher.',desc:'Ask doubts, get step-by-step teaching, answer mini questions and receive feedback.'},
   {id:'voice',label:'Voice Tutor',eyebrow:'SPEAK • LISTEN',icon:<Mic size={17}/>,title:'Talk through concepts naturally.',desc:'Ask by voice, get a teaching response and listen to the explanation aloud.'}
  ];
- const active=tabs.find(x=>x.id===tab)||tabs[1];
- function changeTab(next){setTab(next);localStorage.setItem('nova_learning_studio_tab',next);window.dispatchEvent(new Event('nova-learning-studio-tab'))}
-const TEACHING_MODES=['Step-by-step','Socratic','Visual','Exam Coach','Interview Coach','Simple analogy'];
+ const active=tabs.find(x=>x.id===tab)||tabs[0];
+ function changeTab(next){setTab(next);localStorage.setItem('nova_learning_studio_tab',next);onRouteTab?.(next);window.dispatchEvent(new Event('nova-learning-studio-tab'))}
+ const TEACHING_MODES=['Step-by-step','Socratic','Visual','Exam Coach','Interview Coach','Simple analogy'];
  return <>
   <div className="studio-head">
    <div className="studio-head-copy"><span className="eyebrow">NOVA LEARNING STUDIO</span><h1>Learn with <span>Nova.</span></h1><p>{active.desc}</p></div>
@@ -1383,12 +1772,12 @@ function PracticeHub({courses,progress,refresh,user,go}){
    <div className={tab==='code'?'practice-panel-visible':'practice-panel-hidden'} aria-hidden={tab!=='code'}><CodeLab user={user}/></div>
  </div></>;
 }
-function PrepareHub({user,go}){
+function PrepareHub({user,go,gateTab,onGateTab,dsaSlug,onDsaSlug}){
  const [tab,setTab]=useState(()=>localStorage.getItem('nova_prepare_tab')||'exam');
  useModulePersistence(user?.id,'prepare',{tab},{tab:x=>setTab(x||'exam')});
  const tabs=[['exam','Exam Simulator'],['gatecse','GATE CSE'],['dsa','DSA Practice'],['interview','AI Interviewer'],['career','Career Hub']];
  const change=t=>{setTab(t);localStorage.setItem('nova_prepare_tab',t)};
- return <><div className="page-title"><span className="eyebrow">PREPARATION WORKSPACE</span><h1>Prepare with <span>Nova.</span></h1><p>Exam readiness, GATE preparation, interviews and career planning connected to your learning data.</p></div><div className="practice-hub-tabs">{tabs.map(x=><button className={tab===x[0]?'active':''} onClick={()=>change(x[0])} key={x[0]}>{x[1]}</button>)}</div><div>{tab==='exam'&&<ExamSimulator user={user}/>} {tab==='gatecse'&&<GateCse/>} {tab==='dsa'&&<DsaPractice user={user} api={api}/>} {tab==='interview'&&<Interviewer user={user}/>} {tab==='career'&&<CareerHub user={user} go={go}/>}</div></>;
+ return <><div className="page-title"><span className="eyebrow">PREPARATION WORKSPACE</span><h1>Prepare with <span>Nova.</span></h1><p>Exam readiness, GATE preparation, interviews and career planning connected to your learning data.</p></div><div className="practice-hub-tabs">{tabs.map(x=><button className={tab===x[0]?'active':''} onClick={()=>change(x[0])} key={x[0]}>{x[1]}</button>)}</div><div>{tab==='exam'&&<ExamSimulator user={user}/>} {tab==='gatecse'&&<GateCse routeTab={gateTab} onRouteTab={onGateTab}/>} {tab==='dsa'&&<DsaPractice user={user} api={api} routeSlug={dsaSlug} onRouteSlug={onDsaSlug}/>} {tab==='interview'&&<Interviewer user={user}/>} {tab==='career'&&<CareerHub user={user} go={go}/>}</div></>;
 }
 
 function useLiveRuntimeSession(userId,module,initialState){
@@ -1447,7 +1836,7 @@ function Quiz({courses,refresh,user}){
  </>;
 }
 
-function ChatWorkspace({user}){const [convos,setConvos]=useState([]),[active,setActive]=useState(null),[messages,setMessages]=useState([]),[text,setText]=useState(''),[loading,setLoading]=useState(false),[listening,setListening]=useState(false);const recognitionRef=React.useRef(null);const listenRestartRef=React.useRef(false);const supported=typeof window!=='undefined'&&(window.SpeechRecognition||window.webkitSpeechRecognition);const load=()=>api('/chat/conversations/'+user.id).then(x=>{setConvos(x);if(!active&&x[0])setActive(x[0].id)});useEffect(()=>{load();return()=>{listenRestartRef.current=false;try{recognitionRef.current?.stop()}catch{}}},[]);useEffect(()=>{if(active)api(`/chat/conversations/${user.id}/${active}`).then(setMessages).catch(()=>setMessages([]))},[active]);async function create(){const c=await api('/chat/conversations/'+user.id,{method:'POST',body:JSON.stringify({title:'New learning session'})});setConvos(x=>[c,...x]);setActive(c.id);setMessages([])} async function clearSession(){if(!active)return;try{await api(`/chat/conversations/${user.id}/${active}/messages`,{method:'DELETE'});setMessages([]);setConvos(x=>x.map(c=>c.id===active?{...c,title:'Cleared session'}:c))}catch(e){setMessages([])}} async function deleteHistory(){if(!convos.length)return;try{await api(`/chat/conversations/${user.id}`,{method:'DELETE'});setConvos([]);setActive(null);setMessages([])}catch(e){setConvos([]);setActive(null);setMessages([])}}async function send(){if(!text.trim()||loading)return;const m=text;setText('');setLoading(true);setMessages(x=>[...x,{id:Date.now(),role:'USER',content:m}]);try{let conversationId=active;if(!conversationId){const c=await api('/chat/conversations/'+user.id,{method:'POST',body:JSON.stringify({title:m.slice(0,38)||'New learning session'})});setConvos(x=>[c,...x]);setActive(c.id);conversationId=c.id}const a=await api(`/chat/conversations/${user.id}/${conversationId}/messages`,{method:'POST',body:JSON.stringify({message:m,task:'TUTOR',level:'beginner',language:getAiLanguage()})});setMessages(x=>[...x,a])}catch(e){setMessages(x=>[...x,{id:Date.now()+1,role:'ASSISTANT',content:'AI request failed. Check Gemini API configuration and backend logs.'}])}finally{setLoading(false)}}function stopListening(){listenRestartRef.current=false;try{recognitionRef.current?.stop()}catch{}recognitionRef.current=null;setListening(false)}function startListening(){if(listening){stopListening();return}if(!supported){setText('Voice recognition is not supported in this browser. Chrome works best.');return}listenRestartRef.current=true;const SR=window.SpeechRecognition||window.webkitSpeechRecognition;const start=()=>{if(!listenRestartRef.current)return;const r=new SR();recognitionRef.current=r;r.lang=getSpeechLanguage();r.interimResults=true;r.continuous=true;r.onstart=()=>setListening(true);r.onresult=e=>{let t='';for(let i=0;i<e.results.length;i++)t+=e.results[i][0].transcript+' ';setText(t.trim())};r.onend=()=>{recognitionRef.current=null;if(listenRestartRef.current){setTimeout(start,120)}else setListening(false)};r.onerror=e=>{if(e?.error==='not-allowed'||e?.error==='service-not-allowed'){listenRestartRef.current=false;setListening(false)}};try{r.start()}catch{if(listenRestartRef.current)setTimeout(start,250)}};start()}return <><div className="page-title"><span className="eyebrow">CONVERSATION MEMORY</span><h1>AI <span>Chat.</span></h1><p>Persistent learning conversations connected to your tutor. Ask your question by typing or using the microphone.</p></div><div className="chat-shell"><div className="chat-sidebar"><button className="primary full" onClick={create}><Plus size={14}/> New chat</button><div className="chat-history-actions"><button className="text-btn" onClick={clearSession} disabled={!active||!messages.length}><RotateCcw size={14}/> Clear session</button><button className="text-btn" onClick={deleteHistory} disabled={!convos.length}><Trash2 size={14}/> Delete history</button></div>{convos.map(c=><button className={'chat-item '+(active===c.id?'selected':'')} key={c.id} onClick={()=>setActive(c.id)}><MessageCircle size={15}/><span>{c.title}</span></button>)}</div><div className="chat-main"><div className="messages">{!messages.length&&<div className="empty"><Sparkles size={40}/><b>Start a learning conversation</b><span>Ask by typing or use the microphone for a voice question.</span></div>}{messages.map(m=><div className={'bubble '+(m.role==='USER'?'user':'assistant')} key={m.id}><span>{m.role==='USER'?'You':'Nova AI'}</span>{m.role==='USER'?<div className="user-message-text">{m.content}</div>:<AiMarkdown content={m.content}/>}</div>)}{loading&&<div className="bubble assistant"><span>Nova AI</span><span className="nova-thinking-dots" aria-hidden="true"><i/><i/><i/></span></div>}</div><div className="chat-input"><textarea rows="2" value={text} onChange={e=>setText(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}}} placeholder={listening?'Listening… speak naturally':'Ask your AI teacher…'}/><button type="button" className={listening?'danger-btn':'secondary'} onClick={startListening} title={supported?(listening?'Stop voice input':'Ask Nova by voice'):'Voice input unavailable'} aria-label={supported?(listening?'Stop voice input':'Ask Nova by voice'):'Voice input unavailable'}>{listening?<MicOff size={16}/>:<Mic size={16}/>}</button><button className="primary" onClick={send} disabled={loading||!text.trim()} aria-label="Send message" title="Send message"><Send size={16}/></button></div></div></div></>}
+function ChatWorkspace({user}){const [convos,setConvos]=useState([]),[active,setActive]=useState(null),[messages,setMessages]=useState([]),[text,setText]=useState(''),[loading,setLoading]=useState(false),[listening,setListening]=useState(false),[chatError,setChatError]=useState('');const recognitionRef=React.useRef(null);const listenRestartRef=React.useRef(false);const skipFetchIdRef=React.useRef(null);const supported=typeof window!=='undefined'&&(window.SpeechRecognition||window.webkitSpeechRecognition);const load=()=>api('/chat/conversations/'+user.id).then(x=>{const list=Array.isArray(x)?x:[];setConvos(list);if(!active&&list[0])setActive(list[0].id)}).catch(e=>setChatError(e.message||'Could not load conversations.'));useEffect(()=>{load();return()=>{listenRestartRef.current=false;try{recognitionRef.current?.stop()}catch{}}},[]);useEffect(()=>{if(!active)return;if(skipFetchIdRef.current===active){skipFetchIdRef.current=null;return;}let alive=true;api(`/chat/conversations/${user.id}/${active}`).then(m=>{if(alive)setMessages(Array.isArray(m)?m:[])}).catch(e=>{if(alive)setChatError(e.message||'Could not load messages.')});return()=>{alive=false}},[active,user.id]);async function create(){setChatError('');try{const c=await api('/chat/conversations/'+user.id,{method:'POST',body:JSON.stringify({title:'New learning session'})});skipFetchIdRef.current=c.id;setConvos(x=>[c,...x]);setActive(c.id);setMessages([])}catch(e){setChatError(e.message||'Could not create a new chat.')}} async function clearSession(){if(!active)return;setChatError('');try{await api(`/chat/conversations/${user.id}/${active}/messages`,{method:'DELETE'});setMessages([]);setConvos(x=>x.map(c=>c.id===active?{...c,title:'Cleared session'}:c))}catch(e){setChatError(e.message||'Could not clear this session. Your messages were kept.')}} async function deleteHistory(){if(!convos.length)return;setChatError('');try{await api(`/chat/conversations/${user.id}`,{method:'DELETE'});setConvos([]);setActive(null);setMessages([])}catch(e){setChatError(e.message||'Could not delete history. Please try again.')}}async function send(){if(!text.trim()||loading)return;const m=text;setText('');setChatError('');setLoading(true);setMessages(x=>[...x,{id:Date.now(),role:'USER',content:m}]);try{let conversationId=active;if(!conversationId){const c=await api('/chat/conversations/'+user.id,{method:'POST',body:JSON.stringify({title:m.slice(0,38)||'New learning session'})});skipFetchIdRef.current=c.id;setConvos(x=>[c,...x]);setActive(c.id);conversationId=c.id}const a=await api(`/chat/conversations/${user.id}/${conversationId}/messages`,{method:'POST',body:JSON.stringify({message:m,task:'TUTOR',level:'beginner',language:getAiLanguage()})});setMessages(x=>[...x,a])}catch(e){setMessages(x=>[...x,{id:Date.now()+1,role:'ASSISTANT',content:e.message||'AI request could not complete right now. Please try again.'}])}finally{setLoading(false)}}function stopListening(){listenRestartRef.current=false;try{recognitionRef.current?.stop()}catch{}recognitionRef.current=null;setListening(false)}function startListening(){if(listening){stopListening();return}if(!supported){setText('Voice recognition is not supported in this browser. Chrome works best.');return}listenRestartRef.current=true;const SR=window.SpeechRecognition||window.webkitSpeechRecognition;const start=()=>{if(!listenRestartRef.current)return;const r=new SR();recognitionRef.current=r;r.lang=getSpeechLanguage();r.interimResults=true;r.continuous=true;r.onstart=()=>setListening(true);r.onresult=e=>{let t='';for(let i=0;i<e.results.length;i++)t+=e.results[i][0].transcript+' ';setText(t.trim())};r.onend=()=>{recognitionRef.current=null;if(listenRestartRef.current){setTimeout(start,120)}else setListening(false)};r.onerror=e=>{if(e?.error==='not-allowed'||e?.error==='service-not-allowed'){listenRestartRef.current=false;setListening(false)}};try{r.start()}catch{if(listenRestartRef.current)setTimeout(start,250)}};start()}return <><div className="page-title"><span className="eyebrow">CONVERSATION MEMORY</span><h1>AI <span>Chat.</span></h1><p>Persistent learning conversations connected to your tutor. Ask your question by typing or using the microphone.</p></div>{chatError&&<div className="error-banner" role="alert">{chatError}</div>}<div className="chat-shell"><div className="chat-sidebar"><button className="primary full" onClick={create}><Plus size={14}/> New chat</button><div className="chat-history-actions"><button className="text-btn" onClick={clearSession} disabled={!active||!messages.length}><RotateCcw size={14}/> Clear session</button><button className="text-btn" onClick={deleteHistory} disabled={!convos.length}><Trash2 size={14}/> Delete history</button></div>{convos.map(c=><button className={'chat-item '+(active===c.id?'selected':'')} key={c.id} onClick={()=>setActive(c.id)}><MessageCircle size={15}/><span>{c.title}</span></button>)}</div><div className="chat-main"><div className="messages">{!messages.length&&<div className="empty"><Sparkles size={40}/><b>Start a learning conversation</b><span>Ask by typing or use the microphone for a voice question.</span></div>}{messages.map(m=><div className={'bubble '+(m.role==='USER'?'user':'assistant')} key={m.id}><span>{m.role==='USER'?'You':'Nova AI'}</span>{m.role==='USER'?<div className="user-message-text">{m.content}</div>:<AiMarkdown content={m.content}/>}</div>)}{loading&&<div className="bubble assistant"><span>Nova AI</span><span className="nova-thinking-dots" aria-hidden="true"><i/><i/><i/></span></div>}</div><div className="chat-input"><textarea rows="2" value={text} onChange={e=>setText(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}}} placeholder={listening?'Listening… speak naturally':'Ask your AI teacher…'}/><button type="button" className={listening?'danger-btn':'secondary'} onClick={startListening} title={supported?(listening?'Stop voice input':'Ask Nova by voice'):'Voice input unavailable'} aria-label={supported?(listening?'Stop voice input':'Ask Nova by voice'):'Voice input unavailable'}>{listening?<MicOff size={16}/>:<Mic size={16}/>}</button><button className="primary" onClick={send} disabled={loading||!text.trim()} aria-label="Send message" title="Send message"><Send size={16}/></button></div></div></div></>}
 const cleanKnowledgeAi=(value)=>String(value||'')
  .replace(/\uFFFD/g,'')
  .replace(/[\u200B-\u200D\uFEFF]/g,'')
@@ -1457,41 +1846,46 @@ const cleanKnowledgeAi=(value)=>String(value||'')
  .trim();
 
 function KnowledgeHub({user}){
- const [docs,setDocs]=useState([]),[file,setFile]=useState(null),[loading,setLoading]=useState(false),[uploading,setUploading]=useState(false),[error,setError]=useState(''),[packBusy,setPackBusy]=useState(false);
- const knowledgeInitial=React.useMemo(()=>({selected:null,selectedSnapshot:null,chunks:[],question:'',answer:'',pack:null,packType:'summary',activeSection:'library'}),[]);
+ const [docs,setDocs]=useState([]),[chunks,setChunks]=useState([]),[file,setFile]=useState(null),[loading,setLoading]=useState(false),[uploading,setUploading]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState(''),[packBusy,setPackBusy]=useState(false);
+ // Keep large PDF chunks strictly in React memory (never persisted to localStorage) to prevent quota exhaustion.
+ const knowledgeInitial=React.useMemo(()=>({selected:null,selectedSnapshot:null,question:'',answer:'',pack:null,packType:'summary',activeSection:'library'}),[]);
  const [knowledge,setKnowledge]=useLiveRuntimeSession(user?.id,'knowledgeHub',knowledgeInitial);
- const selected=knowledge.selected||null, selectedSnapshot=knowledge.selectedSnapshot||null, chunks=Array.isArray(knowledge.chunks)?knowledge.chunks:[], question=knowledge.question||'', answer=knowledge.answer||'', pack=knowledge.pack||null, packType=knowledge.packType||'summary', activeSection=knowledge.activeSection||'library';
+ const selected=knowledge.selected||null, selectedSnapshot=knowledge.selectedSnapshot||null, question=knowledge.question||'', answer=knowledge.answer||'', pack=knowledge.pack||null, packType=knowledge.packType||'summary', activeSection=knowledge.activeSection||'library';
  const updateKnowledge=React.useCallback((patch)=>setKnowledge(s=>({...s,...(typeof patch==='function'?patch(s):patch)})),[setKnowledge]);
- const setSelected=x=>updateKnowledge({selected:typeof x==='function'?x(selected):x});
- const setSelectedSnapshot=x=>updateKnowledge({selectedSnapshot:typeof x==='function'?x(selectedSnapshot):x});
- const setChunks=x=>updateKnowledge({chunks:typeof x==='function'?x(chunks):x});
- const setQuestion=x=>updateKnowledge({question:typeof x==='function'?x(question):x});
- const setAnswer=x=>updateKnowledge({answer:typeof x==='function'?x(answer):x});
- const setPack=x=>updateKnowledge({pack:typeof x==='function'?x(pack):x});
- const setPackType=x=>updateKnowledge({packType:typeof x==='function'?x(packType):x});
- const setActiveSection=x=>updateKnowledge({activeSection:typeof x==='function'?x(activeSection):x});
+ const setSelected=x=>updateKnowledge(s=>({selected:typeof x==='function'?x(s.selected||null):x}));
+ const setSelectedSnapshot=x=>updateKnowledge(s=>({selectedSnapshot:typeof x==='function'?x(s.selectedSnapshot||null):x}));
+ const setQuestion=x=>updateKnowledge(s=>({question:typeof x==='function'?x(s.question||''):x}));
+ const setAnswer=x=>updateKnowledge(s=>({answer:typeof x==='function'?x(s.answer||''):x}));
+ const setPack=x=>updateKnowledge(s=>({pack:typeof x==='function'?x(s.pack||null):x}));
+ const setPackType=x=>updateKnowledge(s=>({packType:typeof x==='function'?x(s.packType||'summary'):x}));
+ const setActiveSection=x=>updateKnowledge(s=>({activeSection:typeof x==='function'?x(s.activeSection||'library'):x}));
  const [packLibrary,setPackLibrary]=useLiveRuntimeSession(user?.id,'knowledge-packs',{});
  const load=()=>api('/knowledge').then(next=>{setDocs(Array.isArray(next)?next:[]);return next}).catch(e=>{setError(e.message);return []}); useEffect(()=>{load()},[]);
- useEffect(()=>{if(!selected)return;api(`/knowledge/${selected}/chunks`).then(next=>{if(Array.isArray(next))setChunks(next)}).catch(()=>{/* preserve restored chunks on transient failure */})},[selected]);
+ useEffect(()=>{
+  if(!selected){setChunks([]);return;}
+  let alive=true;
+  api(`/knowledge/${selected}/chunks`).then(next=>{if(alive&&Array.isArray(next))setChunks(next)}).catch(e=>{if(alive)setError(e.message||'Could not load document notes.')});
+  return()=>{alive=false};
+ },[selected]);
  useEffect(()=>{if(!selected||!docs.length)return;const live=docs.find(d=>String(d.id)===String(selected));if(live)setSelectedSnapshot(live)},[docs,selected]);
  useEffect(()=>{if(!selected)return;const perDoc=packLibrary[String(selected)]||{};const restoredType=packType||'summary';const restored=perDoc[restoredType];if(restored){setPack(restored.content||restored);setPackType(restored.type||restoredType)}},[selected,packLibrary]);
- async function selectDoc(id){const doc=docs.find(d=>String(d.id)===String(id))||null;const perDoc=packLibrary[String(id)]||{};const preferredType=Object.prototype.hasOwnProperty.call(perDoc,packType)?packType:(perDoc.summary?'summary':Object.keys(perDoc)[0]||'summary');const preferred=perDoc[preferredType];setSelected(id);setSelectedSnapshot(doc);setQuestion('');setAnswer('');setPack(preferred?.content||preferred||null);setPackType(preferred?.type||preferredType);setError('');try{const next=await api(`/knowledge/${id}/chunks`);setChunks(Array.isArray(next)?next:[])}catch(e){/* do not erase the previously restored workspace on a transient API error */setError(e.message)}}
- async function upload(){if(!file)return;setUploading(true);setError('');setAnswer('');setPack(null);try{if(file.type&&file.type!=='application/pdf'&&!file.name.toLowerCase().endsWith('.pdf'))throw new Error('Please select a PDF file.');const fd=new FormData();fd.append('file',file);const created=await api('/knowledge/upload',{method:'POST',body:fd});setFile(null);const input=document.getElementById('pdf-file');if(input)input.value='';const next=await load();const createdDoc=next.find(d=>String(d.id)===String(created.id))||created;setSelected(created.id);setSelectedSnapshot(createdDoc);try{const loadedChunks=await api(`/knowledge/${created.id}/chunks`);setChunks(Array.isArray(loadedChunks)?loadedChunks:[])}catch{} }catch(e){setError('Upload failed: '+e.message)}finally{setUploading(false)}}
- async function ask(){if(!selected||!question.trim())return;setLoading(true);setError('');try{const r=await api('/knowledge/'+selected+'/ask',{method:'POST',body:JSON.stringify({question,level:'beginner',language:getAiLanguage()})});setAnswer(cleanKnowledgeAi(r.answer)||'The document did not return a readable answer. Try a more specific question.')}catch(e){setError('Could not query the document: '+e.message)}finally{setLoading(false)}}
- async function generatePack(type){if(!selected)return;setPackBusy(true);setPackType(type);setError('');try{const r=await api('/knowledge/'+selected+'/pack',{method:'POST',body:JSON.stringify({type,level:'exam-focused',language:getAiLanguage()})});const content=cleanKnowledgeAi(r.answer)||'The study pack could not be generated. Please try again.';const item={id:Date.now(),documentId:selected,document:selectedSnapshot?.fileName||selectedDoc?.fileName||'Knowledge document',type,content,createdAt:new Date().toISOString()};setPack(content);setPackLibrary(prev=>({...prev,[String(selected)]:{...(prev[String(selected)]||{}),[type]:item}}));}catch(e){setError('Could not generate the study pack: '+e.message)}finally{setPackBusy(false)}}
- function savePack(){if(!pack||!selectedDoc)return;const item={id:Date.now(),documentId:selectedDoc.id,document:selectedDoc.fileName,type:packType,content:pack,createdAt:new Date().toISOString()};setPackLibrary(prev=>({...prev,[String(selectedDoc.id)]:{...(prev[String(selectedDoc.id)]||{}),[packType]:item}}));setError('Study pack saved. It will remain available for this document.');}
+ function selectDoc(id){const doc=docs.find(d=>String(d.id)===String(id))||null;const perDoc=packLibrary[String(id)]||{};const preferredType=Object.prototype.hasOwnProperty.call(perDoc,packType)?packType:(perDoc.summary?'summary':Object.keys(perDoc)[0]||'summary');const preferred=perDoc[preferredType];setSelected(id);setSelectedSnapshot(doc);setQuestion('');setAnswer('');setPack(preferred?.content||preferred||null);setPackType(preferred?.type||preferredType);setError('');setNotice('');}
+ async function upload(){if(!file)return;setUploading(true);setError('');setNotice('');setAnswer('');setPack(null);try{if(file.type&&file.type!=='application/pdf'&&!file.name.toLowerCase().endsWith('.pdf'))throw new Error('Please select a PDF file.');const fd=new FormData();fd.append('file',file);const created=await api('/knowledge/upload',{method:'POST',body:fd});setFile(null);const input=document.getElementById('pdf-file');if(input)input.value='';const next=await load();const createdDoc=next.find(d=>String(d.id)===String(created.id))||created;setSelected(created.id);setSelectedSnapshot(createdDoc);setNotice(`Indexed ${createdDoc.fileName||'document'} successfully.`);}catch(e){setError('Upload failed: '+e.message)}finally{setUploading(false)}}
+ async function ask(){if(!selected||!question.trim())return;setLoading(true);setError('');setNotice('');try{const r=await api('/knowledge/'+selected+'/ask',{method:'POST',body:JSON.stringify({question,level:'beginner',language:getAiLanguage()})});setAnswer(cleanKnowledgeAi(r.answer)||'The document did not return a readable answer. Try a more specific question.')}catch(e){setError('Could not query the document: '+e.message)}finally{setLoading(false)}}
+ async function generatePack(type){if(!selected)return;setPackBusy(true);setPackType(type);setError('');setNotice('');try{const r=await api('/knowledge/'+selected+'/pack',{method:'POST',body:JSON.stringify({type,level:'exam-focused',language:getAiLanguage()})});const content=cleanKnowledgeAi(r.answer)||'The study pack could not be generated. Please try again.';const item={id:Date.now(),documentId:selected,document:selectedSnapshot?.fileName||selectedDoc?.fileName||'Knowledge document',type,content,createdAt:new Date().toISOString()};setPack(content);setPackLibrary(prev=>({...prev,[String(selected)]:{...(prev[String(selected)]||{}),[type]:item}}));}catch(e){setError('Could not generate the study pack: '+e.message)}finally{setPackBusy(false)}}
+ function savePack(){if(!pack||!selectedDoc)return;const item={id:Date.now(),documentId:selectedDoc.id,document:selectedDoc.fileName,type:packType,content:pack,createdAt:new Date().toISOString()};setPackLibrary(prev=>({...prev,[String(selectedDoc.id)]:{...(prev[String(selectedDoc.id)]||{}),[packType]:item}}));setError('');setNotice('Study pack saved. It will remain available for this document.');}
  async function remove(id){try{await api('/knowledge/'+id,{method:'DELETE'});if(String(selected)===String(id)){setSelected(null);setSelectedSnapshot(null);setChunks([]);setQuestion('');setAnswer('');setPack(null);setPackType('summary')}await load()}catch(e){setError(e.message)}}
  const selectedDoc=docs.find(d=>String(d.id)===String(selected))||selectedSnapshot;
- return <><div className="page-title"><span className="eyebrow">V18 • AI KNOWLEDGE ENGINE</span><h1>Your <span>Knowledge Hub.</span></h1><p>Turn any study PDF into grounded answers, summaries, flashcards, quizzes and a focused study plan.</p></div>{error&&<div className="error settings-error" role="alert">{error}</div>}<div className="knowledge-grid"><div className="knowledge-left"><div className="upload-card"><div className="title-icon"><UploadCloud/></div><h3>Upload study material</h3><p>PDF only • up to 25 MB • extracted and indexed securely</p><input aria-label="Upload study material (PDF)" id="pdf-file" type="file" accept=".pdf,application/pdf" onChange={e=>setFile(e.target.files?.[0]||null)}/>{file&&<div className="file-picked"><FileText size={16}/><span>{file.name}</span><small>{Math.round(file.size/1024)} KB</small></div>}<button className="primary full" onClick={upload} disabled={!file||uploading}>{uploading?'Indexing PDF…':'Upload & index'} <UploadCloud size={15}/></button></div><div className="doc-list"><div className="section-head"><div><span className="eyebrow">LIBRARY</span><h3>My documents</h3></div><span className="doc-count">{docs.length} files</span></div>{docs.length===0?<div className="empty small"><FileSearch size={32}/><b>No PDFs yet</b><span>Upload your notes or textbook to start.</span></div>:docs.map(d=><div className={'doc-item '+(selected===d.id?'selected':'')} key={d.id} onClick={()=>selectDoc(d.id)}><div className="doc-icon"><FileText size={18}/></div><div><b>{d.fileName}</b><small>{Math.round(d.sizeBytes/1024)} KB • {new Date(d.uploadedAt).toLocaleString()}</small></div><button className="icon-btn" onClick={e=>{e.stopPropagation();remove(d.id)}}><Trash2 size={16}/></button></div>)}</div></div><div className="knowledge-main"><div className="rag-card"><div className="answer-head"><div className="ai-avatar"><Sparkles size={17}/></div><div><b>{selectedDoc?.fileName||'Knowledge Hub'}</b><small>{selected?`${chunks.length} extracted note sections`:'Select a document first'}</small></div></div>{selected?<><textarea value={question} onChange={e=>setQuestion(e.target.value)} rows="4" placeholder="Ask anything from this PDF…"/><button className="primary" onClick={ask} disabled={loading}>{loading?'Searching + thinking…':'Ask document'} <Send size={14}/></button></>:<div className="empty"><FileSearch size={44}/><b>Select a document</b><span>Choose a PDF to view its extracted notes and activate grounded Q&A.</span></div>}</div>{selected&&<><div className="knowledge-pack"><div className="panel-head"><div><span className="eyebrow">AI STUDY PACK</span><h3>One PDF → complete revision kit</h3><small>All generated content is grounded in the selected document and uses your chosen AI language.</small></div><Sparkles size={20}/></div><div className="knowledge-pack-actions"><button className="secondary" onClick={()=>generatePack('summary')} disabled={packBusy}>{packBusy&&packType==='summary'?'Generating…':'Summary'}</button><button className="secondary" onClick={()=>generatePack('flashcards')} disabled={packBusy}>{packBusy&&packType==='flashcards'?'Generating…':'12 Flashcards'}</button><button className="secondary" onClick={()=>generatePack('quiz')} disabled={packBusy}>{packBusy&&packType==='quiz'?'Generating…':'10-Question Quiz'}</button><button className="secondary" onClick={()=>generatePack('studyplan')} disabled={packBusy}>{packBusy&&packType==='studyplan'?'Generating…':'7-Day Plan'}</button></div>{pack&&<div className="knowledge-pack-result"><div className="pack-result-head"><b>{packType==='summary'?'Exam Summary':packType==='flashcards'?'Flashcards':packType==='quiz'?'Practice Quiz':'7-Day Study Plan'}</b><button className="text-btn" onClick={savePack}>Save pack</button></div><div className="pack-content"><AiMarkdown content={pack}/></div></div>}</div><div className="panel notes-reader"><div className="panel-head"><div><span className="eyebrow">EXTRACTED NOTES</span><h3>Document notes</h3></div><span>{chunks.length} sections</span></div>{chunks.length?chunks.map(c=><article className="knowledge-note" key={c.id}><span className="note-page">Page {c.page}</span><AiMarkdown content={c.content}/></article>):<div className="empty small"><FileText size={30}/><b>No readable notes</b><span>This PDF may be scanned/image-only. Use a text-based PDF.</span></div>}</div></>}{answer&&<div className="answer-box"><div className="answer-head"><div className="ai-avatar"><Sparkles size={17}/></div><div><b>Grounded answer</b><small>Retrieved from your uploaded document</small></div></div><div className="answer"><AiMarkdown content={answer}/></div></div>}</div></div></>}
+ return <><div className="page-title"><span className="eyebrow">V18 • AI KNOWLEDGE ENGINE</span><h1>Your <span>Knowledge Hub.</span></h1><p>Turn any study PDF into grounded answers, summaries, flashcards, quizzes and a focused study plan.</p></div>{notice&&<div className="success-banner" role="status">{notice}</div>}{error&&<div className="error settings-error" role="alert">{error}</div>}<div className="knowledge-grid"><div className="knowledge-left"><div className="upload-card"><div className="title-icon"><UploadCloud/></div><h3>Upload study material</h3><p>PDF only • up to 25 MB • extracted and indexed securely</p><input aria-label="Upload study material (PDF)" id="pdf-file" type="file" accept=".pdf,application/pdf" onChange={e=>setFile(e.target.files?.[0]||null)}/>{file&&<div className="file-picked"><FileText size={16}/><span>{file.name}</span><small>{Math.round(file.size/1024)} KB</small></div>}<button className="primary full" onClick={upload} disabled={!file||uploading}>{uploading?'Indexing PDF…':'Upload & index'} <UploadCloud size={15}/></button></div><div className="doc-list"><div className="section-head"><div><span className="eyebrow">LIBRARY</span><h3>My documents</h3></div><span className="doc-count">{docs.length} files</span></div>{docs.length===0?<div className="empty small"><FileSearch size={32}/><b>No PDFs yet</b><span>Upload your notes or textbook to start.</span></div>:docs.map(d=><div className={'doc-item '+(selected===d.id?'selected':'')} key={d.id} onClick={()=>selectDoc(d.id)}><div className="doc-icon"><FileText size={18}/></div><div><b>{d.fileName}</b><small>{Math.round(d.sizeBytes/1024)} KB • {new Date(d.uploadedAt).toLocaleString()}</small></div><button className="icon-btn" onClick={e=>{e.stopPropagation();remove(d.id)}}><Trash2 size={16}/></button></div>)}</div></div><div className="knowledge-main"><div className="rag-card"><div className="answer-head"><div className="ai-avatar"><Sparkles size={17}/></div><div><b>{selectedDoc?.fileName||'Knowledge Hub'}</b><small>{selected?`${chunks.length} extracted note sections`:'Select a document first'}</small></div></div>{selected?<><textarea value={question} onChange={e=>setQuestion(e.target.value)} rows="4" placeholder="Ask anything from this PDF…"/><button className="primary" onClick={ask} disabled={loading}>{loading?'Searching + thinking…':'Ask document'} <Send size={14}/></button></>:<div className="empty"><FileSearch size={44}/><b>Select a document</b><span>Choose a PDF to view its extracted notes and activate grounded Q&A.</span></div>}</div>{selected&&<><div className="knowledge-pack"><div className="panel-head"><div><span className="eyebrow">AI STUDY PACK</span><h3>One PDF → complete revision kit</h3><small>All generated content is grounded in the selected document and uses your chosen AI language.</small></div><Sparkles size={20}/></div><div className="knowledge-pack-actions"><button className="secondary" onClick={()=>generatePack('summary')} disabled={packBusy}>{packBusy&&packType==='summary'?'Generating…':'Summary'}</button><button className="secondary" onClick={()=>generatePack('flashcards')} disabled={packBusy}>{packBusy&&packType==='flashcards'?'Generating…':'12 Flashcards'}</button><button className="secondary" onClick={()=>generatePack('quiz')} disabled={packBusy}>{packBusy&&packType==='quiz'?'Generating…':'10-Question Quiz'}</button><button className="secondary" onClick={()=>generatePack('studyplan')} disabled={packBusy}>{packBusy&&packType==='studyplan'?'Generating…':'7-Day Plan'}</button></div>{pack&&<div className="knowledge-pack-result"><div className="pack-result-head"><b>{packType==='summary'?'Exam Summary':packType==='flashcards'?'Flashcards':packType==='quiz'?'Practice Quiz':'7-Day Study Plan'}</b><button className="text-btn" onClick={savePack}>Save pack</button></div><div className="pack-content"><AiMarkdown content={pack}/></div></div>}</div><div className="panel notes-reader"><div className="panel-head"><div><span className="eyebrow">EXTRACTED NOTES</span><h3>Document notes</h3></div><span>{chunks.length} sections</span></div>{chunks.length?chunks.map(c=><article className="knowledge-note" key={c.id}><span className="note-page">Page {c.page}</span><AiMarkdown content={c.content}/></article>):<div className="empty small"><FileText size={30}/><b>No readable notes</b><span>This PDF may be scanned/image-only. Use a text-based PDF.</span></div>}</div></>}{answer&&<div className="answer-box"><div className="answer-head"><div className="ai-avatar"><Sparkles size={17}/></div><div><b>Grounded answer</b><small>Retrieved from your uploaded document</small></div></div><div className="answer"><AiMarkdown content={answer}/></div></div>}</div></div></>}
 
 function AdaptiveMentor({user,courses}){
  const [courseId,setCourseId]=useState(''); const [lessonId,setLessonId]=useState(''); const [lessons,setLessons]=useState([]); const [mode,setMode]=useState('TEACH'); const [message,setMessage]=useState(''); const [answer,setAnswer]=useState(''); const [loading,setLoading]=useState(false); const [state,setState]=useState(null); const [recommended,setRecommended]=useState(null);
  useModulePersistence(user?.id,'lesson',{courseId,lessonId,mode,message,answer,state,recommended},{courseId:x=>setCourseId(x||''),lessonId:x=>setLessonId(x||''),mode:x=>setMode(x||'TEACH'),message:x=>setMessage(x||''),answer:x=>setAnswer(x||''),state:x=>setState(x||null),recommended:x=>setRecommended(x||null)});
  useEffect(()=>{api('/mentor/state/'+user.id).then(r=>{if(r)setState(prev=>prev||r)}).catch(()=>{});api('/learning/next/'+user.id).then(r=>{setRecommended(prev=>prev||r);if(!courseId&&r?.course?.id)setCourseId(String(r.course.id));}).catch(()=>{});},[user.id]);
- useEffect(()=>{if(!courseId){setLessons([]);return;}api('/courses/'+courseId).then(r=>{setLessons(r.lessons||[]);const preferred=recommended?.lesson?.id;if(!lessonId&&preferred){setLessonId(String(preferred));}else if(!lessonId&&r.lessons?.length){setLessonId(String(r.lessons[0].id));}}).catch(()=>{})},[courseId]);
- async function ask(){if(!lessonId||!message.trim())return;setLoading(true);try{const r=await api('/mentor/ask',{method:'POST',body:JSON.stringify({userId:user.id,courseId:Number(courseId),lessonId:Number(lessonId),mode,message,level:state?.recommendedLevel||'beginner',language:getAiLanguage()})});setAnswer(r.answer||'No response.')}catch(e){setAnswer('Mentor request failed. Check Spring Boot, MySQL and Gemini API configuration.')}finally{setLoading(false)}}
+ useEffect(()=>{if(!courseId){setLessons([]);return;}api('/courses/'+courseId).then(r=>{const list=r.lessons||[];setLessons(list);const validCurrent=list.some(l=>String(l.id)===String(lessonId));if(!validCurrent){const preferred=recommended?.lesson?.id&&list.some(l=>String(l.id)===String(recommended.lesson.id))?recommended.lesson.id:null;if(preferred){setLessonId(String(preferred));}else if(list.length){setLessonId(String(list[0].id));}else{setLessonId('');}}}).catch(()=>{})},[courseId]);
+ async function ask(){if(!lessonId||!message.trim())return;setLoading(true);try{const r=await api('/mentor/ask',{method:'POST',body:JSON.stringify({userId:user.id,courseId:Number(courseId),lessonId:Number(lessonId),mode,message,level:state?.recommendedLevel||'beginner',language:getAiLanguage()})});setAnswer(r.answer||'No response.')}catch(e){setAnswer(e.message||'Mentor request failed. Please try again in a moment.')}finally{setLoading(false)}}
  const lesson=lessons.find(x=>String(x.id)===String(lessonId));
- return <><div className="page-title"><span className="eyebrow">ADAPTIVE LEARNING ENGINE</span><h1>Meet your <span>AI Mentor.</span></h1><p>Nova adapts explanations, examples and hints to your progress instead of teaching everyone the same way.</p></div><div className="mentor-layout"><div className="mentor-control"><div className="mentor-badge"><div className="title-icon"><GraduationCap/></div><div><b>Adaptive mode</b><small>{state?`${state.recommendedLevel} • ${Math.round(state.averageProgress)}% average progress`:'Reading your learning state…'}</small></div></div><label>COURSE</label><select aria-label="Course" value={courseId} onChange={e=>setCourseId(e.target.value)}><option value="">Choose a course</option>{courses.map(c=><option key={c.id} value={c.id}>{c.title}</option>)}</select><label>LESSON</label><select aria-label="Lesson" value={lessonId} onChange={e=>setLessonId(e.target.value)} disabled={!lessons.length}><option value="">Choose a lesson</option>{lessons.map(l=><option key={l.id} value={l.id}>{l.orderIndex}. {l.title}</option>)}</select><label>TUTOR MODE</label><div className="mode-grid">{[['TEACH','Teach','Step-by-step'],['SIMPLIFY','Simplify','Easy analogy'],['EXAMPLE','Example','Practical demo'],['HINT','Hint','Guided help'],['CHECK','Check','Test me']].map(([id,t,d])=><button key={id} className={mode===id?'mode active':'mode'} onClick={()=>setMode(id)}><Lightbulb size={15}/><b>{t}</b><small>{d}</small></button>)}</div><button className="text-btn" onClick={()=>{setAnswer('');setMessage('');setRecommended(null);api('/learning/next/'+user.id).then(setRecommended).catch(()=>{})}}><RefreshCw size={14}/> Refresh recommendation</button></div><div className="mentor-chat"><div className="mentor-context"><div className="ai-avatar"><Brain size={18}/></div><div><b>{lesson?.title||'Choose a lesson'}</b><small>{recommended?.reason||'Select a course and lesson to begin.'}</small></div></div>{recommended?.available&&<div className="recommend"><Sparkles size={15}/><span><b>Next best step:</b> {recommended.lesson?.title||'Continue learning'}</span></div>}<div className="mentor-recovery"><div><span className="eyebrow">WEAKNESS RECOVERY</span><b>{state?.weakestSubject||state?.weakArea||'Your next skill gap'}</b><small>Use a short loop: review → practice → explain → revisit. Nova keeps the session focused instead of sending you back to the full syllabus.</small></div><button className="secondary" onClick={()=>setMode('SIMPLIFY')}>Start recovery <ChevronRight size={13}/></button></div><div className="mentor-answer">{answer?<div className="answer"><AiMarkdown content={answer}/></div>:<div className="empty"><GraduationCap size={48}/><b>Your mentor is ready</b><span>Pick a lesson, choose a mode and ask for an explanation, example, hint or check.</span></div>}</div><div className="mentor-input"><textarea rows="4" value={message} onChange={e=>setMessage(e.target.value)} placeholder="e.g. Explain this like I'm completely new to it…" onKeyDown={e=>{if(e.key==='Enter'&&e.metaKey){e.preventDefault();ask()}}}/><div><small>⌘ + Enter to ask</small><button className="primary" onClick={ask} disabled={loading||!lessonId||!message.trim()}>{loading?'Thinking…':'Ask mentor'} <Send size={15}/></button></div></div></div></div></>
+ return <><div className="page-title"><span className="eyebrow">ADAPTIVE LEARNING ENGINE</span><h1>Meet your <span>AI Mentor.</span></h1><p>Nova adapts explanations, examples and hints to your progress instead of teaching everyone the same way.</p></div><div className="mentor-layout"><div className="mentor-control"><div className="mentor-badge"><div className="title-icon"><GraduationCap/></div><div><b>Adaptive mode</b><small>{state?`${state.recommendedLevel} • ${Math.round(state.averageProgress)}% average progress`:'Reading your learning state…'}</small></div></div><label>COURSE</label><select aria-label="Course" value={courseId} onChange={e=>{setCourseId(e.target.value);setLessonId('')}}><option value="">Choose a course</option>{courses.map(c=><option key={c.id} value={c.id}>{c.title}</option>)}</select><label>LESSON</label><select aria-label="Lesson" value={lessonId} onChange={e=>setLessonId(e.target.value)} disabled={!lessons.length}><option value="">Choose a lesson</option>{lessons.map(l=><option key={l.id} value={l.id}>{l.orderIndex}. {l.title}</option>)}</select><label>TUTOR MODE</label><div className="mode-grid">{[['TEACH','Teach','Step-by-step'],['SIMPLIFY','Simplify','Easy analogy'],['EXAMPLE','Example','Practical demo'],['HINT','Hint','Guided help'],['CHECK','Check','Test me']].map(([id,t,d])=><button key={id} className={mode===id?'mode active':'mode'} onClick={()=>setMode(id)}><Lightbulb size={15}/><b>{t}</b><small>{d}</small></button>)}</div><button className="text-btn" onClick={()=>{setAnswer('');setMessage('');setRecommended(null);api('/learning/next/'+user.id).then(setRecommended).catch(()=>{})}}><RefreshCw size={14}/> Refresh recommendation</button></div><div className="mentor-chat"><div className="mentor-context"><div className="ai-avatar"><Brain size={18}/></div><div><b>{lesson?.title||'Choose a lesson'}</b><small>{recommended?.reason||'Select a course and lesson to begin.'}</small></div></div>{recommended?.available&&<div className="recommend"><Sparkles size={15}/><span><b>Next best step:</b> {recommended.lesson?.title||'Continue learning'}</span></div>}<div className="mentor-recovery"><div><span className="eyebrow">WEAKNESS RECOVERY</span><b>{state?.weakestSubject||state?.weakArea||'Your next skill gap'}</b><small>Use a short loop: review → practice → explain → revisit. Nova keeps the session focused instead of sending you back to the full syllabus.</small></div><button className="secondary" onClick={()=>setMode('SIMPLIFY')}>Start recovery <ChevronRight size={13}/></button></div><div className="mentor-answer">{answer?<div className="answer"><AiMarkdown content={answer}/></div>:<div className="empty"><GraduationCap size={48}/><b>Your mentor is ready</b><span>Pick a lesson, choose a mode and ask for an explanation, example, hint or check.</span></div>}</div><div className="mentor-input"><textarea rows="4" value={message} onChange={e=>setMessage(e.target.value)} placeholder="e.g. Explain this like I'm completely new to it…" onKeyDown={e=>{if(e.key==='Enter'&&e.metaKey){e.preventDefault();ask()}}}/><div><small>⌘ + Enter to ask</small><button className="primary" onClick={ask} disabled={loading||!lessonId||!message.trim()}>{loading?'Thinking…':'Ask mentor'} <Send size={15}/></button></div></div></div></div></>
 }
 
 function StudyPlanner({user}){
@@ -1519,7 +1913,7 @@ function StudyPlanner({user}){
   }catch(e){setPlan('AI plan failed: '+(e.message||'Unknown error')+'\n\nRetry once; Gemini may be temporarily busy.')}finally{setLoading(false)}
  }
  function clear(){setSaved(null);setPlan('')}
- return <><div className="page-title"><span className="eyebrow">PERSONAL LEARNING ENGINE</span><h1>AI Study <span>Planner.</span></h1><p>Turn a goal into a realistic daily roadmap with revision, practice and checkpoints.</p></div><div className="planner-grid"><div className="planner-form"><div className="title-icon"><CalendarDays/></div><h3>Build your roadmap</h3><p>Tell Nova AI what you want to master. Your latest plan is saved in this browser.</p><label>LEARNING GOAL</label><input value={goal} onChange={e=>setGoal(e.target.value)} placeholder="e.g. Java Spring Boot for placements"/><div className="planner-fields"><div><label>DAYS</label><select aria-label="Days" value={days} onChange={e=>setDays(e.target.value)}><option>7</option><option>14</option><option>21</option><option>30</option></select></div><div><label>HOURS / DAY</label><select aria-label="Hours per day" value={hours} onChange={e=>setHours(e.target.value)}><option>1</option><option>2</option><option>3</option><option>4</option><option>6</option></select></div></div><label>YOUR LEVEL</label><select aria-label="Level" value={level} onChange={e=>setLevel(e.target.value)}><option value="beginner">Beginner</option><option value="intermediate">Intermediate</option><option value="advanced">Advanced</option></select><button className="primary full" onClick={generate} disabled={loading||!goal.trim()}>{loading?'Designing your roadmap…':'Generate roadmap'} <WandSparkles size={15}/></button>{saved&&<button className="text-btn planner-clear" onClick={clear}>Clear saved plan</button>}</div><div className="planner-result"><div className="answer-head"><div className="ai-avatar"><Sparkles size={17}/></div><div><b>Nova Roadmap</b><small>{saved?'Saved locally • ready to revise':'AI-generated study strategy'}</small></div></div>{plan?<div className="answer planner-answer">{plan}</div>:<div className="empty"><CalendarDays size={44}/><b>Your roadmap will appear here</b><span>Choose a goal and let AI break it into focused daily actions.</span></div>}</div></div></>
+ return <><div className="page-title"><span className="eyebrow">PERSONAL LEARNING ENGINE</span><h1>AI Study <span>Planner.</span></h1><p>Turn a goal into a realistic daily roadmap with revision, practice and checkpoints.</p></div><div className="planner-grid"><div className="planner-form"><div className="title-icon"><CalendarDays/></div><h3>Build your roadmap</h3><p>Tell Nova AI what you want to master. Your latest plan is saved in this browser.</p><label>LEARNING GOAL</label><input value={goal} onChange={e=>setGoal(e.target.value)} placeholder="e.g. Java Spring Boot for placements"/><div className="planner-fields"><div><label>DAYS</label><select aria-label="Days" value={days} onChange={e=>setDays(e.target.value)}><option>7</option><option>14</option><option>21</option><option>30</option></select></div><div><label>HOURS / DAY</label><select aria-label="Hours per day" value={hours} onChange={e=>setHours(e.target.value)}><option>1</option><option>2</option><option>3</option><option>4</option><option>6</option></select></div></div><label>YOUR LEVEL</label><select aria-label="Level" value={level} onChange={e=>setLevel(e.target.value)}><option value="beginner">Beginner</option><option value="intermediate">Intermediate</option><option value="advanced">Advanced</option></select><button className="primary full" onClick={generate} disabled={loading||!goal.trim()}>{loading?'Designing your roadmap…':'Generate roadmap'} <WandSparkles size={15}/></button>{saved&&<button className="text-btn planner-clear" onClick={clear}>Clear saved plan</button>}</div><div className="planner-result"><div className="answer-head"><div className="ai-avatar"><Sparkles size={17}/></div><div><b>Nova Roadmap</b><small>{saved?'Saved locally • ready to revise':'AI-generated study strategy'}</small></div></div>{plan?<div className="answer planner-answer"><AiMarkdown content={plan}/></div>:<div className="empty"><CalendarDays size={44}/><b>Your roadmap will appear here</b><span>Choose a goal and let AI break it into focused daily actions.</span></div>}</div></div></>
 }
 function Flashcards({user}){
  const [topic,setTopic]=useState(''); const [count,setCount]=useState('8'); const [cards,setCards]=useState([]); const [index,setIndex]=useState(0); const [flipped,setFlipped]=useState(false); const [loading,setLoading]=useState(false);
@@ -1547,8 +1941,8 @@ function SettingsPage({user,dark,setDark,logout,switchAccount,onUserUpdate,aiSta
  function clearLocal(){['nova_planner','nova_bookmarks','daily_goal','nova_courses_cache',AI_LANGUAGE_KEY].forEach(k=>localStorage.removeItem(k));setMsg('Local learning preferences cleared. Your server progress is safe.')}
  return <><div className="page-title"><span className="eyebrow">ACCOUNT & PREFERENCES</span><h1>Settings <span>& control.</span></h1><p>Manage your profile, appearance, security and local learning preferences.</p></div>{msg&&<div className="success-banner">{msg}</div>}{err&&<div className="error settings-error">{err}</div>}<div className="settings-grid"><section className="panel settings-card"><div className="panel-head"><div><span className="eyebrow">PROFILE</span><h3>Your account</h3></div><UserRound size={20}/></div><label>NAME</label><input value={name} onChange={e=>setName(e.target.value)} placeholder="Your name"/><label>EMAIL</label><input aria-label="Email address" value={email} disabled/><button className="primary" onClick={saveProfile} disabled={saving||!name.trim()}>Save profile</button></section><section className="panel settings-card"><div className="panel-head"><div><span className="eyebrow">APPEARANCE</span><h3>Choose your experience</h3></div><Lightbulb size={20}/></div><div className="theme-choice"><button className={!dark?'theme-option active':''} onClick={()=>setDark(false)}>☀️ <b>Bright</b><small>Clean light interface</small></button><button className={dark?'theme-option active':''} onClick={()=>setDark(true)}>🌙 <b>Dark</b><small>Comfortable low-light interface</small></button></div></section><section className="panel settings-card"><div className="panel-head"><div><span className="eyebrow">AI PREFERENCES</span><h3>AI response language</h3></div><Sparkles size={20}/></div><p className="settings-copy">Choose the language Nova AI should use for teaching, explanations, doubts, feedback, study plans, flashcards and interview responses.</p><label>SELECT LANGUAGE</label><select aria-label="AI response language" className="ai-language-select" value={aiLanguage} onChange={e=>saveAiLanguage(e.target.value)} disabled={saving}>{AI_LANGUAGES.map(lang=><option key={lang} value={lang}>{lang==='English/Hinglish'?'English + Hinglish (Default)':lang}</option>)}</select><small className="settings-copy">Technical terms and code syntax may remain in their standard form when needed for accuracy.</small></section><section className="panel settings-card settings-ai-status"><div className="panel-head"><div><span className="eyebrow">AI PROVIDER</span><h3>Connection status</h3></div><BrainCircuit size={20}/></div><p className="settings-copy">Nova runs on a Gemini-backed teaching service configured on the server. The API key is stored only in the backend environment (<code>GEMINI_API_KEY</code>) and is never sent to this browser.</p><div className="ai-status-row"><span className={'ai-status-dot '+(aiStatusDot?'on':'off')}/><div><b>{aiStatusDot?'Connected':'Not configured'}</b><small>{aiStatusDot?`Provider: Gemini · model ${aiStatusDot}`:'Ask your administrator to set GEMINI_API_KEY in backend/.env.properties and restart Spring Boot.'}</small></div></div></section><section className="panel settings-card"><div className="panel-head"><div><span className="eyebrow">SECURITY</span><h3>Change password</h3></div><span>🔐</span></div><input type="password" value={oldPass} onChange={e=>setOldPass(e.target.value)} placeholder="Current password"/><input type="password" value={newPass} onChange={e=>setNewPass(e.target.value)} placeholder="New password (6+ characters)"/><button className="primary" onClick={changePassword} disabled={saving||!oldPass||!newPass}>Update password</button></section><section className="panel settings-card"><div className="panel-head"><div><span className="eyebrow">SESSION</span><h3>Account controls</h3></div><LogOut size={20}/></div><p className="settings-copy">Logout removes your active session from this browser. Your courses and progress remain in MySQL.</p><button className="secondary full" onClick={logout}>Logout</button><button className="secondary full switch-account-btn" onClick={switchAccount}>Switch account</button><button className="text-btn settings-clear" onClick={clearLocal}>Clear local preferences</button></section></div></>}
 
-window.addEventListener('error',(event)=>{console.error('NovaTutor global error',event.error||event.message);window.dispatchEvent(new Event('nova-recover'))});
-window.addEventListener('unhandledrejection',(event)=>{console.error('NovaTutor unhandled rejection',event.reason);event.preventDefault();window.dispatchEvent(new Event('nova-recover'))});
+window.addEventListener('error',(event)=>{console.error('NovaTutor global error',event.error||event.message)});
+window.addEventListener('unhandledrejection',(event)=>{console.error('NovaTutor unhandled rejection',event.reason);event.preventDefault()});
 createRoot(document.getElementById('root')).render(<ErrorBoundary><App/></ErrorBoundary>);
 
 /* =====================================================================
@@ -1560,15 +1954,14 @@ createRoot(document.getElementById('root')).render(<ErrorBoundary><App/></ErrorB
    interactive elements. No AI status, no refresh, no technical controls.
    ===================================================================== */
 function TopNav({user,role,page,go,dark,setDark,navModel,activeGroup,mobile,setMobile,vp,logout,aiConfigured}){
- // The current section's sub-navigation is open on first render. Clicking the
- // trigger or outside still closes it, and mobile keeps its compact sheet.
- const [openMenu,setOpenMenu]=useState(activeGroup||null);
+ // Dropdowns start closed and render as floating overlays (zero layout shift).
+ const [openMenu,setOpenMenu]=useState(null);
  const [accountOpen,setAccountOpen]=useState(false);
  const rootRef=useRef(null);
  const firstPage=useRef(page);
  useEffect(()=>{
   const close=e=>{if(rootRef.current&&!rootRef.current.contains(e.target)){setOpenMenu(null);setAccountOpen(false)}};
-  const esc=e=>{if(e.key==='Escape'){setOpenMenu(null);setAccountOpen(false)}};
+  const esc=e=>{if(e.key==='Escape'){setOpenMenu(null);setAccountOpen(false);setMobile(false)}};
   document.addEventListener('pointerdown',close);
   document.addEventListener('keydown',esc);
   return()=>{document.removeEventListener('pointerdown',close);document.removeEventListener('keydown',esc)};
@@ -1652,24 +2045,29 @@ function BrandMark({size=26}){
 function AILearningProfile({user,courses,go}){
  const [state,setState]=useState(null),[adaptive,setAdaptive]=useState(null),[loading,setLoading]=useState(true),[goal,setGoal]=useState(user.learningGoal||''),[interests,setInterests]=useState(user.interests||''),[strengths,setStrengths]=useState(user.strengths||''),[weaknesses,setWeaknesses]=useState(user.weaknesses||''),[style,setStyle]=useState(user.learningStyle||'Visual + practical'),[saved,setSaved]=useState('');
  useEffect(()=>{
+  let alive=true;
+  const activeId=String(user.id);
   Promise.all([
     api(`/users/${user.id}`).catch(()=>null),
     api('/mentor/state/'+user.id).catch(()=>null),
     api('/adaptive/'+user.id).catch(()=>null)
   ]).then(([profile,a,b])=>{
+    if(!alive)return;
     if(profile){
       setGoal(profile.learningGoal||'');setInterests(profile.interests||'');setStrengths(profile.strengths||'');setWeaknesses(profile.weaknesses||'');setStyle(profile.learningStyle||'Visual + practical');
-      const current=readUser(); if(current){localStorage.setItem('ai_user',JSON.stringify({...current,...profile,token:current.token}))}
+      const current=readUser(); if(current&&String(current.id)===activeId){localStorage.setItem('ai_user',JSON.stringify({...current,...profile,token:current.token}))}
     }
     setState(a);setAdaptive(b)
-  }).finally(()=>setLoading(false))
-},[user.id]);
+  }).finally(()=>alive&&setLoading(false));
+  return()=>{alive=false};
+ },[user.id]);
  async function save(){
  setSaved('');
+ const activeId=String(user.id);
  try{
   const payload={name:user.name,learningGoal:goal,interests,strengths,weaknesses,learningStyle:style,dailyStudyMinutes:Number(user.dailyStudyMinutes||60),preferredAiLanguage:getAiLanguage()};
   const updated=await api(`/users/${user.id}`,{method:'PUT',body:JSON.stringify(payload)});
-  const current=readUser(); if(current&&updated) localStorage.setItem('ai_user',JSON.stringify({...current,...updated,token:current.token}));
+  const current=readUser(); if(current&&updated&&String(current.id)===activeId) localStorage.setItem('ai_user',JSON.stringify({...current,...updated,token:current.token}));
   // Refresh all memory/intelligence layers immediately so the new profile affects recommendations without logout/reload.
   const [fresh,mentorFresh,adaptiveFresh,intelligenceFresh]=await Promise.all([
     api(`/users/${user.id}`).catch(()=>updated||null),
@@ -1677,7 +2075,9 @@ function AILearningProfile({user,courses,go}){
     api('/adaptive/'+user.id).catch(()=>null),
     api('/intelligence/'+user.id).catch(()=>null)
   ]);
-  if(fresh){setGoal(fresh.learningGoal||goal);setInterests(fresh.interests||interests);setStrengths(fresh.strengths||strengths);setWeaknesses(fresh.weaknesses||weaknesses);setStyle(fresh.learningStyle||style);const cur=readUser();if(cur)localStorage.setItem('ai_user',JSON.stringify({...cur,...fresh,token:cur.token}))}
+  const curAfter=readUser();
+  if(!curAfter||String(curAfter.id)!==activeId)return;
+  if(fresh){setGoal(fresh.learningGoal||goal);setInterests(fresh.interests||interests);setStrengths(fresh.strengths||strengths);setWeaknesses(fresh.weaknesses||weaknesses);setStyle(fresh.learningStyle||style);localStorage.setItem('ai_user',JSON.stringify({...curAfter,...fresh,token:curAfter.token}))}
   setState(mentorFresh);setAdaptive(adaptiveFresh);
   setSaved('Profile saved. Nova memory, adaptive data and recommendations were refreshed.');
  }catch(e){setSaved('Could not update profile: '+e.message)}
@@ -1714,12 +2114,14 @@ const GATE_EXAM_BANK=[
  ['Digital Logic','Which gate is functionally complete by itself?',['XOR','AND','NAND','XNOR'],2,1]
 ];
 function ExamSimulator({user}){
- const TOTAL=20;const [started,setStarted]=useState(false),[finished,setFinished]=useState(false),[index,setIndex]=useState(0),[answers,setAnswers]=useState({}),[time,setTime]=useState(30*60),[review,setReview]=useState({}),[score,setScore]=useState(null),[best,setBest]=useState(()=>Number(localStorage.getItem('nova_exam_best')||0)),[strategy,setStrategy]=useState(''),[strategyBusy,setStrategyBusy]=useState(false);
+ const TOTAL=20;const bestKey=`nova_exam_best_${user?.id||'guest'}`;
+ const [started,setStarted]=useState(false),[finished,setFinished]=useState(false),[index,setIndex]=useState(0),[answers,setAnswers]=useState({}),[time,setTime]=useState(30*60),[review,setReview]=useState({}),[score,setScore]=useState(null),[best,setBest]=useState(()=>Number(localStorage.getItem(bestKey)||localStorage.getItem('nova_exam_best')||0)),[strategy,setStrategy]=useState(''),[strategyBusy,setStrategyBusy]=useState(false);
  const [questions,setQuestions]=useState(()=>[...GATE_EXAM_BANK].sort(()=>Math.random()-.5));
  useModulePersistence(user?.id,'exam',{started,finished,index,answers,time,review,score,questions,strategy},{started:x=>setStarted(Boolean(x)),finished:x=>setFinished(Boolean(x)),index:x=>setIndex(Number(x)||0),answers:x=>setAnswers(x||{}),time:x=>setTime(Number(x)||0),review:x=>setReview(x||{}),score:x=>setScore(x??null),questions:x=>setQuestions(Array.isArray(x)&&x.length?x:GATE_EXAM_BANK),strategy:x=>setStrategy(x||'')});
- useEffect(()=>{if(!started||finished)return;const id=setInterval(()=>setTime(t=>{if(t<=1){clearInterval(id);finish();return 0}return t-1}),1000);return()=>clearInterval(id)},[started,finished]);
+ function finish(){let marks=0;questions.forEach((q,i)=>{if(answers[i]===q[3])marks+=q[4]});setScore(marks);setFinished(true);setStarted(false);if(marks>best){setBest(marks);localStorage.setItem(bestKey,String(marks))}}
+ const finishRef=useRef(finish);finishRef.current=finish;
+ useEffect(()=>{if(!started||finished)return;const id=setInterval(()=>setTime(t=>{if(t<=1){clearInterval(id);setTimeout(()=>finishRef.current(),0);return 0}return t-1}),1000);return()=>clearInterval(id)},[started,finished]);
  function start(){setQuestions([...GATE_EXAM_BANK].sort(()=>Math.random()-.5));setAnswers({});setReview({});setIndex(0);setTime(30*60);setFinished(false);setScore(null);setStrategy('');setStarted(true)}
- function finish(){let marks=0;questions.forEach((q,i)=>{if(answers[i]===q[3])marks+=q[4]});setScore(marks);setFinished(true);setStarted(false);if(marks>best){setBest(marks);localStorage.setItem('nova_exam_best',String(marks))}}
  async function generateStrategy(){if(score===null)return;setStrategyBusy(true);try{const subjectLines=[...new Set(questions.map(q=>q[0]))].map(sub=>{const qs=questions.map((q,i)=>({q,i})).filter(x=>x.q[0]===sub);const got=qs.filter(x=>answers[x.i]===x.q[3]).length;return `${sub}: ${got}/${qs.length}`}).join('; ');const r=await api('/ai/ask',{method:'POST',body:JSON.stringify({task:'EXAM_STRATEGY',topic:'GATE CSE mock analysis',message:`Student completed a 20-question GATE CSE mock. Score: ${score}/20. Subject results: ${subjectLines}. Give a concise exam strategy: 3 strengths, 3 weak areas, what to revise first, and a 3-day recovery plan. Do not invent data beyond these results.`,level:'exam-focused',language:getAiLanguage()})});setStrategy(r.answer||'No strategy returned.')}catch(e){setStrategy('AI strategy unavailable right now. Review the subject breakdown and try again later.')}finally{setStrategyBusy(false)}}
  const answered=Object.keys(answers).length;const mins=String(Math.floor(time/60)).padStart(2,'0'),secs=String(time%60).padStart(2,'0');
  if(!started&&!finished)return <><div className="page-title"><span className="eyebrow">V24 • EXAM INTELLIGENCE</span><h1>Exam <span>Simulator.</span></h1><p>Practice in a focused exam environment with a timer, question palette, review marks and a detailed result.</p></div><div className="exam-start-grid"><section className="panel exam-hero"><div className="exam-hero-icon"><Trophy size={34}/></div><span className="eyebrow">GATE CSE • MOCK TEST</span><h2>20 questions • 30 minutes</h2><p>Mixed CSE subjects, one mark each. Navigate freely, mark questions for review and submit when ready. Your best score is saved on this device.</p><div className="exam-rules"><span><Clock3 size={15}/> 30 min timer</span><span><Target size={15}/> 20 marks</span><span><RotateCcw size={15}/> Mark for review</span><span><BarChart3 size={15}/> Instant analysis</span></div><button className="primary" onClick={start}>Start mock test <ChevronRight size={15}/></button></section><section className="panel exam-blueprint"><div className="panel-head"><div><span className="eyebrow">BLUEPRINT</span><h3>What you'll practice</h3></div><Brain size={19}/></div>{['Algorithms & Data Structures','DBMS & Operating Systems','Networks & TOC','Compiler & COA','Discrete Mathematics & Digital Logic'].map((x,i)=><div className="blueprint-row" key={x}><span>{i+1}</span><b>{x}</b><small>4 questions</small></div>)}<div className="best-score"><span>Best score</span><strong>{best}/20</strong></div></section></div></>;
@@ -1736,7 +2138,7 @@ function Interviewer({user}){
  function stopListen(){listenRestartRef.current=false;try{recognitionRef.current?.stop()}catch{}recognitionRef.current=null;setListening(false)}
  function listen(){if(listening){stopListen();return}if(!supported)return;stopSpeech();listenRestartRef.current=true;const SR=window.SpeechRecognition||window.webkitSpeechRecognition;const startRecognition=()=>{if(!listenRestartRef.current)return;const r=new SR();recognitionRef.current=r;r.lang=getSpeechLanguage();r.interimResults=true;r.continuous=true;r.onstart=()=>setListening(true);r.onend=()=>{recognitionRef.current=null;if(listenRestartRef.current){setTimeout(startRecognition,120);return}setListening(false)};r.onresult=e=>{let t='';for(let i=0;i<e.results.length;i++)t+=e.results[i][0].transcript+' ';setAnswer(t.trim())};r.onerror=e=>{if(e?.error==='not-allowed'||e?.error==='service-not-allowed'){listenRestartRef.current=false;setListening(false);recognitionRef.current=null}};try{r.start()}catch{if(listenRestartRef.current)setTimeout(startRecognition,250)}};startRecognition()}
  function extractScore(text){const m=String(text||'').match(/(?:score|rating)\s*(?:is|of)?\s*[:\-]?\s*(\d{1,2})(?:\s*\/\s*10)?/i);return m?Math.min(10,Number(m[1])):null}
- async function askNext(questionNumber,candidateAnswer=''){setLoading(true);try{const r=await api('/interview/ask',{method:'POST',body:JSON.stringify({type,role,difficulty,questionNumber,answer:candidateAnswer,subject,mode,language:getAiLanguage()})});const text=r.answer||'';setQuestion(text);setFeedback(candidateAnswer?text:'');const score=extractScore(text);if(candidateAnswer&&score!==null)setScores(prev=>[...prev,score]);setStarted(true);setQno(questionNumber);setAnswer('');if(questionNumber>=TOTAL)setFinished(true)}catch(e){setFeedback('Interview AI unavailable. '+e.message)}finally{setLoading(false)}}
+ async function askNext(questionNumber,candidateAnswer=''){setLoading(true);try{const r=await api('/interview/ask',{method:'POST',body:JSON.stringify({type,role,difficulty,questionNumber,answer:candidateAnswer,subject,mode,language:getAiLanguage()})});const text=r.answer||'';setQuestion(text);setFeedback(candidateAnswer?text:'');const score=extractScore(text);if(candidateAnswer&&score!==null)setScores(prev=>[...prev,score]);setStarted(true);setQno(questionNumber);setAnswer('');}catch(e){setFeedback('Interview AI unavailable. '+e.message)}finally{setLoading(false)}}
  function start(){stopSpeech();stopListen();setScores([]);setFinished(false);setCoachReview('');setQuestion('');setFeedback('');setAnswer('');askNext(1,'')}
  async function submit(){if(!answer.trim()||loading)return;if(qno>=TOTAL){setLoading(true);try{const r=await api('/interview/ask',{method:'POST',body:JSON.stringify({type,role,difficulty,questionNumber:TOTAL,answer,subject,mode,language:getAiLanguage()})});const text=r.answer||'';setFeedback(text);const score=extractScore(text);const finalScores=score===null?scores:[...scores,score];setScores(finalScores);setAnswer('');setFinished(true);setQno(TOTAL)}catch(e){setFeedback('Interview AI unavailable. '+e.message)}finally{setLoading(false)}return}await askNext(qno+1,answer)}
  const avg=scores.length?Math.round(scores.reduce((a,b)=>a+b,0)/scores.length*10)/10:0;const progress=Math.round((Math.min(qno,TOTAL)/TOTAL)*100);
@@ -1747,11 +2149,11 @@ function VoiceTutor({user}){
  const memory=readVoiceTutorMemory(user?.id); const [heard,setHeard]=useState(memory.message||''),[answer,setAnswer]=useState(memory.answer||''),[loading,setLoading]=useState(false),[listening,setListening]=useState(false),[speaking,setSpeaking]=useState(false);const recognitionRef=React.useRef(null);const supported=typeof window!=='undefined'&&(window.SpeechRecognition||window.webkitSpeechRecognition);
  useEffect(()=>{const apply=()=>{const m=readVoiceTutorMemory(user?.id);setHeard(m.message||'');setAnswer(m.answer||'');};window.addEventListener('nova:voice-tutor-memory-updated',apply);return()=>window.removeEventListener('nova:voice-tutor-memory-updated',apply)},[user?.id]);
  function stopSpeaking(){window.speechSynthesis?.cancel();setSpeaking(false)}function stopListening(){try{recognitionRef.current?.abort()}catch{}recognitionRef.current=null;setListening(false)}
- function clearSession(){stopSpeaking();stopListening();setHeard('');setAnswer('');setLoading(false);saveTutorMemory(user?.id,{topic:'Voice learning',message:'',answer:'',feedback:'',studentAnswer:'',answerSubmitted:false,history:[]});}
+ function clearSession(){stopSpeaking();stopListening();setHeard('');setAnswer('');setLoading(false);saveVoiceTutorMemory(user?.id,{topic:'Voice learning',message:'',answer:'',feedback:'',studentAnswer:'',answerSubmitted:false,history:[]});}
  function speak(){if(!answer||!window.speechSynthesis)return;stopSpeaking();const u=new SpeechSynthesisUtterance(answer);u.lang=getVoiceTutorLanguage();u.rate=1.0;u.pitch=1.06;u.volume=1;u.voice=getFemaleEnglishVoice();u.onstart=()=>setSpeaking(true);u.onend=()=>setSpeaking(false);u.onerror=()=>setSpeaking(false);window.speechSynthesis.speak(u)}
  function listen(){if(listening){stopListening();return}if(!supported){setHeard('Voice recognition is not supported in this browser. Chrome works best.');return}stopSpeaking();const SR=window.SpeechRecognition||window.webkitSpeechRecognition;const r=new SR();recognitionRef.current=r;r.lang=getVoiceTutorLanguage();r.interimResults=true;r.continuous=false;r.onstart=()=>setListening(true);r.onend=()=>{setListening(false);recognitionRef.current=null};r.onresult=e=>{let t='';for(let i=0;i<e.results.length;i++)t+=e.results[i][0].transcript+' ';setHeard(t.trim())};r.onerror=e=>{setListening(false);recognitionRef.current=null;if(e?.error!=='aborted')setHeard('Microphone/voice recognition failed. Please allow microphone access.')};try{r.start()}catch{stopListening()}}
  async function ask(){if(!heard.trim())return;setLoading(true);try{const voiceContextKey='voice';const spokenQuestion=heard.trim();const spokenRequest=`CURRENT SPOKEN FOLLOW-UP QUESTION\nThis is a NEW question spoken by the student after they may have just studied a lesson with the AI Teacher. Answer ONLY this current spoken question.\n\nIMPORTANT CONTEXT ISOLATION RULES:\n- Do NOT continue, repeat, summarize, or complete the previous lesson explanation.\n- Do NOT assume the previous lesson topic is the topic of this question.\n- Treat the spoken question below as the highest-priority topic.\n- Use the previous lesson only if the student explicitly refers to it with words such as "that", "it", "the previous concept", or "what you just explained".\n- If the question is self-contained, answer it as a completely fresh question.\n- Never answer the previous lesson merely because the current question is short.\n\nAnswer this spoken student question in the configured AI response language with a warm conversational tutor style. Explain the current question step-by-step, include examples when useful, and finish with one short check question. Do not repeat the student's question.\n\nCURRENT SPOKEN QUESTION ONLY:\n${spokenQuestion}`;const r=await api('/ai/ask',{method:'POST',body:JSON.stringify({task:'TUTOR',topic:'Current spoken question (ignore previous lesson topic unless explicitly referenced)',message:spokenRequest,level:'beginner',language:getAiLanguage()})});const nextAnswer=r.answer||'';setAnswer(nextAnswer);saveVoiceTutorMemory(user?.id,{topic:'Voice learning',message:spokenQuestion,answer:nextAnswer,feedback:'',studentAnswer:'',answerSubmitted:false,contextKey:voiceContextKey});appendVoiceTutorTurn(user?.id,'USER',spokenQuestion,{topic:'Voice learning',source:'voice-tutor',contextKey:voiceContextKey});appendVoiceTutorTurn(user?.id,'ASSISTANT',nextAnswer,{topic:'Voice learning',source:'voice-tutor',contextKey:voiceContextKey});}catch(e){setAnswer('Voice tutor unavailable. '+e.message)}finally{setLoading(false)}}
  useEffect(()=>{const refresh=()=>{try{window.speechSynthesis?.getVoices()}catch{}};refresh();window.speechSynthesis?.addEventListener?.('voiceschanged',refresh);return()=>window.speechSynthesis?.removeEventListener?.('voiceschanged',refresh)},[]);
  useEffect(()=>()=>{stopSpeaking();stopListening()},[]);
- return <><div className="page-title"><span className="eyebrow">VOICE LEARNING • NATURAL SPEECH</span><h1>Voice <span>Tutor.</span></h1><p>Type or speak naturally. Nova answers, and you can listen to the explanation.</p></div><div className="voice-grid"><div className="voice-card voice-main"><div className={'mic-orb '+(listening?'listening':'')}><Mic size={48}/></div><h2>{listening?'Listening…':'Talk to your tutor'}</h2><p>Use the composer below to type a question or speak it with your microphone.</p><div className="voice-composer"><textarea value={heard} onChange={e=>setHeard(e.target.value)} rows="3" placeholder={listening?'Listening… speak naturally':'Type your question or tap the microphone to speak…'} disabled={loading}/><div className="voice-composer-actions"><button type="button" className={listening?'danger-btn':'secondary'} onClick={listen}>{listening?<><MicOff size={15}/> Stop listening</>:<><Mic size={15}/> Speak</>}</button><button type="button" className="primary" onClick={ask} disabled={!heard.trim()||loading}>{loading?'Thinking…':'Ask Nova AI'} <Send size={14}/></button></div></div><button className="secondary" onClick={clearSession} disabled={listening||speaking||loading}><Trash2 size={15}/> Clear conversation</button>{!supported&&<small className="voice-note">Your browser does not expose SpeechRecognition. Chrome generally works best.</small>}</div><div className="voice-card voice-answer"><div className="answer-head"><div className="ai-avatar"><Volume2 size={17}/></div><div><b>Nova AI</b><small>Teaching response</small></div></div><div className="voice-text answer voice-answer-scroll">{answer?<AiMarkdown content={answer}/>:<span className="muted">Your AI explanation will appear here.</span>}</div><div className="voice-audio-actions"><button className={speaking?'danger-btn':'secondary'} onClick={speak} disabled={!answer}>{speaking?<><StopCircle size={15}/> Stop voice</>:<><Volume2 size={15}/> Read answer aloud</>}</button>{speaking&&<button className="secondary" onClick={stopSpeaking}><VolumeX size={15}/> Force stop</button>}</div></div></div></>}
+ return <><div className="page-title"><span className="eyebrow">VOICE LEARNING • NATURAL SPEECH</span><h1>Voice <span>Tutor.</span></h1><p>Type or speak naturally. Nova answers, and you can listen to the explanation.</p></div><div className="voice-grid"><div className="voice-card voice-main"><div className={'mic-orb '+(listening?'listening':'')}><Mic size={48}/></div><h2>{listening?'Listening…':'Talk to your tutor'}</h2><p>Use the composer below to type a question or speak it with your microphone.</p><div className="voice-composer"><textarea value={heard} onChange={e=>setHeard(e.target.value)} rows="3" placeholder={listening?'Listening… speak naturally':'Type your question or tap the microphone to speak…'} disabled={loading}/><div className="voice-composer-actions"><button type="button" className={listening?'danger-btn':'secondary'} onClick={listen}>{listening?<><MicOff size={15}/> Stop listening</>:<><Mic size={15}/> Speak</>}</button><button type="button" className="primary" onClick={ask} disabled={!heard.trim()||loading}>{loading?'Thinking…':'Ask Nova AI'} <Send size={14}/></button></div></div><button className="secondary" onClick={clearSession} disabled={listening||speaking||loading}><Trash2 size={15}/> Clear conversation</button>{!supported&&<small className="voice-note">Your browser does not expose SpeechRecognition. Chrome generally works best.</small>}</div><div className="voice-card voice-answer"><div className="answer-head"><div className="ai-avatar"><Volume2 size={17}/></div><div><b>Nova AI</b><small>Teaching response</small></div></div><div className="voice-text answer voice-answer-scroll">{answer?<AiMarkdown content={answer}/>:<span className="muted">Your AI explanation will appear here.</span>}</div><div className="voice-audio-actions"><button className={speaking?'danger-btn':'secondary'} onClick={()=>speaking?stopSpeaking():speak()} disabled={!answer}>{speaking?<><StopCircle size={15}/> Stop voice</>:<><Volume2 size={15}/> Read answer aloud</>}</button>{speaking&&<button className="secondary" onClick={stopSpeaking}><VolumeX size={15}/> Force stop</button>}</div></div></div></>}
 

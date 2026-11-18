@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 
@@ -14,6 +15,7 @@ import java.security.KeyFactory;
 import java.security.PublicKey;
 import java.security.Signature;
 import java.security.spec.RSAPublicKeySpec;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.HashMap;
@@ -32,17 +34,22 @@ public class GoogleIdTokenVerifier {
     private static final String CERTS_URL = "https://www.googleapis.com/oauth2/v3/certs";
     private static final String[] ISSUERS = {"accounts.google.com", "https://accounts.google.com"};
     private static final long KEY_TTL_SECONDS = 3600;
+    private static final long FORCED_REFRESH_COOLDOWN_SECONDS = 60;
     private static final long CLOCK_SKEW_SECONDS = 60;
 
     private final String clientId;
     private final ObjectMapper mapper;
-    private final RestClient http = RestClient.create();
-    private final Map<String, CachedKey> keys = new HashMap<>();
+    private final RestClient http;
+    private volatile Map<String, CachedKey> keys = Map.of();
     private volatile long keysFetchedAt = 0;
 
     public GoogleIdTokenVerifier(@Value("${app.google.client-id:}") String clientId, ObjectMapper mapper) {
         this.clientId = clientId == null ? "" : clientId.trim();
         this.mapper = mapper;
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(Duration.ofSeconds(5));
+        factory.setReadTimeout(Duration.ofSeconds(10));
+        this.http = RestClient.builder().requestFactory(factory).build();
     }
 
     public boolean isConfigured() { return !clientId.isBlank(); }
@@ -137,6 +144,7 @@ public class GoogleIdTokenVerifier {
     private synchronized void refreshKeys(boolean force) {
         long now = Instant.now().getEpochSecond();
         if (!force && now - keysFetchedAt < KEY_TTL_SECONDS && !keys.isEmpty()) return;
+        if (force && now - keysFetchedAt < FORCED_REFRESH_COOLDOWN_SECONDS && !keys.isEmpty()) return;
         try {
             String body = http.get().uri(CERTS_URL).retrieve().body(String.class);
             JsonNode root = mapper.readTree(body == null ? "{}" : body);
@@ -150,9 +158,8 @@ public class GoogleIdTokenVerifier {
                 fresh.put(key.path("kid").asText(), new CachedKey(publicKey));
             }
             if (!fresh.isEmpty()) {
-                keys.clear();
-                keys.putAll(fresh);
-                keysFetchedAt = now;
+                this.keys = Map.copyOf(fresh);
+                this.keysFetchedAt = now;
             }
         } catch (Exception ignored) {
             // A transient JWKS outage must not crash the app; verification fails

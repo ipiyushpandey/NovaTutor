@@ -16,6 +16,7 @@ public final class DsaCatalog {
 
     private static final Map<String, DsaProblem> BY_SLUG = new LinkedHashMap<>();
     private static final List<DsaProblem> ALL = new ArrayList<>();
+    private static volatile List<DProblemSummary> cachedSummaries = null;
     private static boolean registered = false;
 
     public static synchronized void register(List<DsaProblem> problems) {
@@ -25,12 +26,20 @@ public final class DsaCatalog {
             if (prev == null) ALL.add(p);
             else ALL.set(ALL.indexOf(prev), p);
         }
+        cachedSummaries = null;
         registered = true;
     }
 
-    public static synchronized List<DProblemSummary> summaries() {
-        ensure();
-        return ALL.stream().map(DsaCatalog::summary).toList();
+    public static List<DProblemSummary> summaries() {
+        List<DProblemSummary> snapshot = cachedSummaries;
+        if (snapshot != null) return snapshot;
+        synchronized (DsaCatalog.class) {
+            if (cachedSummaries == null) {
+                ensure();
+                cachedSummaries = List.copyOf(ALL.stream().map(DsaCatalog::summary).toList());
+            }
+            return cachedSummaries;
+        }
     }
 
     public static synchronized DsaProblem bySlug(String slug) {

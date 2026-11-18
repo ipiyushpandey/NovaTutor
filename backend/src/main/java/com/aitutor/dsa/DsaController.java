@@ -103,12 +103,13 @@ public class DsaController {
     private Map<String, Object> runToMap(DsaJudgeService.RunResult r) {
         List<Map<String, Object>> tests = new ArrayList<>();
         for (DsaJudgeService.TestResult t : r.tests()) {
+            boolean sample = t.sample();
             tests.add(Map.of(
                     "index", t.index(),
-                    "sample", t.sample(),
-                    "input", t.input() == null ? "" : t.input(),
-                    "expected", t.expected() == null ? "" : t.expected(),
-                    "actual", t.actual() == null ? "" : t.actual(),
+                    "sample", sample,
+                    "input", sample && t.input() != null ? t.input() : "",
+                    "expected", sample && t.expected() != null ? t.expected() : "",
+                    "actual", sample && t.actual() != null ? t.actual() : "",
                     "passed", t.passed(),
                     "note", t.note() == null ? "" : t.note()));
         }
@@ -153,6 +154,12 @@ public class DsaController {
     public Map<String, Object> saveCode(@PathVariable String slug, @RequestBody SaveCodeRequest request,
                                         Authentication authentication) {
         User user = authenticatedUser.require(authentication);
+        if (request == null) {
+            throw new com.aitutor.controller.ApiException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Request body is required.");
+        }
+        if (request.code() != null && request.code().length() > 250_000) {
+            throw new com.aitutor.controller.ApiException(org.springframework.http.HttpStatus.BAD_REQUEST, "CODE_TOO_LARGE", "Code exceeds the maximum allowed size.");
+        }
         DsaProblemState st = states.findByUserIdAndSlug(user.getId(), slug)
                 .orElseGet(() -> new DsaProblemState(user, slug));
         if (request.language() != null) st.setLastLanguage(request.language());

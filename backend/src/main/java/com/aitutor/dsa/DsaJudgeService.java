@@ -76,37 +76,134 @@ public class DsaJudgeService {
                     List.of(), 0, 0, false, 0);
         }
 
-        // Validate every candidate test against the oracle up front. Only tests
-        // the oracle can evaluate are executed, so line N of stdout always
-        // belongs to test N.
-        List<String[]> tests = new ArrayList<>();
-        List<String> expectedAll = new ArrayList<>();
+        // Validate every candidate test against the oracle up front. Samples and
+        // hidden tests are separated and executed in DISTINCT sandbox invocations
+        // so student code cannot read ahead on stdin during sample execution or
+        // echo hidden test inputs via stderr/stdout (HIGH-SEC-01).
+        List<String[]> sampleTests = new ArrayList<>();
+        List<String> sampleExpected = new ArrayList<>();
         for (String[] sample : problem.samples()) {
             String expected = expectedFor(problem, sample[0]);
             if (expected == null) continue;
-            tests.add(sample);
-            expectedAll.add(expected);
+            sampleTests.add(sample);
+            sampleExpected.add(expected);
         }
+        List<String[]> hiddenTests = new ArrayList<>();
+        List<String> hiddenExpected = new ArrayList<>();
         for (String[] hidden : problem.hiddenTests(HIDDEN_TESTS_PER_RUN)) {
             String expected = expectedFor(problem, hidden[0]);
             if (expected == null) continue;
-            tests.add(hidden);
-            expectedAll.add(expected);
+            hiddenTests.add(hidden);
+            hiddenExpected.add(expected);
         }
-        if (tests.isEmpty()) {
+        int totalTests = sampleTests.size() + hiddenTests.size();
+        if (totalTests == 0) {
             return new RunResult("NO_TESTS", "This problem has no runnable tests yet.", List.of(), 0, 0, false, 0);
         }
 
-        int sampleCount = problem.samples().size();
         String program = lang.harness(problem.sig(), request.code() == null ? "" : request.code());
-        StringBuilder stdin = new StringBuilder();
-        for (String[] t : tests) stdin.append(t[0]).append('\n');
+        long totalDurationMs = 0L;
+        long maxMemoryKb = 0L;
 
-        Map<String, Object> out = sandbox.execute(langLabel(lang), program, stdin.toString());
-        String status = String.valueOf(out.get("status"));
-        long durationMs = out.get("durationMs") instanceof Number n ? n.longValue() : 0L;
-        long memoryKb = out.get("memoryKb") instanceof Number mk ? mk.longValue() : 0L;
+        // 1) Execute sample tests with ONLY sample inputs on stdin.
+        List<String> sampleLines = List.of();
+        if (!sampleTests.isEmpty()) {
+            StringBuilder sampleStdin = new StringBuilder();
+            for (String[] t : sampleTests) sampleStdin.append(t[0]).append('\n');
 
+            Map<String, Object> out = sandbox.execute(langLabel(lang), program, sampleStdin.toString());
+            String status = String.valueOf(out.get("status"));
+            long durationMs = out.get("durationMs") instanceof Number n ? n.longValue() : 0L;
+            long memoryKb = out.get("memoryKb") instanceof Number mk ? mk.longValue() : 0L;
+            totalDurationMs += durationMs;
+            maxMemoryKb = Math.max(maxMemoryKb, memoryKb);
+
+            RunResult early = checkExecutionFailure(out, status, totalTests, totalDurationMs, maxMemoryKb,
+                    lang, true, user, problem, recordProgress);
+            if (early != null) return early;
+
+            sampleLines = outputLines(String.valueOf(out.getOrDefault("stdout", "")));
+            int exitCode = out.get("exitCode") instanceof Integer i ? i : 0;
+            String stderr = String.valueOf(out.getOrDefault("stderr", ""));
+            if (sampleLines.isEmpty() && exitCode != 0) {
+                if (recordProgress && user != null) record(user, problem, lang, 0, totalTests, false);
+                return new RunResult("RUNTIME_ERROR", firstMeaningful(stderr, lang), List.of(), 0, totalTests, false, totalDurationMs, maxMemoryKb);
+            }
+        }
+
+        // 2) Execute hidden tests in a completely separate sandbox invocation with ONLY hidden inputs.
+        //    Raw stderr from this execution is NEVER returned to the client.
+        List<String> hiddenLines = List.of();
+        if (!hiddenTests.isEmpty()) {
+            StringBuilder hiddenStdin = new StringBuilder();
+            for (String[] t : hiddenTests) hiddenStdin.append(t[0]).append('\n');
+
+            Map<String, Object> hiddenOut = sandbox.execute(langLabel(lang), program, hiddenStdin.toString());
+            String hiddenStatus = String.valueOf(hiddenOut.get("status"));
+            long hiddenDurationMs = hiddenOut.get("durationMs") instanceof Number n ? n.longValue() : 0L;
+            long hiddenMemoryKb = hiddenOut.get("memoryKb") instanceof Number mk ? mk.longValue() : 0L;
+            totalDurationMs += hiddenDurationMs;
+            maxMemoryKb = Math.max(maxMemoryKb, hiddenMemoryKb);
+
+            RunResult earlyHidden = checkExecutionFailure(hiddenOut, hiddenStatus, totalTests, totalDurationMs, maxMemoryKb,
+                    lang, false, user, problem, recordProgress);
+            if (earlyHidden != null) return earlyHidden;
+
+            hiddenLines = outputLines(String.valueOf(hiddenOut.getOrDefault("stdout", "")));
+            int hiddenExitCode = hiddenOut.get("exitCode") instanceof Integer i ? i : 0;
+            if (hiddenLines.isEmpty() && hiddenExitCode != 0) {
+                if (recordProgress && user != null) record(user, problem, lang, 0, totalTests, false);
+                return new RunResult("RUNTIME_ERROR", "Runtime error on hidden test suite.",
+                        List.of(), 0, totalTests, false, totalDurationMs, maxMemoryKb);
+            }
+        }
+
+        List<TestResult> results = new ArrayList<>();
+        int passed = 0;
+        for (int i = 0; i < sampleTests.size(); i++) {
+            String[] t = sampleTests.get(i);
+            String expected = sampleExpected.get(i);
+            boolean produced = i < sampleLines.size();
+            String actual = produced ? sampleLines.get(i) : "";
+            boolean runtimeFailure = "ERROR".equals(actual.trim());
+            boolean ok = produced && !runtimeFailure && outputsMatch(actual, expected);
+            if (ok) passed++;
+            String note = null;
+            if (!ok) {
+                if (!produced) note = "No output produced for this test (the program stopped early or crashed).";
+                else if (runtimeFailure) note = "Runtime error on this test.";
+            }
+            results.add(new TestResult(i, true, pretty(problem, t), expected, actual, ok, note));
+        }
+        for (int i = 0; i < hiddenTests.size(); i++) {
+            int idx = sampleTests.size() + i;
+            String expected = hiddenExpected.get(i);
+            boolean produced = i < hiddenLines.size();
+            String actual = produced ? hiddenLines.get(i) : "";
+            boolean runtimeFailure = "ERROR".equals(actual.trim());
+            boolean ok = produced && !runtimeFailure && outputsMatch(actual, expected);
+            if (ok) passed++;
+            String note = null;
+            if (!ok) {
+                if (!produced) note = "No output produced for this test (the program stopped early or crashed).";
+                else if (runtimeFailure) note = "Runtime error on hidden test.";
+                else note = "Hidden test failed — check edge cases.";
+            }
+            // Never leak hidden test inputs, expected outputs, or raw outputs to the client.
+            results.add(new TestResult(idx, false, "", "", "", ok, note));
+        }
+
+        boolean accepted = passed == totalTests;
+        if (recordProgress && user != null) record(user, problem, lang, passed, totalTests, accepted);
+        String message = accepted
+                ? "All " + totalTests + " tests passed."
+                : passed + " of " + totalTests + " tests passed.";
+        return new RunResult(accepted ? "PASSED" : "FAILED", message, results, passed, totalTests, accepted, totalDurationMs, maxMemoryKb);
+    }
+
+    private RunResult checkExecutionFailure(Map<String, Object> out, String status, int totalTests,
+                                            long durationMs, long memoryKb, DsaLang lang, boolean exposeStderr,
+                                            User user, DsaProblem problem, boolean recordProgress) {
         if (!Boolean.TRUE.equals(out.get("enabled"))) {
             String msg = String.valueOf(out.getOrDefault("message", "Code execution is not available."));
             return new RunResult(String.valueOf(out.getOrDefault("status", "SANDBOX_NOT_ENABLED")), msg,
@@ -117,65 +214,31 @@ public class DsaJudgeService {
         }
         if ("RUNNER_UNAVAILABLE".equals(status)) {
             return new RunResult("RUNNER_UNAVAILABLE",
-                    String.valueOf(out.getOrDefault("stderr", "The code execution service is unavailable.")),
+                    exposeStderr
+                            ? String.valueOf(out.getOrDefault("stderr", "The code execution service is unavailable."))
+                            : "The code execution service is unavailable.",
                     List.of(), 0, 0, false, durationMs);
         }
         if ("TIMEOUT".equals(status)) {
-            if (recordProgress && user != null) record(user, problem, lang, 0, tests.size(), false);
-            return new RunResult("TIMEOUT", "Time limit exceeded — your program ran longer than the judge allows.", List.of(), 0, tests.size(), false, durationMs);
+            if (recordProgress && user != null) record(user, problem, lang, 0, totalTests, false);
+            return new RunResult("TIMEOUT", "Time limit exceeded — your program ran longer than the judge allows.", List.of(), 0, totalTests, false, durationMs);
         }
         if ("MEMORY_LIMIT".equals(status)) {
-            if (recordProgress && user != null) record(user, problem, lang, 0, tests.size(), false);
+            if (recordProgress && user != null) record(user, problem, lang, 0, totalTests, false);
             long limitKb = out.get("memoryLimitKb") instanceof Number n ? n.longValue() : 0L;
             String limit = limitKb > 0 ? " the judge's " + Math.max(1, limitKb / 1024) + " MB limit" : "the judge's memory limit";
             return new RunResult("MEMORY_LIMIT",
                     "Memory limit exceeded — your program was stopped at" + limit
                             + ". Reduce large allocations and try again.",
-                    List.of(), 0, tests.size(), false, durationMs, memoryKb);
+                    List.of(), 0, totalTests, false, durationMs, memoryKb);
         }
         if ("COMPILE_ERROR".equals(status)) {
             String stderr = String.valueOf(out.getOrDefault("stderr", ""));
-            if (recordProgress && user != null) record(user, problem, lang, 0, tests.size(), false);
-            return new RunResult("COMPILE_ERROR", firstMeaningful(stderr, lang), List.of(), 0, tests.size(), false, durationMs);
+            if (recordProgress && user != null) record(user, problem, lang, 0, totalTests, false);
+            String msg = exposeStderr ? firstMeaningful(stderr, lang) : "Compilation failed on hidden test suite.";
+            return new RunResult("COMPILE_ERROR", msg, List.of(), 0, totalTests, false, durationMs);
         }
-
-        List<String> lines = outputLines(String.valueOf(out.getOrDefault("stdout", "")));
-        int exitCode = out.get("exitCode") instanceof Integer i ? i : 0;
-        String stderr = String.valueOf(out.getOrDefault("stderr", ""));
-
-        // No output at all and a non-zero exit: the program never produced a
-        // verdict (link error, crash before first print).
-        if (lines.isEmpty() && exitCode != 0) {
-            if (recordProgress && user != null) record(user, problem, lang, 0, tests.size(), false);
-            return new RunResult("RUNTIME_ERROR", firstMeaningful(stderr, lang), List.of(), 0, tests.size(), false, durationMs);
-        }
-
-        List<TestResult> results = new ArrayList<>();
-        int passed = 0;
-        for (int i = 0; i < tests.size(); i++) {
-            String[] t = tests.get(i);
-            boolean sample = i < sampleCount;
-            String expected = expectedAll.get(i);
-            boolean produced = i < lines.size();
-            String actual = produced ? lines.get(i) : "";
-            boolean runtimeFailure = "ERROR".equals(actual.trim());
-            boolean ok = produced && !runtimeFailure && outputsMatch(actual, expected);
-            if (ok) passed++;
-            String note = null;
-            if (!ok) {
-                if (!produced) note = "No output produced for this test (the program stopped early or crashed).";
-                else if (runtimeFailure) note = "Runtime error on this test.";
-                else if (!sample) note = "Hidden test failed — check edge cases.";
-            }
-            results.add(new TestResult(i, sample, pretty(problem, t), expected, actual, ok, note));
-        }
-
-        boolean accepted = passed == tests.size();
-        if (recordProgress && user != null) record(user, problem, lang, passed, tests.size(), accepted);
-        String message = accepted
-                ? "All " + tests.size() + " tests passed."
-                : passed + " of " + tests.size() + " tests passed.";
-        return new RunResult(accepted ? "PASSED" : "FAILED", message, results, passed, tests.size(), accepted, durationMs, memoryKb);
+        return null;
     }
 
     private static String expectedFor(DsaProblem p, String rawLine) {

@@ -22,6 +22,7 @@ public class DppController {
  @PostMapping("/generate")
  public AiResponse generate(@RequestBody Request r, Authentication authentication){
    Course c=courses.findById(r.courseId()).orElseThrow(); User u=authenticatedUser.require(authentication);
+   if (!c.isPublished() && !authenticatedUser.isAdmin(u)) throw new NoSuchElementException("Course not found");
    String prompt="Create today's Daily Practice Problems (DPP) for the student. Course: " + c.getTitle()
      + ". Description: " + (c.getDescription()==null?"":c.getDescription())
      + ". Student goal: " + safe(u.getLearningGoal())

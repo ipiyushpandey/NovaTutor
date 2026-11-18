@@ -51,13 +51,49 @@ class AuthServiceTest {
     }
 
     @Test
-    void duplicateUnverifiedEmailReturnsThePendingAccount() {
-        User existing = new User("A", "student@example.com", "hash");
+    void duplicateUnverifiedEmailDoesNotOverwriteExistingCredentialsInPlace() {
+        User existing = new User("Victim", "student@example.com", "victim-hash");
         existing.setEmailVerified(false);
+        existing.setVerificationTokenHash("victim-token-hash");
         when(repo.findByEmail("student@example.com")).thenReturn(Optional.of(existing));
-        User returned = service.register("B", "student@example.com", "password123");
+        User returned = service.register("Attacker", "student@example.com", "attacker-password-123");
         assertSame(existing, returned);
-        verify(repo, never()).save(any(User.class));
+        assertEquals("Victim", returned.getName());
+        assertEquals("victim-hash", returned.getPassword());
+        assertEquals("victim-token-hash", returned.getVerificationTokenHash());
+        verify(repo, never()).save(existing);
+    }
+
+    @Test
+    void googleLoginOverLegacyUnverifiedRowRotatesPasswordAndClearsTokens() {
+        User preRegistered = new User("Attacker", "victim@example.com", "attacker-known-hash");
+        preRegistered.setEmailVerified(false);
+        preRegistered.setVerificationTokenHash("attacker-verify-hash");
+        preRegistered.setResetTokenHash("attacker-reset-hash");
+        when(repo.findByGoogleSubject("victim-google-sub")).thenReturn(Optional.empty());
+        when(repo.findByEmail("victim@example.com")).thenReturn(Optional.of(preRegistered));
+
+        User linked = service.googleLogin("victim@example.com", "victim-google-sub", "Real Victim");
+        assertTrue(linked.isEmailVerified());
+        assertEquals("victim-google-sub", linked.getGoogleSubject());
+        assertEquals("Real Victim", linked.getName());
+        assertNotEquals("attacker-known-hash", linked.getPassword());
+        assertNull(linked.getVerificationTokenHash());
+        assertNull(linked.getResetTokenHash());
+    }
+
+    @Test
+    void blockedAccountWithWrongPasswordReturnsInvalidCredentialsNotDisabled() {
+        User blocked = new User("Blocked", "blocked@example.com", "real-hash");
+        blocked.setEmailVerified(true);
+        blocked.setBlocked(true);
+        when(repo.findByEmail("blocked@example.com")).thenReturn(Optional.of(blocked));
+        when(encoder.matches("wrong-pass", "real-hash")).thenReturn(false);
+
+        ApiException err = assertThrows(ApiException.class,
+                () -> service.login("blocked@example.com", "wrong-pass"));
+        assertEquals("INVALID_CREDENTIALS", err.code());
+        assertEquals(401, err.status().value());
     }
 
     @Test

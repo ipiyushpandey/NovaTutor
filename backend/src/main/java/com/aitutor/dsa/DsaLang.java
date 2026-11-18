@@ -236,7 +236,17 @@ public enum DsaLang {
 
     // ------------------------------------------------------------------ Java
     private static String javaHarness(DsaSig sig, String userCode) {
-        String user = userCode.replace("public class Solution", "class Solution");
+        StringBuilder userImports = new StringBuilder();
+        StringBuilder userBody = new StringBuilder();
+        for (String line : userCode.split("\\R", -1)) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("import ") && trimmed.contains(";")) {
+                userImports.append(trimmed, 0, trimmed.indexOf(';') + 1).append('\n');
+            } else {
+                userBody.append(line).append('\n');
+            }
+        }
+        String user = userBody.toString().replaceFirst("\\bpublic\\s+(?:final\\s+)?class\\s+Solution\\b", "class Solution");
         String args = javaArgs(sig);
         String call = switch (sig.ret) {
             case INT, STRING -> "System.out.println(Solution.solve(" + args + "));";
@@ -247,7 +257,7 @@ public enum DsaLang {
         return """
             import java.util.*;
             import java.io.*;
-
+            %IMPORTS%
             public class Main {
                 private static int[] rdArr(String s) {
                     s = s == null ? "" : s.trim();
@@ -256,7 +266,7 @@ public enum DsaLang {
                     int[] a = new int[p.length];
                     for (int i = 0; i < p.length; i++) a[i] = Integer.parseInt(p[i].trim());
                     return a;
-}
+                }
                 private static int[][] rdMat(String s) {
                     s = s == null ? "" : s.trim();
                     if (s.isEmpty()) return new int[0][];
@@ -298,6 +308,7 @@ public enum DsaLang {
             %USER%
             """
             .replace("%CALL%", call)
+            .replace("%IMPORTS%", userImports.toString())
             .replace("%USER%", user.isBlank() ? "// (empty solution)" : user);
     }
 
@@ -325,7 +336,7 @@ public enum DsaLang {
             def _canon(v):
                 if isinstance(v, (list, tuple)):
                     if v and isinstance(v[0], (list, tuple)):
-                        return "[" + ";".join("[" + ",".join(str(x) for x in row) + "]" for row in v) + "]"
+                        return "[" + ";".join(",".join(str(x) for x in row) for row in v) + "]"
                     return "[" + ",".join(str(x) for x in v) + "]"
                 return str(v)
 
@@ -349,8 +360,8 @@ public enum DsaLang {
                 except Exception:
                     print("ERROR")
             """
-            .replace("%USER%", userCode.isBlank() ? "# (empty solution)" : userCode)
-            .replace("%ARGS%", args);
+            .replace("%ARGS%", args)
+            .replace("%USER%", userCode.isBlank() ? "# (empty solution)" : userCode);
     }
 
     private static String pyArg(DsaSig sig, int i) {
@@ -402,7 +413,7 @@ public enum DsaLang {
                 string t;
                 while (getline(ss, t, ',')) {
                     if (!t.empty()) out.push_back(stoi(t));
-}
+                }
                 return out;
             }
             static vector<vector<int>> rdMat(const string& s) {
@@ -452,8 +463,8 @@ public enum DsaLang {
                 return 0;
             }
             """
-            .replace("%USER%", userCode.isBlank() ? "// (empty solution)" : userCode)
-            .replace("%CALL%", prep + call);
+            .replace("%CALL%", prep + call)
+            .replace("%USER%", userCode.isBlank() ? "// (empty solution)" : userCode);
     }
 
     // --------------------------------------------------------------------- C
@@ -515,12 +526,12 @@ public enum DsaLang {
                 char str[100005];
             } Result;
 
-            static int _parseArr(const char* s, int* out, int cap) {
+            static int _parseArrN(const char* s, const char* limit, int* out, int cap) {
                 int n = 0;
-                char* p = (char*)s;
-                while (n < cap) {
-                    while (*p == ',' || *p == ' ' || *p == ';') p++;
-                    if (!*p) break;
+                const char* p = s;
+                while (p < limit && *p && n < cap) {
+                    while (p < limit && (*p == ',' || *p == ' ')) p++;
+                    if (p >= limit || !*p || *p == ';') break;
                     char* end;
                     long v = strtol(p, &end, 10);
                     if (end == p) break;
@@ -529,13 +540,16 @@ public enum DsaLang {
                 }
                 return n;
             }
+            static int _parseArr(const char* s, int* out, int cap) {
+                return _parseArrN(s, s + strlen(s), out, cap);
+            }
             static int _parseMat(const char* s, int* flat, int flatCap, int** rows, int* rlens, int maxRows) {
                 int nrows = 0, fpos = 0;
                 const char* p = s;
                 while (*p && nrows < maxRows) {
                     const char* rowEnd = p;
                     while (*rowEnd && *rowEnd != ';') rowEnd++;
-                    int len = _parseArr(p, flat + fpos, flatCap - fpos);
+                    int len = _parseArrN(p, rowEnd, flat + fpos, flatCap - fpos);
                     if (len > 0) { rows[nrows] = flat + fpos; rlens[nrows] = len; nrows++; fpos += len; }
                     if (!*rowEnd) break;
                     p = rowEnd + 1;
@@ -563,8 +577,14 @@ public enum DsaLang {
                     if (!len) continue;
                     char* parts[8];
                     int pc = 0;
-                    char* tok = strtok(_line, "|");
-                    while (tok && pc < 8) { parts[pc++] = tok; tok = strtok(NULL, "|"); }
+                    char* cur = _line;
+                    while (pc < 8) {
+                        parts[pc++] = cur;
+                        char* sep = strchr(cur, '|');
+                        if (!sep) break;
+                        *sep = '\\0';
+                        cur = sep + 1;
+                    }
                     if (pc < %NPARAMS%) continue;
                     {
             %DECLS%
@@ -578,13 +598,13 @@ public enum DsaLang {
                 return 0;
             }
             """
-            .replace("%USER%", userCode.isBlank() ? "/* (empty solution) */" : userCode)
             .replace("%NPARAMS%", String.valueOf(sig.params.size()))
             .replace("%DECLS%", decls.toString())
             .replace("%PARSE%", parse.toString())
             .replace("%ARGS%", args.toString())
             .replace("%PRINT%", print)
-            .replace("%HELPERS%", helpers.toString());
+            .replace("%HELPERS%", helpers.toString())
+            .replace("%USER%", userCode.isBlank() ? "/* (empty solution) */" : userCode);
     }
 
     // ------------------------------------------------------------- JavaScript
@@ -599,8 +619,8 @@ public enum DsaLang {
             const _canon = (v) => {
                 if (Array.isArray(v)) {
                     if (v.length && Array.isArray(v[0])) {
-                        return '[' + v.map(r => '[' + r.join(',') + ']').join(';') + ']';
-}
+                        return '[' + v.map(r => r.join(',')).join(';') + ']';
+                    }
                     return '[' + v.join(',') + ']';
                 }
                 return String(v);
@@ -623,8 +643,8 @@ public enum DsaLang {
                 }
             }
             """
-            .replace("%USER%", userCode.isBlank() ? "// (empty solution)" : userCode)
-            .replace("%CALL%", call);
+            .replace("%CALL%", call)
+            .replace("%USER%", userCode.isBlank() ? "// (empty solution)" : userCode);
     }
 
     private static String jsArg(DsaSig sig, int i) {
@@ -645,16 +665,53 @@ public enum DsaLang {
             case MATRIX -> "ptMat(solve(" + args + "))";
             default -> "fmt.Println(solve(" + args + "))";
         };
+        // Strip leading `package ...` declaration from student code so the
+        // harness never emits duplicate `package main` lines that fail Go compilation.
+        String cleanedUser = userCode.replaceFirst("(?s)^\\s*package\\s+\\w+\\s*;?\\s*\\R*", "");
+        // Hoist single-line `import "pkg"` and multi-line `import ( ... )` blocks
+        // to the top import block and deduplicate against harness built-in imports.
+        java.util.LinkedHashSet<String> imports = new java.util.LinkedHashSet<>(
+                java.util.List.of("\"bufio\"", "\"fmt\"", "\"os\"", "\"strconv\"", "\"strings\""));
+        StringBuilder userBody = new StringBuilder();
+        String[] lines = cleanedUser.split("\\R", -1);
+        boolean inImportBlock = false;
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (inImportBlock) {
+                if (trimmed.startsWith(")")) {
+                    inImportBlock = false;
+                    continue;
+                }
+                int commentIdx = trimmed.indexOf("//");
+                String spec = (commentIdx >= 0 ? trimmed.substring(0, commentIdx) : trimmed).trim();
+                if (!spec.isBlank() && spec.contains("\"")) {
+                    imports.add(spec);
+                }
+                continue;
+            }
+            if (trimmed.matches("^import\\s*\\(\\s*(?://.*)?$")) {
+                inImportBlock = true;
+                continue;
+            }
+            if (trimmed.matches("^import\\s+(?:[A-Za-z0-9_.]+\\s+)?\"[^\"]+\"\\s*;?\\s*(?://.*)?$")) {
+                int commentIdx = trimmed.indexOf("//");
+                String spec = (commentIdx >= 0 ? trimmed.substring(0, commentIdx) : trimmed)
+                        .replaceFirst("^import\\s+", "").replaceAll(";\\s*$", "").trim();
+                if (!spec.isBlank()) imports.add(spec);
+                continue;
+            }
+            userBody.append(line).append('\n');
+        }
+        StringBuilder importLines = new StringBuilder();
+        for (String imp : imports) {
+            importLines.append("    ").append(imp).append('\n');
+        }
+        String finalUser = userBody.toString();
         return """
             package main
 
             import (
-                "bufio"
-                "fmt"
-                "os"
-                "strconv"
-                "strings"
-            )
+            %IMPORTS%)
 
             func rdArr(s string) []int {
                 s = strings.TrimSpace(s)
@@ -714,8 +771,9 @@ public enum DsaLang {
                 }
             }
             """
-            .replace("%USER%", userCode.isBlank() ? "// (empty solution)" : userCode)
-            .replace("%CALL%", call);
+            .replace("%IMPORTS%", importLines.toString())
+            .replace("%CALL%", call)
+            .replace("%USER%", finalUser.isBlank() ? "// (empty solution)" : finalUser);
     }
 
     private static String goArg(DsaSig sig, int i) {

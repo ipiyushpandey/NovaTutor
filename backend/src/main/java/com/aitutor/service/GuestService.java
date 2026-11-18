@@ -1,8 +1,13 @@
 package com.aitutor.service;
 
+import com.aitutor.controller.ApiException;
 import com.aitutor.entity.User;
 import com.aitutor.repository.UserRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -24,23 +29,38 @@ import java.util.UUID;
  */
 @Service
 public class GuestService {
+    private static final Logger log = LoggerFactory.getLogger(GuestService.class);
     public static final String ROLE = "GUEST";
     private final UserRepository users;
     private final PasswordEncoder encoder;
     private final UserDataCleanupService cleanup;
     private final long ttlHours;
+    private final long maxActiveGuests;
 
     public GuestService(UserRepository users, PasswordEncoder encoder, UserDataCleanupService cleanup,
                         @Value("${app.guest.ttl-hours:24}") long ttlHours) {
+        this(users, encoder, cleanup, ttlHours, 200L);
+    }
+
+    @Autowired
+    public GuestService(UserRepository users, PasswordEncoder encoder, UserDataCleanupService cleanup,
+                        @Value("${app.guest.ttl-hours:24}") long ttlHours,
+                        @Value("${app.guest.max-active:200}") long maxActiveGuests) {
         this.users = users;
         this.encoder = encoder;
         this.cleanup = cleanup;
         this.ttlHours = Math.max(1, ttlHours);
+        this.maxActiveGuests = Math.max(10, maxActiveGuests);
     }
 
-    @Transactional
     public User create() {
-        purgeExpired();
+        if (users.countByRole(ROLE) >= maxActiveGuests) {
+            purgeExpired();
+            if (users.countByRole(ROLE) >= maxActiveGuests) {
+                throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "GUEST_CAPACITY_REACHED",
+                        "Guest sessions are temporarily at capacity. Please sign in or try again shortly.");
+            }
+        }
         String suffix = UUID.randomUUID().toString();
         User u = new User("Guest Learner", "guest-" + suffix + "@guest.novatutor.local",
                 encoder.encode(UUID.randomUUID().toString()));
@@ -58,16 +78,21 @@ public class GuestService {
         }
     }
 
-    /** Scheduled cleanup plus a cheap lazy sweep on every new guest login. */
+    /** Scheduled cleanup executing each guest deletion in its own transactional boundary. */
     @Scheduled(fixedDelayString = "${app.guest.cleanup-ms:3600000}", initialDelayString = "${app.guest.cleanup-ms:3600000}")
     public void scheduledPurge() {
         purgeExpired();
     }
 
-    @Transactional
     public void purgeExpired() {
         LocalDateTime cutoff = LocalDateTime.now().minusHours(ttlHours);
         List<User> expired = users.findByRoleAndCreatedAtBefore(ROLE, cutoff);
-        for (User u : expired) cleanup.deleteUserAndData(u);
+        for (User u : expired) {
+            try {
+                cleanup.deleteUserAndData(u);
+            } catch (RuntimeException ex) {
+                log.warn("Failed to purge expired guest user {}: {}", u.getId(), ex.getMessage());
+            }
+        }
     }
 }

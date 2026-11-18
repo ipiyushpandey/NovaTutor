@@ -3,6 +3,7 @@ package com.aitutor.config;
 import com.aitutor.repository.UserRepository;
 import com.aitutor.security.JwtAuthenticationFilter;
 import com.aitutor.security.JwtService;
+import com.aitutor.security.PreAuthRateLimitFilter;
 import com.aitutor.security.RequestRateLimitFilter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -25,8 +26,11 @@ public class SecurityConfig {
     @Bean PasswordEncoder passwordEncoder(){ return new BCryptPasswordEncoder(); }
 
     @Bean
-    JwtAuthenticationFilter jwtAuthenticationFilter(JwtService jwt, UserRepository users) {
-        return new JwtAuthenticationFilter(jwt, users);
+    JwtAuthenticationFilter jwtAuthenticationFilter(
+            JwtService jwt,
+            UserRepository users,
+            @Value("${app.guest.ttl-hours:24}") long guestTtlHours) {
+        return new JwtAuthenticationFilter(jwt, users, guestTtlHours);
     }
 
     @Bean
@@ -48,7 +52,7 @@ public class SecurityConfig {
         }
         cors.setAllowedOriginPatterns(new ArrayList<>(origins));
         cors.setAllowedMethods(List.of("GET","POST","PUT","DELETE","PATCH","OPTIONS"));
-        cors.setAllowedHeaders(List.of("Authorization","Content-Type","Accept","Origin","X-User-Id"));
+        cors.setAllowedHeaders(List.of("Authorization","Content-Type","Accept","Origin"));
         cors.setExposedHeaders(List.of("Authorization"));
         cors.setAllowCredentials(false);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
@@ -71,26 +75,82 @@ public class SecurityConfig {
     }
 
     @Bean
-    SecurityFilterChain filter(HttpSecurity http, @Qualifier("corsConfigurationSource") CorsConfigurationSource corsSource, JwtAuthenticationFilter jwtFilter, RequestRateLimitFilter rateLimitFilter) throws Exception {
+    PreAuthRateLimitFilter preAuthRateLimitFilter(
+            @Value("${app.rate-limit.enabled:true}") boolean enabled,
+            @Value("${app.rate-limit.pre-auth-per-minute:360}") int preAuthRpm,
+            @Value("${app.rate-limit.trust-proxy:false}") boolean trustProxy) {
+        return new PreAuthRateLimitFilter(enabled, preAuthRpm, trustProxy);
+    }
+
+    @Bean
+    org.springframework.boot.web.servlet.FilterRegistrationBean<PreAuthRateLimitFilter> disablePreAuthAutoRegistration(
+            PreAuthRateLimitFilter filter) {
+        var reg = new org.springframework.boot.web.servlet.FilterRegistrationBean<>(filter);
+        reg.setEnabled(false);
+        return reg;
+    }
+
+    @Bean
+    org.springframework.boot.web.servlet.FilterRegistrationBean<JwtAuthenticationFilter> disableJwtAutoRegistration(
+            JwtAuthenticationFilter filter) {
+        var reg = new org.springframework.boot.web.servlet.FilterRegistrationBean<>(filter);
+        reg.setEnabled(false);
+        return reg;
+    }
+
+    @Bean
+    org.springframework.boot.web.servlet.FilterRegistrationBean<RequestRateLimitFilter> disableRateLimitAutoRegistration(
+            RequestRateLimitFilter filter) {
+        var reg = new org.springframework.boot.web.servlet.FilterRegistrationBean<>(filter);
+        reg.setEnabled(false);
+        return reg;
+    }
+
+    @Bean
+    SecurityFilterChain filter(HttpSecurity http,
+                               @Qualifier("corsConfigurationSource") CorsConfigurationSource corsSource,
+                               PreAuthRateLimitFilter preAuthFilter,
+                               JwtAuthenticationFilter jwtFilter,
+                               RequestRateLimitFilter rateLimitFilter) throws Exception {
         return http
                 .csrf(c -> c.disable())
                 .cors(c -> c.configurationSource(corsSource))
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .headers(h -> h
+                        .contentTypeOptions(c -> {})
+                        .frameOptions(f -> f.deny())
+                        .httpStrictTransportSecurity(hsts -> hsts.includeSubDomains(true).maxAgeInSeconds(31536000))
+                        .referrerPolicy(r -> r.policy(org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN))
+                        .contentSecurityPolicy(csp -> csp.policyDirectives("default-src 'none'; frame-ancestors 'none'"))
+                        .addHeaderWriter(new org.springframework.security.web.header.writers.StaticHeadersWriter(
+                                "Permissions-Policy", "camera=(), microphone=(self), geolocation=()")))
                 .authorizeHttpRequests(a -> a
+                        // Allow internal container ASYNC/ERROR dispatches (e.g. SseEmitter completion) after the
+                        // initial REQUEST was already authenticated and authorized; ordinary REQUESTs stay protected.
+                        .dispatcherTypeMatchers(jakarta.servlet.DispatcherType.ASYNC, jakarta.servlet.DispatcherType.ERROR).permitAll()
                         .requestMatchers(org.springframework.http.HttpMethod.OPTIONS, "/**").permitAll()
+                        .requestMatchers(org.springframework.http.HttpMethod.GET,
+                                "/api/courses", "/api/courses/**", "/api/gate-cse/notes/**").permitAll()
                         .requestMatchers("/api/auth/login", "/api/auth/register", "/api/auth/guest", "/api/auth/me",
                                 "/api/auth/verify-email", "/api/auth/resend-verification",
                                 "/api/auth/forgot-password", "/api/auth/reset-password",
                                 "/api/auth/google", "/api/auth/providers",
-                                "/api/health", "/actuator/health/**", "/error", "/api/gate-cse/notes/**", "/api/courses", "/api/courses/**").permitAll()
+                                "/api/health", "/actuator/health/**", "/error").permitAll()
+                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .anyRequest().authenticated())
-                .exceptionHandling(e -> e.authenticationEntryPoint(
-                        (request, response, authException) -> {
+                .exceptionHandling(e -> e
+                        .authenticationEntryPoint((request, response, authException) -> {
                             response.setStatus(jakarta.servlet.http.HttpServletResponse.SC_UNAUTHORIZED);
                             response.setContentType("application/json");
                             response.getWriter().write("{\"error\":\"unauthorized\",\"message\":\"Login required\"}");
+                        })
+                        .accessDeniedHandler((request, response, accessDeniedException) -> {
+                            response.setStatus(jakarta.servlet.http.HttpServletResponse.SC_FORBIDDEN);
+                            response.setContentType("application/json");
+                            response.getWriter().write("{\"error\":\"forbidden\",\"message\":\"Access denied\"}");
                         }))
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(preAuthFilter, JwtAuthenticationFilter.class)
                 .addFilterAfter(rateLimitFilter, JwtAuthenticationFilter.class)
                 .build();
     }

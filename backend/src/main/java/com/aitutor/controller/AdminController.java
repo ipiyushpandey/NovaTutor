@@ -65,6 +65,7 @@ public class AdminController {
     private final com.aitutor.ai.AiMetrics aiMetrics;
     private final RemoteCodeRunner remoteRunner;
     private final com.aitutor.service.UserDataCleanupService userCleanup;
+    private final long maxGateUploadBytes;
 
     public AdminController(UserRepository users, CourseRepository courses, LessonRepository lessons,
                            ProgressRepository progress, QuizQuestionRepository quizzes,
@@ -72,6 +73,7 @@ public class AdminController {
                            PasswordEncoder encoder,
                            @Value("${app.admin.email:}") String adminEmail, JwtService jwt, GateNoteRepository gateNotes,
                            @Value("${app.gate.notes-dir:./gate-notes}") String gateNotesDir,
+                           @Value("${app.gate.max-upload-bytes:5242880}") long maxGateUploadBytes,
                            AuditLogRepository auditLogs, AnnouncementRepository announcements, AppMetaRepository meta, QuizAttemptRepository attempts, CommunityPostRepository communityPosts,
                            com.aitutor.intelligence.LearningEventRepository learningEvents,
                            com.aitutor.dsa.DsaProblemStateRepository dsaStates,
@@ -85,6 +87,7 @@ public class AdminController {
         this.encoder = encoder; this.adminEmail = adminEmail == null ? "" : adminEmail.trim().toLowerCase(); this.jwt = jwt;
         this.gateNotes = gateNotes;
         this.legacyGateNotesDir = Paths.get(gateNotesDir).toAbsolutePath().normalize();
+        this.maxGateUploadBytes = Math.max(256L * 1024L, maxGateUploadBytes);
         this.auditLogs=auditLogs; this.announcements=announcements; this.meta=meta; this.attempts=attempts; this.communityPosts=communityPosts;
         this.learningEvents=learningEvents; this.dsaStates=dsaStates; this.knowledgeDocs=knowledgeDocs; this.knowledgeChunks=knowledgeChunks;
         this.aiMetrics=aiMetrics; this.remoteRunner=remoteRunner; this.userCleanup=userCleanup;
@@ -97,8 +100,17 @@ public class AdminController {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Admin sign-in required");
         }
         try {
-            String email = jwt.email(authorization.substring(7));
-            User u = users.findByEmail(email).orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Admin account not found"));
+            JwtService.ParsedToken parsed = jwt.parse(authorization.substring(7));
+            if (!jwt.isSessionWithinAbsoluteLimit(parsed.sessionStartedAtMs())) {
+                throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Admin session expired");
+            }
+            User u = users.findByEmail(parsed.email()).orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Admin account not found"));
+            if (!u.isActive() || u.isBlocked() || !u.isEmailVerified()) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Admin account is not active");
+            }
+            if (!jwt.matchesPassword(u, parsed.passwordFingerprint())) {
+                throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Admin session revoked");
+            }
             if (!"ADMIN".equalsIgnoreCase(u.getRole())) {
                 throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Admin access required");
             }
@@ -129,25 +141,31 @@ public class AdminController {
         return Map.of("users", users.count(), "courses", courses.count(), "lessons", lessons.count(), "adminEmail", adminEmail);
     }
 
+    @GetMapping("/courses")
+    public List<Course> allCourses(@RequestHeader(value="Authorization", required=false) String authorization) {
+        admin(authorization);
+        return courses.findAll();
+    }
+
     @GetMapping("/monitor")
     public Map<String,Object> monitor(@RequestHeader(value="Authorization", required=false) String authorization) {
         admin(authorization);
-        List<UserView> recent = users.findAll(org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "createdAt"))
-                .stream().filter(u -> !"GUEST".equalsIgnoreCase(u.getRole())).limit(8).map(u -> new UserView(u.getId(), u.getName(), u.getEmail(), u.getRole(), u.getCreatedAt(), u.isActive(), u.isBlocked(), u.isEmailVerified())).toList();
+        List<UserView> recent = users.findTop8ByRoleNotOrderByCreatedAtDesc("GUEST").stream()
+                .map(u -> new UserView(u.getId(), u.getName(), u.getEmail(), u.getRole(), u.getCreatedAt(), u.isActive(), u.isBlocked(), u.isEmailVerified())).toList();
         List<Map<String,Object>> curriculum = courses.findAll().stream().map(c -> {
             Map<String,Object> row = new LinkedHashMap<>();
             row.put("id", c.getId()); row.put("title", c.getTitle()); row.put("level", c.getLevel());
-            row.put("lessons", lessons.findByCourseIdOrderByOrderIndex(c.getId()).size());
+            row.put("lessons", lessons.countByCourseId(c.getId()));
             return row;
         }).toList();
-        return Map.of("users", users.count(), "courses", courses.count(), "lessons", lessons.count(), "recentUsers", recent, "curriculum", curriculum);
+        return Map.of("users", users.countByRoleNot("GUEST"), "courses", courses.count(), "lessons", lessons.count(), "recentUsers", recent, "curriculum", curriculum);
     }
 
     @GetMapping("/users")
     public List<UserView> userList(@RequestHeader(value="Authorization", required=false) String authorization) {
         admin(authorization);
-        return users.findAll(org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.ASC, "name"))
-                .stream().filter(u -> !"GUEST".equalsIgnoreCase(u.getRole())).map(u -> new UserView(u.getId(), u.getName(), u.getEmail(), u.getRole(), u.getCreatedAt(), u.isActive(), u.isBlocked(), u.isEmailVerified())).toList();
+        return users.findByRoleNotOrderByNameAsc("GUEST").stream()
+                .map(u -> new UserView(u.getId(), u.getName(), u.getEmail(), u.getRole(), u.getCreatedAt(), u.isActive(), u.isBlocked(), u.isEmailVerified())).toList();
     }
 
     /**
@@ -186,6 +204,7 @@ public class AdminController {
     public Map<String,Object> updateUserRole(@RequestHeader(value="Authorization", required=false) String authorization,@PathVariable Long userId,@RequestBody RoleRequest r){
         User me=admin(authorization); User u=users.findById(userId).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"User not found"));
         if(u.getEmail().equalsIgnoreCase(adminEmail) || Objects.equals(me.getId(),u.getId())) throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Owner account cannot be changed");
+        if(com.aitutor.service.GuestService.ROLE.equalsIgnoreCase(u.getRole())) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Guest accounts cannot be promoted or modified");
         String role=r.role()==null?"STUDENT":r.role().trim().toUpperCase(Locale.ROOT); if(!Set.of("STUDENT","ADMIN").contains(role)) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Unsupported role");
         u.setRole(role); users.save(u); audit(me,"ROLE_CHANGED",String.valueOf(userId),"SUCCESS",role); return Map.of("id",u.getId(),"role",u.getRole());
     }
@@ -208,7 +227,7 @@ public class AdminController {
     @GetMapping("/community/posts")
     public List<Map<String,Object>> communityPosts(@RequestHeader(value="Authorization", required=false) String authorization) {
         admin(authorization);
-        return communityPosts.findTop100ByOrderByCreatedAtDesc().stream().map(p -> {
+        return communityPosts.findRecentWithUser(org.springframework.data.domain.PageRequest.of(0, 100)).stream().map(p -> {
             Map<String,Object> m=new LinkedHashMap<>();
             m.put("id",p.getId());
             m.put("author",p.getUser().getName());
@@ -281,15 +300,15 @@ public class AdminController {
     @GetMapping("/gate-notes")
     public List<Map<String,Object>> gateNotes(@RequestHeader(value="Authorization", required=false) String authorization) {
         admin(authorization);
-        return gateNotes.findAllByOrderBySubjectKeyAscFilenameAsc().stream()
-                .map(this::gateNoteView)
+        return gateNotes.findAllMetadataOrderBySubjectKeyAscFilenameAsc().stream()
+                .map(this::gateNoteSummaryView)
                 .toList();
     }
 
     @PostMapping(value="/gate-notes", consumes=MediaType.MULTIPART_FORM_DATA_VALUE)
     public Map<String,Object> uploadGateNote(@RequestHeader(value="Authorization", required=false) String authorization,
-                                              @RequestParam("subject") String subject,
-                                              @RequestPart("file") MultipartFile file) {
+                                             @RequestParam("subject") String subject,
+                                             @RequestPart("file") MultipartFile file) {
         admin(authorization);
         String cleanSubject = subject == null ? "" : subject.trim();
         if (cleanSubject.isBlank()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Subject is required");
@@ -298,15 +317,25 @@ public class AdminController {
         String lowerName = originalName.toLowerCase(Locale.ROOT);
         String type = file.getContentType() == null ? "" : file.getContentType().toLowerCase(Locale.ROOT);
         if (!lowerName.endsWith(".pdf") && !type.equals("application/pdf")) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Only PDF files are allowed");
-        if (file.getSize() > 50L * 1024L * 1024L) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "PDF must be 50 MB or smaller");
+        if (file.getSize() > maxGateUploadBytes) {
+            long maxMb = Math.max(1, maxGateUploadBytes / (1024L * 1024L));
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
+                    "PDF must be " + maxMb + " MB or smaller for database storage");
+        }
         String safeSubject = cleanSubject.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
         if (safeSubject.isBlank()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid subject name");
         String safeOriginal = Paths.get(originalName).getFileName().toString().replaceAll("[^A-Za-z0-9._-]", "_");
         if (!safeOriginal.toLowerCase(Locale.ROOT).endsWith(".pdf")) safeOriginal += ".pdf";
         String uniqueName = safeSubject + "--" + UUID.randomUUID().toString().substring(0, 8) + "--" + safeOriginal;
         try {
-            GateNote saved = gateNotes.save(new GateNote(safeSubject, uniqueName, "application/pdf", file.getBytes()));
+            byte[] bytes = file.getBytes();
+            if (bytes.length < 5 || bytes[0] != '%' || bytes[1] != 'P' || bytes[2] != 'D' || bytes[3] != 'F' || bytes[4] != '-') {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Uploaded file is not a valid PDF document");
+            }
+            GateNote saved = gateNotes.save(new GateNote(safeSubject, uniqueName, "application/pdf", bytes));
             return gateNoteView(saved);
+        } catch (ResponseStatusException e) {
+            throw e;
         } catch (IOException e) {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Could not read GATE PDF");
         } catch (Exception e) {
@@ -316,7 +345,7 @@ public class AdminController {
 
     @DeleteMapping("/gate-notes/{filename:.+}")
     public Map<String,Object> deleteGateNote(@RequestHeader(value="Authorization", required=false) String authorization,
-                                              @PathVariable String filename) {
+                                             @PathVariable String filename) {
         admin(authorization);
         String safe = Paths.get(filename).getFileName().toString();
         if (!safe.toLowerCase(Locale.ROOT).endsWith(".pdf")) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid PDF filename");
@@ -332,11 +361,12 @@ public class AdminController {
                     .filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".pdf"))
                     .forEach(path -> {
                         String filename = path.getFileName().toString();
-                        if (gateNotes.findByFilename(filename).isPresent()) return;
+                        if (gateNotes.existsByFilename(filename)) return;
                         String base = filename.substring(0, filename.length() - 4);
                         int separator = base.indexOf("--");
                         String subjectKey = separator > 0 ? base.substring(0, separator) : base;
                         try {
+                            if (Files.size(path) > maxGateUploadBytes) return;
                             gateNotes.save(new GateNote(subjectKey, filename, "application/pdf", Files.readAllBytes(path)));
                         } catch (Exception ignored) {
                             // Keep legacy file in place if migration fails; it can be retried next startup.
@@ -345,6 +375,17 @@ public class AdminController {
         } catch (Exception ignored) {
             // Database-backed notes remain the source of truth.
         }
+    }
+
+    private Map<String,Object> gateNoteSummaryView(GateNoteRepository.GateNoteSummary note) {
+        Map<String,Object> view = new LinkedHashMap<>();
+        view.put("filename", note.getFilename());
+        view.put("subject", note.getSubjectKey().replace('-', ' '));
+        view.put("subjectKey", note.getSubjectKey());
+        view.put("sizeBytes", note.getSizeBytes());
+        view.put("uploadedAt", note.getUploadedAt());
+        view.put("url", "/api/gate-cse/notes/" + note.getFilename());
+        return view;
     }
 
     private Map<String,Object> gateNoteView(GateNote note) {
@@ -360,22 +401,22 @@ public class AdminController {
 
     @PostMapping("/courses")
     public Course createCourse(@RequestHeader(value="Authorization", required=false) String authorization, @RequestBody CourseRequest r) {
-        admin(authorization);
+        User me = admin(authorization);
         if (r.title() == null || r.title().isBlank()) throw new IllegalArgumentException("Course title is required");
         Course c = new Course(r.title().trim(), r.description(), r.level() == null ? "Beginner" : r.level(), r.icon() == null ? "✦" : r.icon());
         c.setTotalLessons(0);
-        Course saved=courses.save(c); audit(admin(authorization),"COURSE_CREATED",String.valueOf(saved.getId()),"SUCCESS",saved.getTitle()); return saved;
+        Course saved=courses.save(c); audit(me,"COURSE_CREATED",String.valueOf(saved.getId()),"SUCCESS",saved.getTitle()); return saved;
     }
 
     @PutMapping("/courses/{courseId}")
     public Course updateCourse(@RequestHeader(value="Authorization", required=false) String authorization, @PathVariable Long courseId, @RequestBody CourseRequest r) {
-        admin(authorization);
+        User me = admin(authorization);
         Course c = courses.findById(courseId).orElseThrow(() -> new IllegalArgumentException("Course not found"));
         if (r.title() != null && !r.title().isBlank()) c.setTitle(r.title().trim());
         if (r.description() != null) c.setDescription(r.description().trim());
         if (r.level() != null && !r.level().isBlank()) c.setLevel(r.level());
         if (r.icon() != null && !r.icon().isBlank()) c.setIcon(r.icon());
-        Course saved=courses.save(c); audit(admin(authorization),"COURSE_UPDATED",String.valueOf(courseId),"SUCCESS",saved.getTitle()); return saved;
+        Course saved=courses.save(c); audit(me,"COURSE_UPDATED",String.valueOf(courseId),"SUCCESS",saved.getTitle()); return saved;
     }
 
     @DeleteMapping("/courses/{courseId}")
@@ -383,6 +424,7 @@ public class AdminController {
     public Map<String,Object> deleteCourse(@RequestHeader(value="Authorization", required=false) String authorization, @PathVariable Long courseId) {
         User me=admin(authorization);
         Course c = courses.findById(courseId).orElseThrow(() -> new IllegalArgumentException("Course not found"));
+        attempts.deleteByCourseId(courseId);
         progress.deleteByCourseId(courseId);
         quizzes.deleteByCourseId(courseId);
         lessons.deleteByCourseId(courseId);
@@ -392,13 +434,19 @@ public class AdminController {
     }
 
     @PostMapping("/courses/{courseId}/lessons")
+    @Transactional
     public Lesson createLesson(@RequestHeader(value="Authorization", required=false) String authorization, @PathVariable Long courseId, @RequestBody LessonRequest r) {
         admin(authorization);
         Course c = courses.findById(courseId).orElseThrow(() -> new IllegalArgumentException("Course not found"));
         if (r.title() == null || r.title().isBlank()) throw new IllegalArgumentException("Lesson title is required");
         int next = lessons.findByCourseIdOrderByOrderIndex(courseId).stream().mapToInt(x -> x.getOrderIndex() == null ? 0 : x.getOrderIndex()).max().orElse(0) + 1;
         Lesson l = new Lesson(); l.setCourse(c); l.setTitle(r.title().trim()); l.setTopic(r.topic() == null || r.topic().isBlank() ? "Core Concepts" : r.topic().trim()); l.setOrderIndex(next); l.setContent(r.content() == null ? "" : r.content());
-        Lesson saved = lessons.save(l); c.setTotalLessons(next); courses.save(c); return saved;
+        Lesson saved = lessons.save(l);
+        int total = (int) lessons.countByCourseId(courseId);
+        c.setTotalLessons(total);
+        courses.save(c);
+        reconcileCourseProgress(courseId, total);
+        return saved;
     }
 
     @PutMapping("/lessons/{lessonId}")
@@ -421,8 +469,22 @@ public class AdminController {
         List<Lesson> remaining = lessons.findByCourseIdOrderByOrderIndex(courseId);
         for (int i = 0; i < remaining.size(); i++) { remaining.get(i).setOrderIndex(i + 1); }
         lessons.saveAll(remaining);
-        courses.findById(courseId).ifPresent(c -> { c.setTotalLessons(remaining.size()); courses.save(c); });
+        int total = remaining.size();
+        courses.findById(courseId).ifPresent(c -> { c.setTotalLessons(total); courses.save(c); });
+        reconcileCourseProgress(courseId, total);
         return Map.of("deleted", true, "lessonId", lessonId);
+    }
+
+    private void reconcileCourseProgress(Long courseId, int newTotal) {
+        List<Progress> rows = progress.findByCourseId(courseId);
+        if (rows.isEmpty()) return;
+        for (Progress p : rows) {
+            int clamped = Math.min(Math.max(0, p.getCompletedLessons()), newTotal);
+            p.setCompletedLessons(clamped);
+            p.setTotalLessons(newTotal);
+            p.setPercent(newTotal <= 0 ? 0.0 : (clamped * 100.0 / newTotal));
+        }
+        progress.saveAll(rows);
     }
 
     @PutMapping("/courses/{courseId}/lessons/reorder")
@@ -432,13 +494,13 @@ public class AdminController {
     @PostMapping("/users/{userId}/reset-password")
     public Map<String,Object> resetStudentPassword(@RequestHeader(value="Authorization", required=false) String authorization,
                                                      @PathVariable Long userId, @RequestBody ResetPasswordRequest r) {
-        admin(authorization);
+        User me = admin(authorization);
         User u = users.findById(userId).orElseThrow(() -> new IllegalArgumentException("Student not found"));
         if ("ADMIN".equalsIgnoreCase(u.getRole())) throw new IllegalArgumentException("Admin password cannot be reset from student management");
         if (r.newPassword() == null || r.newPassword().length() < 6) throw new IllegalArgumentException("Password must be at least 6 characters");
         if (r.newPassword().length() > 128) throw new IllegalArgumentException("Password is too long");
         u.setPassword(encoder.encode(r.newPassword())); users.save(u);
-        audit(admin(authorization),"PASSWORD_RESET",String.valueOf(userId),"SUCCESS","Set by an administrator for account recovery; existing sessions remain valid until expiry.");
+        audit(me,"PASSWORD_RESET",String.valueOf(userId),"SUCCESS","Set by an administrator for account recovery; prior JWT sessions immediately invalidated.");
         return Map.of("updated", true, "userId", userId);
     }
 

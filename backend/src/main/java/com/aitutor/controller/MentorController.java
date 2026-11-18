@@ -14,10 +14,14 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import com.aitutor.security.AuthenticatedUser;
 
+import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 @RestController
 @RequestMapping("/api/mentor")
@@ -27,23 +31,39 @@ public class MentorController {
     private final ProgressRepository progress;
     private final UserRepository users;
     private final AuthenticatedUser authenticatedUser;
-    /** Bounded pool: unbounded per-request threads allowed thread exhaustion under load. */
-    private final ExecutorService streamExecutor = Executors.newFixedThreadPool(16, r -> {
-        Thread t = new Thread(r, "nova-ai-stream"); t.setDaemon(true); return t;
-    });
+    /** Strictly bounded pool and queue: rejects overflow with 503 instead of exhausting heap/threads. */
+    private final ExecutorService streamExecutor;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public MentorController(AiService ai, LessonRepository lessons, ProgressRepository progress, UserRepository users, AuthenticatedUser authenticatedUser) {
+        this(ai, lessons, progress, users, authenticatedUser, new ThreadPoolExecutor(
+                4, 16, 60L, TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(32),
+                r -> { Thread t = new Thread(r, "nova-mentor-stream"); t.setDaemon(true); return t; },
+                new ThreadPoolExecutor.AbortPolicy()));
+    }
+
+    MentorController(AiService ai, LessonRepository lessons, ProgressRepository progress, UserRepository users, AuthenticatedUser authenticatedUser, ExecutorService streamExecutor) {
         this.ai = ai;
         this.lessons = lessons;
         this.progress = progress;
         this.users = users;
         this.authenticatedUser = authenticatedUser;
+        this.streamExecutor = streamExecutor;
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        streamExecutor.shutdownNow();
     }
 
     @PostMapping("/ask")
     public AiResponse ask(@RequestBody MentorRequest r, Authentication authentication) {
         Lesson lesson = lessons.findById(r.lessonId()).orElseThrow();
         User authenticated = authenticatedUser.require(authentication);
+        if (lesson.getCourse() != null && !lesson.getCourse().isPublished() && !authenticatedUser.isAdmin(authenticated)) {
+            throw new NoSuchElementException("Lesson not found");
+        }
         return ai.ask(buildRequest(r, lesson, authenticated));
     }
 
@@ -52,24 +72,44 @@ public class MentorController {
     public SseEmitter askStream(@RequestBody MentorRequest r, Authentication authentication) {
         Lesson lesson = lessons.findById(r.lessonId()).orElseThrow();
         User authenticated = authenticatedUser.require(authentication);
-        SseEmitter emitter = new SseEmitter(300_000L);
-        emitter.onTimeout(emitter::complete);
-        emitter.onError(ex -> emitter.complete());
+        if (lesson.getCourse() != null && !lesson.getCourse().isPublished() && !authenticatedUser.isAdmin(authenticated)) {
+            throw new NoSuchElementException("Lesson not found");
+        }
+        SseEmitter emitter = new SseEmitter(240_000L);
+        StreamCancellation cancellation = new StreamCancellation();
+        emitter.onTimeout(() -> { cancellation.cancel(); emitter.complete(); });
+        emitter.onCompletion(cancellation::cancel);
+        emitter.onError(ex -> { cancellation.cancel(); emitter.complete(); });
         AiRequest request = buildRequest(r, lesson, authenticated);
-        streamExecutor.execute(() -> {
-            try {
-                ai.stream(request, chunk -> {
-                    try { emitter.send(SseEmitter.event().data(chunk)); }
-                    catch (IOException e) { throw new IllegalStateException(e); }
-                });
-                emitter.send(SseEmitter.event().name("done").data("done"));
-                emitter.complete();
-            } catch (Exception e) {
-                try { emitter.send(SseEmitter.event().name("error").data("AI request failed. Please try again.")); }
-                catch (Exception ignored) { }
-                emitter.completeWithError(e);
-            }
-        });
+        try {
+            streamExecutor.execute(() -> {
+                if (cancellation.isCancelled()) return;
+                cancellation.attachThread(Thread.currentThread());
+                try {
+                    ai.stream(request, chunk -> {
+                        if (cancellation.isCancelled()) throw new IllegalStateException("Client disconnected");
+                        try { emitter.send(SseEmitter.event().data(chunk)); }
+                        catch (IOException e) { cancellation.cancel(); throw new IllegalStateException(e); }
+                    }, cancellation);
+                    if (!cancellation.isCancelled()) {
+                        emitter.send(SseEmitter.event().name("done").data("done"));
+                        emitter.complete();
+                    }
+                } catch (Exception e) {
+                    if (!cancellation.isCancelled()) {
+                        try { emitter.send(SseEmitter.event().name("error").data("AI request failed. Please try again.")); }
+                        catch (Exception ignored) { }
+                        emitter.complete();
+                    }
+                } finally {
+                    cancellation.clearThread();
+                    Thread.interrupted();
+                }
+            });
+        } catch (RejectedExecutionException full) {
+            throw new ApiException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "AI_BUSY",
+                    "AI mentor is busy right now. Please retry in a few seconds.");
+        }
         return emitter;
     }
 

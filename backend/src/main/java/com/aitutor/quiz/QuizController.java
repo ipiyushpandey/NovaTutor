@@ -26,8 +26,11 @@ public class QuizController {
     record Result(int total,int correct,int score,String message,List<Long> wrongQuestionIds){}
 
     @GetMapping("/course/{courseId}")
-    List<Question> questions(@PathVariable Long courseId){
-        courses.findById(courseId).orElseThrow();
+    List<Question> questions(@PathVariable Long courseId, Authentication authentication){
+        Course course = courses.findById(courseId).orElseThrow();
+        if (!course.isPublished() && !authenticatedUser.isAdmin(authentication)) {
+            throw new NoSuchElementException("Course not found");
+        }
         // Remove duplicate question text, shuffle the pool, then expose exactly 20 questions.
         // This repairs old databases that may already contain repeated quiz rows.
         Map<String, QuizQuestion> unique = new LinkedHashMap<>();
@@ -49,8 +52,11 @@ public class QuizController {
      */
     @GetMapping("/course/{courseId}/revision")
     List<Question> revision(@PathVariable Long courseId, Authentication authentication) {
-        courses.findById(courseId).orElseThrow();
+        Course course = courses.findById(courseId).orElseThrow();
         User user = authenticatedUser.require(authentication);
+        if (!course.isPublished() && !authenticatedUser.isAdmin(user)) {
+            throw new NoSuchElementException("Course not found");
+        }
         Set<Long> wrong = new LinkedHashSet<>();
         Set<Long> correct = new HashSet<>();
         for (QuizAttempt attempt : attempts.findByUserId(user.getId())) {
@@ -91,32 +97,62 @@ public class QuizController {
         return text == null ? "" : text.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
     }
 
+    private static final int DAILY_QUIZ_XP_CAP = 10;
+
     @PostMapping("/course/{courseId}/submit")
+    @org.springframework.transaction.annotation.Transactional
     Result submit(@PathVariable Long courseId,@RequestBody Submit s, Authentication authentication){
         Course course=courses.findById(courseId).orElseThrow();
         User user=authenticatedUser.require(authentication);
+        if (!course.isPublished() && !authenticatedUser.isAdmin(user)) {
+            throw new NoSuchElementException("Course not found");
+        }
+        if (s == null || s.answers() == null || s.answers().isEmpty()) {
+            throw new IllegalArgumentException("At least one quiz answer is required");
+        }
         Map<Long,QuizQuestion> available = repo.findByCourseIdOrderByIdAsc(courseId).stream()
                 .collect(Collectors.toMap(QuizQuestion::getId, Function.identity(), (a,b)->a));
-        Map<Long,Integer> selected=new HashMap<>();
-        if(s!=null && s.answers()!=null) s.answers().forEach(a->{ if(a!=null && a.questionId()!=null) selected.put(a.questionId(),a.selectedOption()); });
-        int correct=0; List<Long> wrong=new ArrayList<>();
-        // Grade only the distinct questions submitted by the client, capped at the quiz size.
+        Map<Long,Integer> selected=new LinkedHashMap<>();
+        for (Answer a : s.answers()) {
+            if (a == null || a.questionId() == null) {
+                throw new IllegalArgumentException("Each quiz answer must include a valid questionId");
+            }
+            if (a.selectedOption() < 0 || a.selectedOption() > 3) {
+                throw new IllegalArgumentException("Quiz answer option must be between 0 and 3");
+            }
+            selected.put(a.questionId(), a.selectedOption());
+        }
+        // Grade only the distinct valid questions for this course, capped at the quiz size.
         List<Long> questionIds = selected.keySet().stream().filter(available::containsKey).limit(QUIZ_SIZE).toList();
+        if (questionIds.isEmpty()) {
+            throw new IllegalArgumentException("No valid quiz questions were submitted for this course");
+        }
+        User lockedUser = users.findByIdForUpdate(user.getId()).orElseThrow();
+        java.time.LocalDate todayIst = com.aitutor.intelligence.LearningEventAnalyticsService.todayIst();
+        java.time.LocalDateTime startOfToday = com.aitutor.intelligence.LearningEventAnalyticsService.startOfTodayIst();
+        int correct=0; List<Long> wrong=new ArrayList<>();
         for(Long id:questionIds){
             QuizQuestion q=available.get(id);
             boolean ok=selected.get(id)==q.getCorrectOption();
             if(ok) correct++; else wrong.add(id);
             String topic=q.getTopic();
-            if(topic==null||topic.isBlank()){ topic=conceptFromQuestion(q.getQuestion(),course.getTitle()); q.setTopic(topic); repo.save(q); }
-            eventService.record(user,"QUIZ_QUESTION",course.getTitle(),topic,ok?100:0,0,"questionId="+id+";difficulty="+Objects.toString(q.getDifficulty(),"Mixed"),// Include the outcome so a correct retry in the same minute is not swallowed by
-            // the wrong attempt's dedupe key. Question revision depends on this signal.
-            "QUIZ_QUESTION:"+user.getId()+":"+id+":"+(ok?"1":"0")+":"+System.currentTimeMillis()/60000);
+            if(topic==null||topic.isBlank()){ topic=conceptFromQuestion(q.getQuestion(),course.getTitle()); }
+            // Deduplicate per (user, question, outcome, IST day) so retrying a wrong question and
+            // getting it right still updates revision tracking while blocking per-minute XP replay.
+            eventService.recordIfAbsent(lockedUser,"QUIZ_QUESTION",course.getTitle(),topic,ok?100:0,0,
+                    "questionId="+id+";difficulty="+Objects.toString(q.getDifficulty(),"Mixed"),
+                    "QUIZ_QUESTION:"+lockedUser.getId()+":"+id+":"+(ok?"1":"0")+":"+todayIst);
         }
         int total=questionIds.size();
-        int score=total==0?0:(int)Math.round(correct*100.0/total);
+        int score=(int)Math.round(correct*100.0/total);
         String msg=score>=80?"Excellent! You're ready for the next challenge.":score>=60?"Good work. Review the missed questions once.":"Let's revise the weak concepts and try again.";
-        QuizAttempt attempt = attempts.save(new QuizAttempt(user,course,total,correct,score,wrong.stream().map(String::valueOf).collect(Collectors.joining(","))));
-        eventService.record(user,"QUIZ_COMPLETED",course.getTitle(),"Quiz mastery",score,0,"Correct "+correct+" of "+total,"QUIZ_COMPLETED:"+user.getId()+":"+attempt.getId());
+        QuizAttempt attempt = attempts.save(new QuizAttempt(lockedUser,course,total,correct,score,wrong.stream().map(String::valueOf).collect(Collectors.joining(","))));
+        long todayCompletedQuizzes = events.countByUserIdAndTypeInAndCreatedAtGreaterThanEqual(
+                lockedUser.getId(), List.of("QUIZ_COMPLETED"), startOfToday);
+        if (todayCompletedQuizzes < DAILY_QUIZ_XP_CAP) {
+            eventService.recordIfAbsent(lockedUser,"QUIZ_COMPLETED",course.getTitle(),"Quiz mastery",score,0,
+                    "Correct "+correct+" of "+total,"QUIZ_COMPLETED:"+lockedUser.getId()+":"+attempt.getId());
+        }
         return new Result(total,correct,score,msg,wrong);
     }
     private static String conceptFromQuestion(String question,String course){
