@@ -207,8 +207,11 @@ test.describe('admin workspace', () => {
       await expect(page.locator('.topnav-sheet .sheet-item').first()).toBeVisible();
       await page.locator('.topnav-sheet').getByRole('button', { name: 'Admin Panel' }).click();
     } else {
-      // The active section's sub-navigation is open on first render.
-      await expect(page.getByRole('button', { name: 'Learn', exact: true })).toHaveAttribute('aria-expanded', 'true');
+      // Desktop TopNav dropdowns start closed to avoid initial CLS, then open cleanly as overlays.
+      const learnBtn = page.getByRole('button', { name: 'Learn', exact: true });
+      await expect(learnBtn).toHaveAttribute('aria-expanded', 'false');
+      await learnBtn.click();
+      await expect(learnBtn).toHaveAttribute('aria-expanded', 'true');
       await expect(page.locator('.topnav-panel').first()).toBeVisible();
       await page.locator('.topnav-menu-btn').filter({ hasText: 'More' }).click();
       await page.getByRole('menuitem', { name: 'Admin Panel' }).click();

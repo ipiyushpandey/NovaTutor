@@ -75,18 +75,18 @@ test('api.js retries idempotent GET on transient 503 and does NOT retry POST on 
   };
 
   const { api } = await import('./api.js?retry=' + Date.now());
-  const res = await api('/courses', { retries: 1, retryDelayMs: 5 });
+  const res = await api('/courses', { retries: 1 });
   assert.deepEqual(res, { courses: [1, 2] });
   assert.equal(getCalls, 2);
 
   await assert.rejects(
-    () => api('/ai/ask', { method: 'POST', body: JSON.stringify({ message: 'hi' }), retries: 2, retryDelayMs: 5 }),
+    () => api('/ai/ask', { method: 'POST', body: JSON.stringify({ message: 'hi' }), retries: 2 }),
     /Transient upstream error/
   );
   assert.equal(postCalls, 1);
 });
 
-test('apiStream respects AbortSignal and refreshes once on 401', async () => {
+test('apiStream respects AbortSignal, strips single WHATWG SSE leading space, and refreshes once on 401', async () => {
   setupBrowserGlobals();
   globalThis.localStorage.setItem('ai_user', JSON.stringify({ id: 7, token: 'expired-jwt' }));
 
@@ -108,9 +108,9 @@ test('apiStream respects AbortSignal and refreshes once on 401', async () => {
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       start(controller) {
-        controller.enqueue(encoder.encode('data:Hello \n\n'));
-        controller.enqueue(encoder.encode('data:Nova\n\n'));
-        controller.enqueue(encoder.encode('data:done\n\n'));
+        controller.enqueue(encoder.encode('data: Hello \n\n'));
+        controller.enqueue(encoder.encode('data:  Indented\n\n'));
+        controller.enqueue(encoder.encode('event: done\ndata: done\n\n'));
         controller.close();
       },
     });
@@ -127,7 +127,8 @@ test('apiStream respects AbortSignal and refreshes once on 401', async () => {
   });
   assert.equal(refreshCalls, 1);
   assert.equal(streamCalls, 2);
-  assert.equal(collected, 'Hello Nova');
+  // Single space after "data:" stripped per WHATWG SSE spec; second space preserved.
+  assert.equal(collected, 'Hello  Indented');
 
   // Verify pre-aborted AbortSignal aborts cleanly without throwing a generic error
   const ac = new AbortController();
@@ -146,15 +147,58 @@ test('apiStream respects AbortSignal and refreshes once on 401', async () => {
   );
 });
 
+test('api.js preserves session on non-session 401 and transient /auth/me network failure, expires only on real /auth/me 401', async () => {
+  const events = setupBrowserGlobals();
+  const initialUser = JSON.stringify({ id: 9, role: 'STUDENT', token: 'valid-jwt' });
+  globalThis.localStorage.setItem('ai_user', initialUser);
+
+  // 1. Wrong current password on /users/9/password returns 401 — must NOT wipe ai_user or emit nova-session-expired
+  globalThis.fetch = async () => new Response(JSON.stringify({ message: 'Current password is incorrect.' }), {
+    status: 401,
+    headers: { 'Content-Type': 'application/json' },
+  });
+  const mod = await import('./api.js?auth401=' + Date.now());
+  await assert.rejects(
+    () => mod.api('/users/9/password', { method: 'PUT', body: JSON.stringify({ currentPassword: 'bad', newPassword: 'good' }) }),
+    /Current password is incorrect/
+  );
+  assert.equal(globalThis.localStorage.getItem('ai_user'), initialUser);
+  assert.equal(events.filter((e) => e === 'nova-session-expired').length, 0);
+
+  // 2. Transient network failure during /auth/me refresh must NOT log out the user
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('/auth/me')) {
+      throw new TypeError('Load failed');
+    }
+    return new Response(JSON.stringify({ message: 'Unauthorized' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  await assert.rejects(() => mod.api('/courses'), /Unauthorized|Unable to verify|Cannot reach/i);
+  assert.equal(globalThis.localStorage.getItem('ai_user'), initialUser);
+  assert.equal(events.filter((e) => e === 'nova-session-expired').length, 0);
+
+  // 3. Authoritative 401 from /auth/me DOES clear ai_user and emit nova-session-expired
+  globalThis.fetch = async () => new Response(JSON.stringify({ message: 'Session expired' }), {
+    status: 401,
+    headers: { 'Content-Type': 'application/json' },
+  });
+  await assert.rejects(() => mod.api('/courses'), /Session expired/i);
+  assert.equal(globalThis.localStorage.getItem('ai_user'), null);
+  assert.equal(events.filter((e) => e === 'nova-session-expired').length, 1);
+});
+
 test('security & stabilization source invariants hold across frontend files', () => {
   const mainJsx = fs.readFileSync(path.join(SRC_DIR, 'main.jsx'), 'utf8');
   const stylesCss = fs.readFileSync(path.join(SRC_DIR, 'styles.css'), 'utf8');
   const gateCseJsx = fs.readFileSync(path.join(SRC_DIR, 'gateCse.jsx'), 'utf8');
   const indexHtml = fs.readFileSync(path.join(FRONTEND_DIR, 'index.html'), 'utf8');
 
-  // 1. Course IDE iframe must never grant allow-same-origin
+  // 1. Course IDE iframe must never grant allow-same-origin and must enforce strict sandbox + CSP
   assert.match(mainJsx, /sandbox="allow-scripts"\s+referrerPolicy="no-referrer"/);
   assert.doesNotMatch(mainJsx, /allow-same-origin/);
+  assert.match(mainJsx, /default-src \\?'none\\?'/);
 
   // 2. TopNav starts closed (no initial desktop dropdown CLS)
   assert.match(mainJsx, /const \[openMenu,setOpenMenu\]=useState\(null\);/);
@@ -162,8 +206,9 @@ test('security & stabilization source invariants hold across frontend files', ()
   // 3. Global error listeners must not trigger nova-recover infinite loops
   assert.doesNotMatch(mainJsx, /dispatchEvent\(new Event\('nova-recover'\)\)/);
 
-  // 4. styles.css must not contain the desktop +210px CLS padding hack
+  // 4. styles.css must not contain the desktop +210px CLS padding hack and must use theme-safe toast tokens
   assert.doesNotMatch(stylesCss, /body:has\(\.topnav\.subnav-open\)/);
+  assert.match(stylesCss, /\.nv-toast\{[^}]*var\(--ink/);
 
   // 5. GATE CSE fetches hard_quiz.json once (no duplicated paper fetch)
   assert.equal((gateCseJsx.match(/hard_quiz\.json/g) || []).length, 1);
