@@ -96,9 +96,11 @@ public class DataSeeder {
         if (owner == null) {
             owner = new User("NovaTutor Admin", clean, encoder.encode(password));
             owner.setRole("ADMIN");
+            owner.setEmailVerified(true);
             users.save(owner);
-        } else if (!"ADMIN".equalsIgnoreCase(owner.getRole())) {
+        } else if (!"ADMIN".equalsIgnoreCase(owner.getRole()) || !owner.isEmailVerified()) {
             owner.setRole("ADMIN");
+            owner.setEmailVerified(true);
             users.save(owner);
         }
     }

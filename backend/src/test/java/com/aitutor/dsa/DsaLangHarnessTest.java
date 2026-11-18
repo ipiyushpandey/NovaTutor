@@ -83,4 +83,37 @@ class DsaLangHarnessTest {
         assertEquals(DsaLang.PYTHON, DsaLang.parse("python3"));
         assertEquals(DsaLang.CPP, DsaLang.parse("c++"));
     }
+
+    @Test
+    void goHarnessStripsDuplicatePackageMainFromStarterOrUserCode() {
+        String starter = DsaLang.GO.starter(DsaSig.A2I);
+        String h = DsaLang.GO.harness(DsaSig.A2I, starter);
+        int first = h.indexOf("package main");
+        int second = h.indexOf("package main", first + 1);
+        assertTrue(first >= 0, "harness must declare package main once");
+        assertEquals(-1, second, "Go harness must never contain duplicate package main");
+    }
+
+    @Test
+    void pythonAndJsMatrixCanonicalOutputMatchesOracleFormat() {
+        String py = DsaLang.PYTHON.harness(DsaSig.I2M, "def solve(n):\n    return [[1,2],[3,4]]");
+        assertTrue(py.contains("\";\".join(\",\".join(str(x) for x in row) for row in v)"), py);
+        assertFalse(py.contains("\"[\" + \",\".join(str(x) for x in row) + \"]\""), py);
+
+        String js = DsaLang.JAVASCRIPT.harness(DsaSig.I2M, "function solve(n){ return [[1,2],[3,4]]; }");
+        assertTrue(js.contains("v.map(r => r.join(',')).join(';')"), js);
+        assertFalse(js.contains("v.map(r => '[' + r.join(',') + ']').join(';')"), js);
+    }
+
+    @Test
+    void javaHoistsUserImportsAndAllHarnessesPreserveLiteralPlaceholdersInUserCode() {
+        String javaCode = "import java.math.BigInteger;\nclass Solution { public static int solve(int[] a) { String s = \"%CALL%\"; return a.length; } }";
+        String jh = DsaLang.JAVA.harness(DsaSig.A2I, javaCode);
+        assertTrue(jh.indexOf("import java.math.BigInteger;") < jh.indexOf("public class Main"),
+                "User imports must be hoisted above public class Main");
+        assertTrue(jh.contains("String s = \"%CALL%\";"), "Literal %CALL% in user code must not be substituted");
+
+        String pyh = DsaLang.PYTHON.harness(DsaSig.A2I, "def solve(a):\n    note = '%ARGS%'\n    return len(a)");
+        assertTrue(pyh.contains("note = '%ARGS%'"), "Literal %ARGS% in Python user code must not be substituted");
+    }
 }

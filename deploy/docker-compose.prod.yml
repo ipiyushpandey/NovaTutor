@@ -22,23 +22,23 @@ services:
     restart: unless-stopped
     environment:
       SPRING_PROFILES_ACTIVE: prod
-      DB_URL: jdbc:mysql://mysql:3306/$${MYSQL_DATABASE}?useSSL=true&requireSSL=true&serverTimezone=Asia/Kolkata
-      DB_USERNAME: $${MYSQL_USER}
-      DB_PASSWORD: $${MYSQL_PASSWORD}
-      JWT_SECRET: $${JWT_SECRET:?JWT_SECRET is required}
-      GEMINI_API_KEY: $${GEMINI_API_KEY:?GEMINI_API_KEY is required}
-      ADMIN_EMAIL: $${ADMIN_EMAIL:?ADMIN_EMAIL is required}
-      ADMIN_PASSWORD: $${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
-      CORS_ORIGINS: $${CORS_ORIGINS:?CORS_ORIGINS is required}
-      CODE_RUNNER_ENABLED: $${CODE_RUNNER_ENABLED:-false}
-      CODE_RUNNER_PRODUCTION_ACK: $${CODE_RUNNER_PRODUCTION_ACK:-}
-      RATE_LIMIT_RPM: $${RATE_LIMIT_RPM:-1000}
-      RATE_LIMIT_AUTH_RPM: $${RATE_LIMIT_AUTH_RPM:-30}
-      RATE_LIMIT_AI_RPM: $${RATE_LIMIT_AI_RPM:-60}
-      RATE_LIMIT_CODE_RPM: $${RATE_LIMIT_CODE_RPM:-40}
-      RATE_LIMIT_UPLOAD_10M: $${RATE_LIMIT_UPLOAD_10M:-15}
-      RATE_LIMIT_ADMIN_RPM: $${RATE_LIMIT_ADMIN_RPM:-1500}
-      RATE_LIMIT_TRUST_PROXY: $${RATE_LIMIT_TRUST_PROXY:-true}
+      DB_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-ai_tutor}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Kolkata
+      DB_USERNAME: ${MYSQL_USER:?MYSQL_USER is required}
+      DB_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?GEMINI_API_KEY is required}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?ADMIN_EMAIL is required}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS is required}
+      CODE_RUNNER_ENABLED: ${CODE_RUNNER_ENABLED:-false}
+      CODE_RUNNER_PRODUCTION_ACK: ${CODE_RUNNER_PRODUCTION_ACK:-}
+      RATE_LIMIT_RPM: ${RATE_LIMIT_RPM:-1000}
+      RATE_LIMIT_AUTH_RPM: ${RATE_LIMIT_AUTH_RPM:-30}
+      RATE_LIMIT_AI_RPM: ${RATE_LIMIT_AI_RPM:-60}
+      RATE_LIMIT_CODE_RPM: ${RATE_LIMIT_CODE_RPM:-40}
+      RATE_LIMIT_UPLOAD_10M: ${RATE_LIMIT_UPLOAD_10M:-15}
+      RATE_LIMIT_ADMIN_RPM: ${RATE_LIMIT_ADMIN_RPM:-1500}
+      RATE_LIMIT_TRUST_PROXY: ${RATE_LIMIT_TRUST_PROXY:-true}
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/actuator/health/readiness || exit 1"]
       interval: 15s

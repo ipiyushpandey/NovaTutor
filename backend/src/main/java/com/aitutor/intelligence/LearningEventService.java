@@ -24,20 +24,21 @@ public class LearningEventService {
             String key = dedupeKey.trim();
             var existing = repository.findByUserIdAndDedupeKey(user.getId(), key);
             if (existing.isPresent()) return existing.get();
-            repository.insertIfAbsent(user.getId(), normalizedType, subject, topic, score, durationSeconds, details, key, java.time.LocalDateTime.now(LearningEventAnalyticsService.LEARNING_ZONE));
-            // A concurrent INSERT IGNORE may have won the race and its transaction
-            // may not be visible yet. Retry the read briefly instead of failing the
-            // request; fall back to a direct save only if the row truly is absent.
-            for (int attempt = 0; attempt < 5; attempt++) {
-                existing = repository.findByUserIdAndDedupeKey(user.getId(), key);
-                if (existing.isPresent()) return existing.get();
-                try { Thread.sleep(50L * (attempt + 1)); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+            int inserted = repository.insertIfAbsent(
+                    user.getId(), normalizedType, subject, topic, score, durationSeconds, details, key,
+                    java.time.LocalDateTime.now(LearningEventAnalyticsService.LEARNING_ZONE));
+            existing = repository.findByUserIdAndDedupeKey(user.getId(), key);
+            if (existing.isPresent()) return existing.get();
+            if (inserted == 0) {
+                // Under REPEATABLE READ (MySQL/TiDB), a concurrently inserted row may not be
+                // visible in this snapshot even though INSERT IGNORE safely deduplicated it.
+                return new LearningEvent(user, normalizedType, subject, topic, score, durationSeconds, details, key);
             }
             try {
                 return repository.save(new LearningEvent(user, normalizedType, subject, topic, score, durationSeconds, details, key));
             } catch (org.springframework.dao.DataIntegrityViolationException race) {
                 return repository.findByUserIdAndDedupeKey(user.getId(), key)
-                        .orElseThrow(() -> new IllegalStateException("Learning event could not be recorded"));
+                        .orElseGet(() -> new LearningEvent(user, normalizedType, subject, topic, score, durationSeconds, details, key));
             }
         }
         return repository.save(new LearningEvent(user, normalizedType, subject, topic, score, durationSeconds, details));

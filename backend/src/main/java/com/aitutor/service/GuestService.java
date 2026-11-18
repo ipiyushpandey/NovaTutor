@@ -40,7 +40,6 @@ public class GuestService {
 
     @Transactional
     public User create() {
-        purgeExpired();
         String suffix = UUID.randomUUID().toString();
         User u = new User("Guest Learner", "guest-" + suffix + "@guest.novatutor.local",
                 encoder.encode(UUID.randomUUID().toString()));

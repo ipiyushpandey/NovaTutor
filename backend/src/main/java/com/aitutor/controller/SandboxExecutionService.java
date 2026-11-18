@@ -80,31 +80,61 @@ public class SandboxExecutionService {
             } else {
                 process.getOutputStream().close();
             }
-            StringBuilder output=new StringBuilder();
-            char[] buf=new char[8192];
-            int total=0; boolean exceeded=false;
-            try(java.io.Reader r=new java.io.InputStreamReader(process.getInputStream(),StandardCharsets.UTF_8)){
-                int n;
-                long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(timeoutSeconds);
-                while((n=r.read(buf))>=0){
-                    output.append(buf,0,n);
-                    total+=n;
-                    if(total>400_000){exceeded=true;break;}
-                    if(System.nanoTime()>deadline){break;}
+            StringBuilder output = new StringBuilder();
+            java.util.concurrent.atomic.AtomicBoolean exceeded = new java.util.concurrent.atomic.AtomicBoolean(false);
+            Thread reader = new Thread(() -> {
+                char[] buf = new char[8192];
+                int total = 0;
+                try (java.io.Reader r = new java.io.InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8)) {
+                    int n;
+                    while ((n = r.read(buf)) >= 0) {
+                        synchronized (output) {
+                            output.append(buf, 0, n);
+                        }
+                        total += n;
+                        if (total > 400_000) {
+                            exceeded.set(true);
+                            process.destroyForcibly();
+                            break;
+                        }
+                    }
+                } catch (IOException ignored) {
+                    // Stream closed when process terminated or timed out
                 }
+            }, "sandbox-stdout");
+            reader.setDaemon(true);
+            reader.start();
+
+            long startedAt = System.nanoTime();
+            boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
+            long durationMs = (System.nanoTime() - startedAt) / 1_000_000L;
+            if (!finished || exceeded.get()) {
+                process.destroyForcibly();
+                process.waitFor(2, TimeUnit.SECONDS);
+                killContainer(cid);
+                reader.join(1000);
+                if (writer != null) writer.join(1000);
+                String outSnap;
+                synchronized (output) { outSnap = output.toString(); }
+                if (exceeded.get()) {
+                    return Map.of("enabled", true, "status", "OUTPUT_LIMIT", "exitCode", -1,
+                            "stdout", truncate(outSnap), "stderr", "Execution produced too much output.",
+                            "durationMs", durationMs);
+                }
+                return Map.of("enabled", true, "status", "TIMEOUT", "exitCode", -1,
+                        "stdout", truncate(outSnap), "stderr", "Execution exceeded the sandbox time limit.",
+                        "durationMs", timeoutSeconds * 1000L);
             }
-            boolean finished=process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-            if(writer!=null){writer.join(2000);}
-            if(!finished||exceeded){process.destroyForcibly(); process.waitFor(2,TimeUnit.SECONDS); killContainer(cid);
-                if(exceeded) return Map.of("enabled",true,"status","OUTPUT_LIMIT","exitCode",-1,"stdout",truncate(output.toString()),"stderr","Execution produced too much output.","durationMs",timeoutSeconds*1000);
-                return Map.of("enabled",true,"status","TIMEOUT","exitCode",-1,"stdout",truncate(output.toString()),"stderr","Execution exceeded the sandbox time limit.","durationMs",timeoutSeconds*1000);}
-            String out=output.toString();
-            int exit=process.exitValue();
+            reader.join(2000);
+            if (writer != null) writer.join(2000);
+            String out;
+            synchronized (output) { out = output.toString(); }
+            int exit = process.exitValue();
             // Docker reports an OOM kill of a --memory-capped container as 137
             // (SIGKILL). Local execution is a development path; production uses
             // the remote provider, whose verdict mapping is in RemoteCodeRunner.
-            if(exit==137) return Map.of("enabled",true,"status","MEMORY_LIMIT","exitCode",-1,"stdout",truncate(out),"stderr","Memory limit exceeded: the sandbox stopped the process at the configured "+memoryMb+" MB limit.","durationMs",0,"memoryKb",memoryMb*1024);
-            return Map.of("enabled",true,"status",exit==0?"PASSED":"RUNTIME_ERROR","exitCode",exit,"stdout",truncate(out),"stderr",exit==0?"":"Process exited with a non-zero status.","durationMs",0);
+            if (exit == 137) return Map.of("enabled", true, "status", "MEMORY_LIMIT", "exitCode", -1, "stdout", truncate(out), "stderr", "Memory limit exceeded: the sandbox stopped the process at the configured " + memoryMb + " MB limit.", "durationMs", durationMs, "memoryKb", memoryMb * 1024);
+            return Map.of("enabled", true, "status", exit == 0 ? "PASSED" : "RUNTIME_ERROR", "exitCode", exit, "stdout", truncate(out), "stderr", exit == 0 ? "" : "Process exited with a non-zero status.", "durationMs", durationMs);
         } catch(IOException e){return Map.of("enabled",true,"status","RUNNER_UNAVAILABLE","exitCode",-1,"stdout","","stderr","Docker sandbox is unavailable. Start Docker Desktop and make sure the configured runner image can be pulled.","detail",e.getMessage());}
         catch(InterruptedException e){Thread.currentThread().interrupt();return Map.of("enabled",true,"status","INTERRUPTED","exitCode",-1,"stdout","","stderr","Execution was interrupted.");}
         finally{concurrency.release(); if(dir!=null)try{Files.walk(dir).sorted(Comparator.reverseOrder()).forEach(x->{try{Files.deleteIfExists(x);}catch(IOException ignored){}});}catch(IOException ignored){}}
@@ -172,7 +202,7 @@ public class SandboxExecutionService {
 
     private List<String> command(String lang,String file,Path dir){
         String mount=dir.toAbsolutePath().toString(); String image=images.get(lang);
-        List<String> base=new ArrayList<>(List.of("docker","run","--rm","--network","none","--cpus","0.5","--memory",memoryMb+"m","--pids-limit","64","--ulimit","nofile=256:256","--security-opt","no-new-privileges","--cap-drop","ALL","--read-only","--tmpfs","/tmp:rw,nosuid,size=64m","-v",mount+":/workspace:rw","-w","/workspace",image));
+        List<String> base=new ArrayList<>(List.of("docker","run","--rm","--network","none","--cpus","0.5","--memory",memoryMb+"m","--memory-swap",memoryMb+"m","--pids-limit","64","--ulimit","nofile=256:256","--security-opt","no-new-privileges","--cap-drop","ALL","--read-only","--tmpfs","/tmp:rw,nosuid,size=64m","-v",mount+":/workspace:rw","-w","/workspace",image));
         switch(lang){case "java"->base.addAll(List.of("sh","-lc","javac Main.java && java Main"));case "python"->base.addAll(List.of("python","main.py"));case "javascript"->base.addAll(List.of("node","main.js"));case "go"->base.addAll(List.of("go","run","main.go"));case "c++"->base.addAll(List.of("sh","-lc","g++ -std=c++20 -O2 main.c -o /workspace/a.out && /workspace/a.out"));default->base.addAll(List.of("sh","-lc","gcc -std=c17 -O2 main.c -o /workspace/a.out && /workspace/a.out"));}
         return base;
     }

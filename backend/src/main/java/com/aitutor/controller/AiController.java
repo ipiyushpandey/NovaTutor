@@ -2,6 +2,7 @@ package com.aitutor.controller;
 
 import com.aitutor.ai.*;
 import com.aitutor.service.AiService;
+import jakarta.annotation.PreDestroy;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -30,6 +31,11 @@ public class AiController {
         this.metrics = metrics;
     }
 
+    @PreDestroy
+    public void shutdown() {
+        streamExecutor.shutdownNow();
+    }
+
     @PostMapping("/ask")
     public AiResponse ask(@RequestBody AiRequest r) {
         long started = System.nanoTime();
@@ -42,8 +48,10 @@ public class AiController {
     @PostMapping(value = "/ask/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(@RequestBody AiRequest r) {
         SseEmitter emitter = new SseEmitter(300_000L);
-        emitter.onTimeout(emitter::complete);
-        emitter.onError(ex -> emitter.complete());
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        emitter.onTimeout(() -> { cancelled.set(true); emitter.complete(); });
+        emitter.onCompletion(() -> cancelled.set(true));
+        emitter.onError(ex -> { cancelled.set(true); emitter.complete(); });
         String task = r.task() == null ? "UNKNOWN" : r.task().name();
         streamExecutor.execute(() -> {
             long started = System.nanoTime();
@@ -51,17 +59,22 @@ public class AiController {
             AtomicBoolean failed = new AtomicBoolean(false);
             try {
                 ai.stream(r, chunk -> {
+                    if (cancelled.get()) throw new IllegalStateException("Client disconnected");
                     if (firstChunk.get() < 0) firstChunk.set((System.nanoTime() - started) / 1_000_000);
                     try { emitter.send(SseEmitter.event().data(chunk)); }
-                    catch (java.io.IOException e) { throw new IllegalStateException(e); }
+                    catch (java.io.IOException e) { cancelled.set(true); throw new IllegalStateException(e); }
                 });
-                emitter.send(SseEmitter.event().name("done").data("done"));
-                emitter.complete();
+                if (!cancelled.get()) {
+                    emitter.send(SseEmitter.event().name("done").data("done"));
+                    emitter.complete();
+                }
             } catch (Exception e) {
                 failed.set(true);
-                try { emitter.send(SseEmitter.event().name("error").data("AI request failed. Please try again.")); }
-                catch (Exception ignored) { }
-                emitter.completeWithError(e);
+                if (!cancelled.get()) {
+                    try { emitter.send(SseEmitter.event().name("error").data("AI request failed. Please try again.")); }
+                    catch (Exception ignored) { }
+                    emitter.completeWithError(e);
+                }
             } finally {
                 metrics.record(task, (System.nanoTime() - started) / 1_000_000,
                         !failed.get(), firstChunk.get());
