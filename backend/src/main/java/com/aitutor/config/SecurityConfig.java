@@ -3,6 +3,7 @@ package com.aitutor.config;
 import com.aitutor.repository.UserRepository;
 import com.aitutor.security.JwtAuthenticationFilter;
 import com.aitutor.security.JwtService;
+import com.aitutor.security.PreAuthRateLimitFilter;
 import com.aitutor.security.RequestRateLimitFilter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -74,6 +75,22 @@ public class SecurityConfig {
     }
 
     @Bean
+    PreAuthRateLimitFilter preAuthRateLimitFilter(
+            @Value("${app.rate-limit.enabled:true}") boolean enabled,
+            @Value("${app.rate-limit.pre-auth-per-minute:360}") int preAuthRpm,
+            @Value("${app.rate-limit.trust-proxy:false}") boolean trustProxy) {
+        return new PreAuthRateLimitFilter(enabled, preAuthRpm, trustProxy);
+    }
+
+    @Bean
+    org.springframework.boot.web.servlet.FilterRegistrationBean<PreAuthRateLimitFilter> disablePreAuthAutoRegistration(
+            PreAuthRateLimitFilter filter) {
+        var reg = new org.springframework.boot.web.servlet.FilterRegistrationBean<>(filter);
+        reg.setEnabled(false);
+        return reg;
+    }
+
+    @Bean
     org.springframework.boot.web.servlet.FilterRegistrationBean<JwtAuthenticationFilter> disableJwtAutoRegistration(
             JwtAuthenticationFilter filter) {
         var reg = new org.springframework.boot.web.servlet.FilterRegistrationBean<>(filter);
@@ -90,7 +107,11 @@ public class SecurityConfig {
     }
 
     @Bean
-    SecurityFilterChain filter(HttpSecurity http, @Qualifier("corsConfigurationSource") CorsConfigurationSource corsSource, JwtAuthenticationFilter jwtFilter, RequestRateLimitFilter rateLimitFilter) throws Exception {
+    SecurityFilterChain filter(HttpSecurity http,
+                               @Qualifier("corsConfigurationSource") CorsConfigurationSource corsSource,
+                               PreAuthRateLimitFilter preAuthFilter,
+                               JwtAuthenticationFilter jwtFilter,
+                               RequestRateLimitFilter rateLimitFilter) throws Exception {
         return http
                 .csrf(c -> c.disable())
                 .cors(c -> c.configurationSource(corsSource))
@@ -116,6 +137,7 @@ public class SecurityConfig {
                             response.getWriter().write("{\"error\":\"forbidden\",\"message\":\"Access denied\"}");
                         }))
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(preAuthFilter, JwtAuthenticationFilter.class)
                 .addFilterAfter(rateLimitFilter, JwtAuthenticationFilter.class)
                 .build();
     }

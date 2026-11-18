@@ -13,6 +13,7 @@ public interface UserRepository extends JpaRepository<User, Long> {
     List<User> findByRoleNotOrderByNameAsc(String role);
     List<User> findTop8ByRoleNotOrderByCreatedAtDesc(String role);
     boolean existsByRoleIgnoreCase(String role);
+    long countByRole(String role);
     long countByRoleNot(String role);
     long countByRoleNotAndActiveTrue(String role);
     long countByRoleNotAndBlockedTrue(String role);

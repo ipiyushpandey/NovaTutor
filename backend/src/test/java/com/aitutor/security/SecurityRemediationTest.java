@@ -396,4 +396,87 @@ class SecurityRemediationTest {
                         .content("{\"email\":\"" + email + "\",\"password\":\"AttackerPass999!\"}"))
                 .andExpect(status().isUnauthorized());
     }
+
+    @Test
+    void hiddenDsaTestsRunInSeparateSandboxExecutionAndSuppressStderrExfiltration() {
+        SandboxExecutionService sandbox = mock(SandboxExecutionService.class);
+        DsaProblemStateRepository states = mock(DsaProblemStateRepository.class);
+        LearningEventService events = mock(LearningEventService.class);
+        DsaJudgeService judge = new DsaJudgeService(sandbox, states, events);
+
+        DsaProblem problem = DsaCatalog.all().get(0);
+        List<String> capturedStdins = new java.util.ArrayList<>();
+        String secretMarker = "EXFIL_SECRET_HIDDEN_INPUT";
+
+        when(sandbox.execute(anyString(), anyString(), anyString())).thenAnswer(inv -> {
+            String stdin = inv.getArgument(2, String.class);
+            capturedStdins.add(stdin);
+            if (capturedStdins.size() == 1) {
+                // Sample execution succeeds
+                StringBuilder out = new StringBuilder();
+                for (String[] s : problem.samples()) out.append(problem.expectedFor(s[0])).append('\n');
+                return Map.of("enabled", true, "status", "OK", "exitCode", 0,
+                        "stdout", out.toString(), "stderr", "", "durationMs", 10L);
+            }
+            // Hidden execution attempts stderr exfiltration + non-zero exit
+            return Map.of("enabled", true, "status", "OK", "exitCode", 1,
+                    "stdout", "", "stderr", secretMarker + ":" + stdin, "durationMs", 12L);
+        });
+
+        DsaJudgeService.RunResult result = judge.run(null, problem,
+                new DsaJudgeService.RunRequest("java", "class Solution {}"), false);
+
+        assertEquals(2, capturedStdins.size(), "Sample and hidden tests must run in two separate sandbox executions");
+        // Verify sample stdin contains ONLY sample inputs, never hidden tests
+        long sampleLineCount = capturedStdins.get(0).lines().count();
+        assertEquals(problem.samples().size(), sampleLineCount, "Sample stdin must contain only sample inputs");
+        // Verify stderr from hidden execution is NEVER leaked back
+        assertEquals("RUNTIME_ERROR", result.status());
+        assertFalse(result.message().contains(secretMarker), "Hidden stderr leaked: " + result.message());
+        assertEquals("Runtime error on hidden test suite.", result.message());
+    }
+
+    @Test
+    void preAuthRateLimitBlocksIpFloodAndCodeAnalyzeUsesAiBucketAndGuestCapEnforced() throws Exception {
+        // 1. PreAuthRateLimitFilter enforces IP cap before JwtAuthenticationFilter
+        PreAuthRateLimitFilter preAuth = new PreAuthRateLimitFilter(true, 30, true);
+        int blockedAt = -1;
+        for (int i = 1; i <= 35; i++) {
+            MockHttpServletRequest req = new MockHttpServletRequest("GET", "/api/dsa/stats");
+            req.setRemoteAddr("198.51.100.55");
+            req.addHeader("Authorization", "Bearer forged.jwt.token." + i);
+            MockHttpServletResponse res = new MockHttpServletResponse();
+            preAuth.doFilter(req, res, new MockFilterChain());
+            if (res.getStatus() == 429) {
+                blockedAt = i;
+                break;
+            }
+        }
+        assertEquals(31, blockedAt, "PreAuthRateLimitFilter must reject high-velocity forged JWT floods with 429");
+
+        // 2. /api/code/analyze must be classified into AI bucket (limit 5), NOT code bucket (limit 20)
+        RequestRateLimitFilter filter = new RequestRateLimitFilter(true, 120, 10, 5, 20, 5, 600, false);
+        int aiBlockedAt = -1;
+        for (int i = 1; i <= 10; i++) {
+            MockHttpServletRequest req = new MockHttpServletRequest("POST", "/api/code/analyze");
+            req.setRemoteAddr("198.51.100.88");
+            MockHttpServletResponse res = new MockHttpServletResponse();
+            filter.doFilter(req, res, new MockFilterChain());
+            if (res.getStatus() == 429) {
+                aiBlockedAt = i;
+                break;
+            }
+        }
+        assertEquals(6, aiBlockedAt, "/api/code/analyze must share the AI rate-limit bucket");
+
+        // 3. GuestService enforces max active guests cap
+        UserRepository mockUsers = mock(UserRepository.class);
+        com.aitutor.service.UserDataCleanupService mockCleanup = mock(com.aitutor.service.UserDataCleanupService.class);
+        when(mockUsers.countByRole("GUEST")).thenReturn(10L);
+        when(mockUsers.findByRoleAndCreatedAtBefore(anyString(), org.mockito.ArgumentMatchers.any())).thenReturn(List.of());
+        com.aitutor.service.GuestService cappedGuests = new com.aitutor.service.GuestService(mockUsers, encoder, mockCleanup, 24L, 10L);
+        com.aitutor.controller.ApiException capEx = assertThrows(com.aitutor.controller.ApiException.class, cappedGuests::create);
+        assertEquals("GUEST_CAPACITY_REACHED", capEx.code());
+        assertEquals(429, capEx.status().value());
+    }
 }

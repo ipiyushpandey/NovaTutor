@@ -32,13 +32,16 @@ app:
     enabled: ${APP_SEED_ENABLED:false}
   rate-limit:
     enabled: ${RATE_LIMIT_ENABLED:true}
-    requests-per-minute: ${RATE_LIMIT_RPM:1000}
-    auth-per-minute: ${RATE_LIMIT_AUTH_RPM:30}
-    ai-per-minute: ${RATE_LIMIT_AI_RPM:60}
-    code-per-minute: ${RATE_LIMIT_CODE_RPM:40}
-    upload-per-10-minutes: ${RATE_LIMIT_UPLOAD_10M:15}
-    admin-per-minute: ${RATE_LIMIT_ADMIN_RPM:1500}
+    requests-per-minute: ${RATE_LIMIT_RPM:240}
+    pre-auth-per-minute: ${RATE_LIMIT_PRE_AUTH_RPM:360}
+    auth-per-minute: ${RATE_LIMIT_AUTH_RPM:10}
+    ai-per-minute: ${RATE_LIMIT_AI_RPM:25}
+    code-per-minute: ${RATE_LIMIT_CODE_RPM:20}
+    upload-per-10-minutes: ${RATE_LIMIT_UPLOAD_10M:5}
+    admin-per-minute: ${RATE_LIMIT_ADMIN_RPM:600}
     trust-proxy: ${RATE_LIMIT_TRUST_PROXY:true}
+  guest:
+    max-active: ${GUEST_MAX_ACTIVE:200}
   cors:
     allowed-origins: ${CORS_ORIGINS}
   admin:

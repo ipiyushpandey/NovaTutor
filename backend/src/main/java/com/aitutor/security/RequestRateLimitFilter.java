@@ -154,6 +154,9 @@ public class RequestRateLimitFilter extends OncePerRequestFilter {
         if (p.startsWith("/api/admin/")) {
             return new Policy("admin", adminRpm, 60_000L, false);
         }
+        if (p.equals("/api/code/analyze")) {
+            return new Policy("ai", aiRpm, 60_000L, false);
+        }
         if (p.startsWith("/api/code/")
                 || ("POST".equals(m) && p.startsWith("/api/dsa/problems/") && p.endsWith("/run"))) {
             return new Policy("code", codeRpm, 60_000L, false);
@@ -195,6 +198,10 @@ public class RequestRateLimitFilter extends OncePerRequestFilter {
      * right-to-left skipping internal proxy hops to find the first public peer IP.
      */
     String clientAddress(HttpServletRequest request) {
+        return resolveClientAddress(request, trustProxy);
+    }
+
+    static String resolveClientAddress(HttpServletRequest request, boolean trustProxy) {
         String remoteAddr = request.getRemoteAddr() == null ? "unknown" : request.getRemoteAddr().trim();
         if (trustProxy && isTrustedProxy(remoteAddr)) {
             String chain = request.getHeader("X-Forwarded-For");
