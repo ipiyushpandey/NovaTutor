@@ -135,7 +135,8 @@ public class RequestRateLimitFilter extends OncePerRequestFilter {
     }
 
     Policy classify(String method, String path) {
-        String p = path == null ? "" : path;
+        String raw = path == null ? "" : path.trim();
+        String p = raw.length() > 1 ? raw.replaceAll("/+$", "") : raw;
         String m = method == null ? "GET" : method.toUpperCase(Locale.ROOT);
 
         if (p.equals("/api/auth/forgot-password") || p.equals("/api/auth/reset-password")
@@ -186,20 +187,52 @@ public class RequestRateLimitFilter extends OncePerRequestFilter {
 
     /**
      * Never trust arbitrary client-supplied X-Real-IP or leftmost X-Forwarded-For.
-     * Behind a single trusted reverse proxy (e.g. Render), the proxy appends the true
-     * peer IP as the rightmost entry of X-Forwarded-For.
+     * Only consult X-Forwarded-For when trustProxy=true AND the direct TCP peer
+     * (request.getRemoteAddr()) is a trusted internal/loopback reverse proxy.
+     * Behind Tomcat's native RemoteIpValve, remoteAddr is already resolved to the
+     * true public client IP (non-internal), so spoofed X-Forwarded-For headers are
+     * ignored completely. When behind a raw proxy hop (e.g. Nginx/MockMvc), walk
+     * right-to-left skipping internal proxy hops to find the first public peer IP.
      */
     String clientAddress(HttpServletRequest request) {
-        if (trustProxy) {
+        String remoteAddr = request.getRemoteAddr() == null ? "unknown" : request.getRemoteAddr().trim();
+        if (trustProxy && isTrustedProxy(remoteAddr)) {
             String chain = request.getHeader("X-Forwarded-For");
             if (chain != null && !chain.isBlank()) {
                 String[] parts = chain.split(",");
+                String fallback = null;
                 for (int i = parts.length - 1; i >= 0; i--) {
                     String candidate = parts[i].trim();
-                    if (!candidate.isBlank()) return candidate;
+                    if (candidate.isBlank()) continue;
+                    if (fallback == null) fallback = candidate;
+                    if (!isTrustedProxy(candidate)) {
+                        return candidate;
+                    }
+                }
+                if (fallback != null) return fallback;
+            }
+        }
+        return remoteAddr;
+    }
+
+    static boolean isTrustedProxy(String ip) {
+        if (ip == null || ip.isBlank()) return false;
+        String clean = ip.trim();
+        if ("127.0.0.1".equals(clean) || "::1".equals(clean) || "0:0:0:0:0:0:0:1".equals(clean)) return true;
+        if (clean.startsWith("10.") || clean.startsWith("192.168.") || clean.startsWith("169.254.") || clean.startsWith("127.")) {
+            return true;
+        }
+        if (clean.startsWith("172.")) {
+            int dot = clean.indexOf('.', 4);
+            if (dot > 4) {
+                try {
+                    int second = Integer.parseInt(clean.substring(4, dot));
+                    return second >= 16 && second <= 31;
+                } catch (NumberFormatException ignored) {
+                    return false;
                 }
             }
         }
-        return request.getRemoteAddr();
+        return false;
     }
 }

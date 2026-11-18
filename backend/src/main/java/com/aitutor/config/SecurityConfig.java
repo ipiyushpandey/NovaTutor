@@ -74,6 +74,22 @@ public class SecurityConfig {
     }
 
     @Bean
+    org.springframework.boot.web.servlet.FilterRegistrationBean<JwtAuthenticationFilter> disableJwtAutoRegistration(
+            JwtAuthenticationFilter filter) {
+        var reg = new org.springframework.boot.web.servlet.FilterRegistrationBean<>(filter);
+        reg.setEnabled(false);
+        return reg;
+    }
+
+    @Bean
+    org.springframework.boot.web.servlet.FilterRegistrationBean<RequestRateLimitFilter> disableRateLimitAutoRegistration(
+            RequestRateLimitFilter filter) {
+        var reg = new org.springframework.boot.web.servlet.FilterRegistrationBean<>(filter);
+        reg.setEnabled(false);
+        return reg;
+    }
+
+    @Bean
     SecurityFilterChain filter(HttpSecurity http, @Qualifier("corsConfigurationSource") CorsConfigurationSource corsSource, JwtAuthenticationFilter jwtFilter, RequestRateLimitFilter rateLimitFilter) throws Exception {
         return http
                 .csrf(c -> c.disable())

@@ -345,4 +345,55 @@ class SecurityRemediationTest {
         }
         assertEquals(6, blockedAt, "Spoofed headers must not bypass auth-recovery rate limit");
     }
+
+    @Test
+    void rateLimitFilterIgnoresXForwardedForWhenDirectPeerIsNotTrustedProxy() throws Exception {
+        RequestRateLimitFilter filter = new RequestRateLimitFilter(true, 120, 5, 20, 20, 5, 600, true);
+        // Direct internet peer 198.51.100.99 is NOT a private/internal proxy.
+        // Rotating X-Forwarded-For must be ignored completely and bucketed by remoteAddr.
+        int blockedAt = -1;
+        for (int i = 1; i <= 10; i++) {
+            MockHttpServletRequest req = new MockHttpServletRequest("POST", "/api/auth/forgot-password");
+            req.setRemoteAddr("198.51.100.99");
+            req.addHeader("X-Forwarded-For", "203.0.113." + i);
+            MockHttpServletResponse res = new MockHttpServletResponse();
+            filter.doFilter(req, res, new MockFilterChain());
+            if (res.getStatus() == 429) {
+                blockedAt = i;
+                break;
+            }
+        }
+        assertEquals(6, blockedAt, "Untrusted peer must not spoof X-Forwarded-For to bypass rate limit");
+    }
+
+    @Test
+    void preRegistrationTakeoverPathBBlockedByTokenBoundPendingRegistrations() throws Exception {
+        // Simulate victim registering, then attacker registering same email with attacker password,
+        // then victim verifying their own token. Victim's password must win and attacker's must fail.
+        String email = "victim-pathb-" + System.nanoTime() + "@novatutor.test";
+
+        mvc.perform(post("/api/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Real Victim\",\"email\":\"" + email + "\",\"password\":\"VictimSecret123!\"}"))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.pending", is(true)));
+
+        // No row should exist in users table yet!
+        assertTrue(users.findByEmail(email).isEmpty(), "Pending registration must not materialize users row before verification");
+
+        // Attacker registers same email with attacker password
+        mvc.perform(post("/api/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Attacker\",\"email\":\"" + email + "\",\"password\":\"AttackerPass999!\"}"))
+                .andExpect(status().isAccepted());
+
+        // Still no row in users table
+        assertTrue(users.findByEmail(email).isEmpty());
+
+        // Login with either password must fail with 401 before verification
+        mvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"" + email + "\",\"password\":\"AttackerPass999!\"}"))
+                .andExpect(status().isUnauthorized());
+    }
 }

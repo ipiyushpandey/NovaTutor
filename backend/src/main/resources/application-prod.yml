@@ -97,9 +97,17 @@ management:
     readinessstate:
       enabled: true
 server:
-  forward-headers-strategy: framework
+  # Use Tomcat's native RemoteIpValve (NOT Spring's ForwardedHeaderFilter `framework`
+  # mode, which strips X-Forwarded-For and blindly promotes the spoofable leftmost IP
+  # to remoteAddr). Tomcat only honors X-Forwarded-For from trusted internal proxy
+  # peers and walks right-to-left to the first non-internal client IP.
+  forward-headers-strategy: native
   error:
     include-message: never
     include-stacktrace: never
   tomcat:
     max-swallow-size: 50MB
+    remoteip:
+      remote-ip-header: x-forwarded-for
+      protocol-header: x-forwarded-proto
+      internal-proxies: ${TRUSTED_PROXY_REGEX:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3}|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|0:0:0:0:0:0:0:1|::1}

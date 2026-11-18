@@ -52,20 +52,23 @@ public class AuthController {
     @PostMapping("/register")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public Pending register(@Valid @RequestBody Req r) {
-        User u = auth.register(r.name(), r.email(), r.password());
-        EmailVerificationService.Issue issue = verification.issueVerification(u, true);
+        AuthService.PendingDraft draft = auth.preparePendingRegistration(r.name(), r.email(), r.password());
+        EmailVerificationService.Issue issue = verification.issuePendingRegistration(draft);
         String message;
         if (issue.sent()) {
-            message = "We sent a verification link to " + u.getEmail()
+            message = "We sent a verification link to " + draft.email()
                     + ". It expires in " + EmailVerificationService.VERIFICATION_HOURS + " hours.";
+        } else if (issue.rateLimited()) {
+            message = "Too many pending verification requests for " + draft.email()
+                    + ". Please check your inbox for an existing verification link or wait for it to expire.";
         } else if (!issue.configured()) {
-            message = "Your account is created, but this server cannot send email yet. "
+            message = "Your registration is pending verification, but this server cannot send email yet. "
                     + "Ask the administrator to configure SMTP, then resend the verification link.";
         } else {
-            message = "Your account is created, but the verification email could not be delivered. "
+            message = "Your registration is pending verification, but the verification email could not be delivered. "
                     + "Please resend it in a moment or contact support.";
         }
-        return new Pending(true, u.getEmail(), issue.sent(), issue.configured(), message);
+        return new Pending(true, draft.email(), issue.sent(), issue.configured(), message);
     }
 
     @PostMapping("/login")
@@ -180,11 +183,8 @@ public class AuthController {
     @PostMapping("/resend-verification")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public Map<String, Object> resendVerification(@Valid @RequestBody EmailReq r) {
-        var user = auth.findOptional(r.email());
-        if (user.isPresent() && !user.get().isEmailVerified()) {
-            // Silently respect per-account cooldown without returning an existence-leaking 429.
-            verification.issueVerification(user.get(), true);
-        }
+        // Silently respect cooldown and competing pending registrations without revealing account state.
+        verification.resendVerification(r.email());
         boolean configured = mail.isConfigured();
         return Map.of(
                 "sent", configured,
