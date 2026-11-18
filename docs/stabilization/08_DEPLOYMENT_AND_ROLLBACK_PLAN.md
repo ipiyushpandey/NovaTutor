@@ -10,23 +10,27 @@
    git log --oneline baseline/pre-stabilization-e6a0034..HEAD
    ```
 2. **Verify required Render backend environment variables** (enforced by `ProductionConfigValidator` under `SPRING_PROFILES_ACTIVE=prod`):
-   - `JWT_SECRET` (strong >= 32 chars, not a default placeholder)
-   - `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD` (TiDB Cloud TLS JDBC URL)
-   - `APP_CORS_ALLOWED_ORIGINS` (exact production frontend origin, no `*`)
+   - `JWT_SECRET` (strong >= 32 bytes, not a default placeholder)
+   - `DB_URL`, `DB_USERNAME`, `DB_PASSWORD` (TiDB Cloud TLS JDBC URL)
+   - `CORS_ORIGINS` (exact `https://` production frontend origin(s), no `*`, no localhost/loopback)
    - `GEMINI_API_KEY` (valid server-side key)
-   - `ADMIN_EMAIL` / `ADMIN_PASSWORD` (if bootstrapping owner account)
-   - `APP_TRUST_FORWARDED_HEADERS=true` (only behind trusted reverse proxy such as Render/Nginx)
-3. **Database Compatibility Check:**
-   - No destructive schema migrations or column drops were introduced.
-   - Existing `users`, `courses`, `lessons`, `progress`, `chat_conversations`, `chat_messages`, `gate_notes`, `knowledge_documents`, `knowledge_chunks`, `learning_events`, and `dsa_problem_states` tables remain forward- and backward-compatible with baseline `e6a0034`.
+   - `ADMIN_EMAIL` / `ADMIN_PASSWORD` (owner account; password >= 12 chars)
+   - `RATE_LIMIT_TRUST_PROXY=true` (only behind trusted reverse proxy such as Render/Nginx; uses `server.forward-headers-strategy=native`)
+   - `JPA_DDL_AUTO=validate` (after applying SQL migration), `APP_SEED_ENABLED=false`
+3. **Database Migration Requirement (v2.5 Audit Remediation):**
+   - Before deploying with `JPA_DDL_AUTO=validate`, apply [`database/migrations/V2026_11_18__stabilization_v25.sql`](../../database/migrations/V2026_11_18__stabilization_v25.sql):
+     - Creates `pending_registrations` (for token-bound email verification preventing pre-registration takeover).
+     - Widens `dsa_problem_state.last_code` from `TEXT` to `MEDIUMTEXT`.
+   - No destructive column drops or data-loss migrations are performed; existing tables remain backward-compatible for rollback.
 
 ## 2. Deployment Sequence (User-Approved)
 
-1. Merge `stabilization/v2.4-security-reliability` into `main` via PR (letting `.github/workflows/ci.yml` run full Maven + Node tests + Vite build on GitHub Actions):
+1. Merge `remediation/v2.5-audit-fixes` into `main` via PR (letting `.github/workflows/ci.yml` run full Maven + Node tests + Vite build on GitHub Actions):
    ```bash
-   git push -u origin stabilization/v2.4-security-reliability
+   git push -u origin remediation/v2.5-audit-fixes
    ```
-2. Deploy **Backend** first on Render; confirm `/actuator/health` returns `200 OK` and logs show `HikariPool-1 - Start completed` with `maximumPoolSize=6` and zero `ProductionConfigValidator` errors.
+2. Apply `database/migrations/V2026_11_18__stabilization_v25.sql` against the production TiDB/MySQL database.
+3. Deploy **Backend** first on Render; confirm `/actuator/health/readiness` returns `200 OK` and logs show `HikariPool-1 - Start completed` with `maximumPoolSize=8` and zero `ProductionConfigValidator` errors.
 3. Deploy **Frontend** static site; confirm `VITE_API_URL` points to the production backend.
 4. Run post-deploy live smoke checks:
    - Sign in as student + guest; verify `/auth/me` fires once, Dashboard loads cleanly, and guest cannot post in Community.

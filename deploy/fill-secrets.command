@@ -82,9 +82,9 @@ if [ -n "${DB_INPUT:-}" ]; then
   case "$DB_INPUT" in
     jdbc:mysql://*) DB_URL="$DB_INPUT" ;;
     mysql://*)
-      # mysql://user:pass@host:port/db
+      # mysql://user:pass@host:port/db (supports '@' inside password)
       rest="${DB_INPUT#mysql://}"
-      creds="${rest%%@*}"; hostpart="${rest#*@}"
+      creds="${rest%@*}"; hostpart="${rest##*@}"
       DB_USERNAME="${creds%%:*}"; DB_PASSWORD="${creds#*:}"
       hostport="${hostpart%%/*}"; dbname="${hostpart#*/}"; dbname="${dbname%%\?*}"
       DB_URL="jdbc:mysql://${hostport}/${dbname}?sslMode=VERIFY_IDENTITY&serverTimezone=Asia/Kolkata&allowPublicKeyRetrieval=true"
@@ -126,6 +126,9 @@ case "$DB_URL" in jdbc:mysql://*) ;; *) echo "ERROR: database URL must start wit
 [ "${#JWT_SECRET}" -ge 32 ] || { echo "ERROR: JWT secret must be at least 32 characters"; fail=1; }
 if [ "$fail" -ne 0 ]; then echo "Nothing written. Re-run the script."; exit 1; fi
 
+# Capture existing CORS_ORIGINS BEFORE redirecting/truncating $OUT.
+EXISTING_CORS_ORIGINS="$(current CORS_ORIGINS)"
+
 umask 077
 cat > "$OUT" <<EOF
 # NovaTutor deployment secrets — GITIGNORED. Do not commit, do not share.
@@ -137,7 +140,7 @@ GEMINI_API_KEY=${GEMINI_API_KEY}
 JWT_SECRET=${JWT_SECRET}
 ADMIN_EMAIL=${ADMIN_EMAIL}
 ADMIN_PASSWORD=${ADMIN_PASSWORD}
-CORS_ORIGINS=$(current CORS_ORIGINS)
+CORS_ORIGINS=${EXISTING_CORS_ORIGINS}
 EOF
 chmod 600 "$OUT"
 
