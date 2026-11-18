@@ -1665,21 +1665,12 @@ body:has(.gate-test-shell.active-paper){
 
 /* V70.18 — true cross-module persistence + compact Voice Tutor workspace. */
 .voice-grid{align-items:start}
-.voice-main{align-self:start;height:530px;min-height:530px;box-sizing:border-box;overflow:hidden}
+.voice-main{align-self:start;min-height:460px;height:auto;box-sizing:border-box;overflow:visible}
 .voice-answer{align-self:start;min-height:0;height:auto}
 .voice-answer-scroll{max-height:460px;overflow-y:auto;overflow-x:hidden;padding-right:10px;scrollbar-gutter:stable}
 .voice-transcript{max-height:150px;overflow-y:auto;overflow-wrap:anywhere}
 .voice-main .secondary{margin-top:9px}
-@media(max-width:900px){.voice-main{height:auto;min-height:420px}.voice-answer-scroll{max-height:55vh}}
-
-/* V70.18 — true cross-module persistence + compact Voice Tutor workspace. */
-.voice-grid{align-items:start}
-.voice-main{align-self:start;height:530px;min-height:530px;box-sizing:border-box;overflow:hidden}
-.voice-answer{align-self:start;min-height:0;height:auto}
-.voice-answer-scroll{max-height:460px;overflow-y:auto;overflow-x:hidden;padding-right:10px;scrollbar-gutter:stable}
-.voice-transcript{max-height:150px;overflow-y:auto;overflow-wrap:anywhere}
-.voice-main .secondary{margin-top:9px}
-@media(max-width:900px){.voice-main{height:auto;min-height:420px}.voice-answer-scroll{max-height:55vh}}
+@media(max-width:900px){.voice-main{height:auto;min-height:380px}.voice-answer-scroll{max-height:55vh}}
 
 /* V70.33 — AI Teacher clean full-page reader
    One continuous learning document: context/request at the top, the complete
@@ -1972,7 +1963,7 @@ button.primary,button.secondary,.text-btn{transition:transform .16s ease,box-sha
 button.primary:hover:not(:disabled),button.secondary:hover:not(:disabled){transform:translateY(-1px)}
 .ac-toast{position:fixed;right:22px;bottom:22px;z-index:60;max-width:min(420px,calc(100vw - 44px));padding:12px 16px;border-radius:13px;background:#15181D;color:#ECEDEF;font-size:12.5px;font-weight:600;box-shadow:0 16px 44px rgba(20,22,27,.35);border:1px solid rgba(20,22,27,.35);animation:acToastIn .22s ease-out both}
 @keyframes acToastIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-.ac-modal-backdrop{position:fixed;inset:0;z-index:70;background:rgba(20,22,27,.55);backdrop-filter:blur(3px);display:grid;place-items:center;padding:18px;animation:acToastIn .16s ease-out both}
+.ac-modal-backdrop{position:fixed;inset:0;z-index:320;background:rgba(20,22,27,.55);backdrop-filter:blur(3px);display:grid;place-items:center;padding:18px;animation:acToastIn .16s ease-out both}
 .ac-modal{width:min(480px,100%);max-height:min(84vh,640px);overflow:auto;background:#fff;border-radius:20px;padding:22px;box-shadow:0 30px 80px rgba(20,22,27,.35);animation:novaCardIn .2s ease-out both}
 .dark .ac-modal{background:#161a2b;color:#f0f2f8}
 .ac-modal h3{margin:0 0 12px;font:700 19px 'Space Grotesk'}
@@ -1987,8 +1978,8 @@ button.primary:hover:not(:disabled),button.secondary:hover:not(:disabled){transf
 .ac-modal-role{display:grid;gap:6px;font-size:10px;font-weight:800;letter-spacing:1px;color:var(--muted,#727b8f)}
 .ac-modal-role select{padding:10px 12px;border:1px solid var(--line,#e8eaf0);border-radius:11px;background:var(--card,#fff);font:inherit;color:inherit}
 .ac-modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;flex-wrap:wrap}
-.ac-modal-actions .danger-btn{background:#c2324a}
-.dark .ac-modal-actions .danger-btn{background:#e04b62}
+.ac-modal-actions .danger-btn{background:#c2324a;color:#fff;border-color:#c2324a}
+.dark .ac-modal-actions .danger-btn{background:#e04b62;color:#fff;border-color:#e04b62}
 /* User rows: existing 1050px/650px grids handle the extra action; actions wrap. */
 .ac-row .danger-btn{flex:none}
 
@@ -2028,7 +2019,7 @@ button.primary:active:not(:disabled),button.secondary:active:not(:disabled){tran
 
 /* ============================== DSA PRACTICE ============================== */
 .dsa-page{animation:novaPageIn .26s ease-out both;max-width:1400px;margin:0 auto;padding-bottom:60px}
-.dsa-hero{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:24px;padding:32px;border:1px solid rgba(var(--accent-rgb,20,22,28),.18);border-radius:26px;background:linear-gradient(135deg,rgba(255,255,255,.55),rgba(20,22,27,.75));box-shadow:0 18px 50px rgba(20,22,27,.08);overflow:hidden;position:relative}
+.dsa-hero{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:24px;padding:32px;border:1px solid var(--border);border-radius:26px;background:linear-gradient(135deg,var(--surface),var(--surface-2));box-shadow:0 18px 50px rgba(20,22,27,.06);overflow:hidden;position:relative}
 .dsa-hero-copy h1{font-size:clamp(34px,4.6vw,58px);line-height:1.02;margin:16px 0 14px;letter-spacing:-2px}
 .dsa-hero-copy h1 span{color:var(--muted)}
 .dsa-hero-copy p{max-width:740px;font-size:14.5px;line-height:1.7;color:var(--muted)}
@@ -2941,7 +2932,7 @@ nav button.active .nova-icon{filter:none}
 .choice.active{border-color:var(--ink);background:var(--ink-soft);color:var(--text)}
 .leader-row.me{border-color:var(--ink);background:var(--ink-soft);color:var(--text)}
 .doc-item.selected{border-color:var(--text);box-shadow:inset 3px 0 0 var(--text)}
-:root.dark .gate-options button.selected,:root.dark .gate-page .gate-options button.selected{border-color:var(--text);background:var(--surface-2)}
+:root.dark .gate-options button.selected,:root.dark .gate-page .gate-options button.selected{border-color:var(--ink);background:var(--ink);color:var(--on-ink)}
 :root.dark .studio-tabs button.active,:root.dark .mode-chips button.active,:root.dark .community-tabs button.active,:root.dark .practice-hub-tabs button.active{background:var(--text);color:var(--bg)}
 
 /* Sidebar utility strip: single compact icon control (legacy grid forced 2 cols) */
@@ -3104,15 +3095,12 @@ nav button.active .nova-icon{filter:none}
 .topnav-menus{display:flex;align-items:center;gap:2px;margin-left:14px}
 .topnav-menu{position:relative}
 .topnav-menu-btn{display:inline-flex;align-items:center;gap:5px;border:0;background:transparent;color:var(--text-2);font:500 13.5px var(--font-ui);padding:9px 13px;border-radius:var(--r-sm);cursor:pointer;transition:background var(--t-fast) var(--ease-out),color var(--t-fast) var(--ease-out)}
-.topnav-menu-btn svg{transition:transform var(--t-fast) var(--ease-out);transform:rotate(90deg)}
+.topnav-menu-btn svg,.topnav-menu-btn .nova-icon{transition:transform var(--t-fast) var(--ease-out);transform:rotate(90deg)}
 .topnav-menu-btn:hover{background:var(--surface-2);color:var(--text)}
 .topnav-menu-btn.open{background:var(--ink-soft);color:var(--text)}
-.topnav-menu-btn.open svg{transform:rotate(-90deg)}
+.topnav-menu-btn.open svg,.topnav-menu-btn.open .nova-icon{transform:rotate(-90deg)}
 .topnav-menu-btn.current{color:var(--text);font-weight:600;box-shadow:inset 0 -2px 0 var(--text)}
-.topnav-panel{position:absolute;top:calc(100% + 8px);left:0;min-width:230px;background:var(--elevated);border:1px solid var(--border);border-radius:var(--r-md);box-shadow:var(--shadow-2);padding:6px;z-index:60;animation:panel-in 160ms var(--ease-out)}
-/* The active section's sub-navigation starts open on desktop. Reserve its
-   height in the content offset so the open panel never covers the page. */
-@media(min-width:961px){body:has(.topnav.subnav-open) .main-topnav{padding-top:calc(var(--topbar-h) + 210px)}}
+.topnav-panel{position:absolute;top:calc(100% + 8px);left:0;min-width:230px;background:var(--elevated);border:1px solid var(--border);border-radius:var(--r-md);box-shadow:var(--shadow-2);padding:6px;z-index:120;animation:panel-in 160ms var(--ease-out)}
 @keyframes panel-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
 .topnav-item{display:flex;align-items:center;gap:10px;width:100%;border:0;background:transparent;color:var(--text-2);font:500 13.5px var(--font-ui);padding:10px 12px;border-radius:var(--r-sm);cursor:pointer;text-align:left;transition:background var(--t-fast) var(--ease-out),color var(--t-fast) var(--ease-out)}
 .topnav-item:hover{background:var(--surface-2);color:var(--text)}
@@ -3238,7 +3226,10 @@ body{background:var(--bg);color:var(--text)}
 /* ---- Legacy .primary button: fix white text on near-white --accent ---- */
 .primary{color:var(--on-ink)}
 .primary:hover{color:var(--on-ink)}
-.danger-btn{color:#fff}
+.danger-btn{background:rgba(178,58,72,.10);color:var(--danger,#b23a48);border:1px solid rgba(178,58,72,.38)}
+.danger-btn:hover{background:rgba(178,58,72,.18)}
+.ac-modal-actions .danger-btn{background:#c2324a;color:#fff;border-color:#c2324a}
+:root.dark .ac-modal-actions .danger-btn{background:#e04b62;color:#fff;border-color:#e04b62}
 
 /* ---- Nav badge inside dark sidebar ---- */
 .nav-badge{color:var(--on-ink)}
@@ -3412,6 +3403,7 @@ body{background:var(--bg);color:var(--text)}
 
 @media(max-width:480px){
   main{padding:16px 12px 48px}
+  .main-topnav{padding:calc(var(--topbar-h) + 18px) 14px 56px}
   .hero h1,.page-title h1{font-size:26px;letter-spacing:-1px}
   .hero{padding:24px 18px;min-height:auto;border-radius:18px}
   .hero-orb{display:none}
@@ -3444,6 +3436,7 @@ body{background:var(--bg);color:var(--text)}
 
 @media(max-width:360px){
   main{padding:12px 8px 40px}
+  .main-topnav{padding:calc(var(--topbar-h) + 14px) 10px 48px}
   .hero h1,.page-title h1{font-size:23px}
   .hero{padding:18px 14px}
   .primary{padding:10px 12px;font-size:11px}
@@ -3462,9 +3455,9 @@ body{background:var(--bg);color:var(--text)}
 
 /* ---- Auth page: responsive for small screens ---- */
 @media(max-width:700px){
-  .auth{grid-template-columns:1fr;min-height:100vh}
+  .auth{grid-template-columns:1fr;min-height:100dvh}
   .auth-scene{display:none}
-  .auth-form{padding:32px 20px;min-height:100vh}
+  .auth-form{padding:32px 20px;min-height:100dvh}
 }
 @media(max-width:480px){
   .auth-form{padding:24px 16px}

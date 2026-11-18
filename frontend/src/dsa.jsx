@@ -19,12 +19,15 @@ function StatusMark({st}){
   return <span className="dsa-status" style={{color:'var(--muted)'}}><Target size={13}/>New</span>;
 }
 
-export default function DsaPractice({user,api}){
+export default function DsaPractice({user,api,routeSlug=null,onRouteSlug=null}){
   const [problems,setProblems]=useState(null);
   const [stats,setStats]=useState(null);
   const [progress,setProgress]=useState({});
   const [summary,setSummary]=useState(null);
-  const [slug,setSlug]=useState(null);
+  const [localSlug,setLocalSlug]=useState(routeSlug||null);
+  const slug=onRouteSlug?routeSlug:localSlug;
+  const setSlug=useCallback(next=>{if(onRouteSlug)onRouteSlug(next);else setLocalSlug(next);},[onRouteSlug]);
+  useEffect(()=>{if(!onRouteSlug)setLocalSlug(routeSlug||null)},[routeSlug,onRouteSlug]);
   const [q,setQ]=useState('');
   const [diff,setDiff]=useState('ALL');
   const [topic,setTopic]=useState('ALL');
@@ -72,7 +75,7 @@ export default function DsaPractice({user,api}){
     });
   },[problems,q,diff,topic,status,progress]);
 
-  if(slug) return <DsaProblemView key={slug} api={api} slug={slug}
+  if(slug) return <DsaProblemView key={slug} user={user} api={api} slug={slug}
       saved={progress[slug]} onBack={()=>setSlug(null)} onProgress={refreshProgress}/>;
 
   return (
@@ -169,7 +172,7 @@ export default function DsaPractice({user,api}){
 
 /* ------------------------------------------------------------------ */
 
-function DsaProblemView({api,slug,saved,onBack,onProgress}){
+function DsaProblemView({user,api,slug,saved,onBack,onProgress}){
   const [problem,setProblem]=useState(null);
   const [lang,setLang]=useState(saved?.lastLanguage&&LANGS.some(l=>l[0]===saved.lastLanguage)?saved.lastLanguage:'java');
   const [codeByLang,setCodeByLang]=useState({});
@@ -181,6 +184,7 @@ function DsaProblemView({api,slug,saved,onBack,onProgress}){
   const [loadErr,setLoadErr]=useState('');
   const [bookmarked,setBookmarked]=useState(Boolean(saved?.bookmarked));
   const lastSavedRef=useRef('');
+  const userScope=user?.id||'guest';
 
   // Load problem detail + restore/fetch code for the initial language.
   useEffect(()=>{
@@ -190,7 +194,7 @@ function DsaProblemView({api,slug,saved,onBack,onProgress}){
         const p=await api(`/dsa/problems/${slug}`);
         if(dead)return;
         setProblem(p);
-        const draft=localStorage.getItem(`dsa_code_${slug}_${lang}`);
+        const draft=localStorage.getItem(`dsa_code_${userScope}_${slug}_${lang}`);
         if(draft!==null){setCode(draft);}
         else if(saved?.lastLanguage===lang&&saved?.lastCode){setCode(saved.lastCode);}
         else{
@@ -201,25 +205,25 @@ function DsaProblemView({api,slug,saved,onBack,onProgress}){
     })();
     return()=>{dead=true};
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[slug]);
+  },[slug,userScope]);
 
-  const draftKey=useMemo(()=>`dsa_code_${slug}_${lang}`,[slug,lang]);
+  const draftKey=useMemo(()=>`dsa_code_${userScope}_${slug}_${lang}`,[userScope,slug,lang]);
 
   const switchLang=useCallback(async(next)=>{
     setLang(next);
     setResult(null);
-    const draft=localStorage.getItem(`dsa_code_${slug}_${next}`);
+    const draft=localStorage.getItem(`dsa_code_${userScope}_${slug}_${next}`);
     if(draft!==null){setCode(draft);return;}
     if(codeByLang[next]){setCode(codeByLang[next]);return;}
     try{
       const s=await api(`/dsa/problems/${slug}/starter?language=${encodeURIComponent(next)}`);
       if(s&&s.code){setCode(s.code);setCodeByLang(m=>({...m,[next]:s.code}));}
     }catch(e){setCode('// starter unavailable: '+String(e.message||e));}
-  },[api,slug,codeByLang]);
+  },[api,userScope,slug,codeByLang]);
 
   const persistCode=useCallback(async(text,language)=>{
     try{
-      await api(`/dsa/progress/${slug}/code`,{method:'POST',body:JSON.stringify({language,code:text})});
+      await api(`/dsa/progress/${slug}/code`,{method:'POST',body:JSON.stringify({language,code:text}),silentUpdate:true});
     }catch(e){/* non-fatal */}
   },[api,slug]);
 
@@ -232,7 +236,7 @@ function DsaProblemView({api,slug,saved,onBack,onProgress}){
   const run=useCallback(async()=>{
     setRunning(true);setResult(null);
     try{
-      const r=await api(`/dsa/problems/${slug}/run`,{method:'POST',body:JSON.stringify({language:lang,code})},{timeoutMs:180000});
+      const r=await api(`/dsa/problems/${slug}/run`,{method:'POST',body:JSON.stringify({language:lang,code}),timeoutMs:180000});
       setResult(r);
       lastSavedRef.current=code;
       persistCode(code,lang);
@@ -245,7 +249,7 @@ function DsaProblemView({api,slug,saved,onBack,onProgress}){
   const askHint=useCallback(async(mode)=>{
     setHintBusy(true);setHint(null);
     try{
-      const r=await api(`/dsa/problems/${slug}/hint`,{method:'POST',body:JSON.stringify({mode,code:mode==='review'?code:undefined})},{timeoutMs:120000});
+      const r=await api(`/dsa/problems/${slug}/hint`,{method:'POST',body:JSON.stringify({mode,code:mode==='review'?code:undefined}),timeoutMs:120000});
       setHint(r?.answer||'AI is unavailable right now.');
     }catch(e){setHint(String(e.message||e));}
     finally{setHintBusy(false);}

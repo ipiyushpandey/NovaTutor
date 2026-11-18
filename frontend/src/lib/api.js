@@ -16,7 +16,7 @@
 
 // In local development Vite proxies /api to Spring Boot, so login works on any Vite port (5173, 5180, etc.).
 // For a deployed build, set VITE_API_URL to the public backend URL.
-const API=(()=>{const raw=(import.meta.env.VITE_API_URL||'').trim().replace(/\/$/,''); if(!raw)return '/api'; const pointsToLocalBackend=/^https?:\/\/(localhost|127\.0\.0\.1)(?::\d+)?\//i.test(raw+'/'); if(pointsToLocalBackend)return '/api'; return raw.endsWith('/api')?raw:raw+'/api' })();
+const API=(()=>{const raw=(import.meta.env?.VITE_API_URL||'').trim().replace(/\/$/,''); if(!raw)return '/api'; const pointsToLocalBackend=/^https?:\/\/(localhost|127\.0\.0\.1)(?::\d+)?\//i.test(raw+'/'); if(pointsToLocalBackend)return '/api'; return raw.endsWith('/api')?raw:raw+'/api' })();
 
 const readJSON=(key,fallback=null)=>{try{const raw=localStorage.getItem(key);return raw?JSON.parse(raw):fallback}catch{return fallback}};
 
@@ -43,49 +43,89 @@ async function refreshSessionToken(){
  })();
  return sessionRefreshPromise;
 }
+const isTransientStatus=(s)=>s===502||s===503||s===504||s===408;
+const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
+
 async function api(path,opt={},_retry=false){
- const controller=new AbortController();
+ const method=String(opt.method||'GET').toUpperCase();
+ const isIdempotent=method==='GET'||method==='HEAD';
+ const maxRetries=typeof opt.retries==='number'?Math.max(0,Math.min(3,opt.retries)):(isIdempotent?2:0);
  const timeoutMs=Number(opt.timeoutMs)||125000;
  const silentUpdate=Boolean(opt.silentUpdate);
+ const externalSignal=opt.signal;
  const fetchOptions={...opt};
  delete fetchOptions.timeoutMs;
  delete fetchOptions.silentUpdate;
- const timeout=setTimeout(()=>controller.abort(),timeoutMs);
- try{
-  const session=readUser();
-  const headers={...(opt.body instanceof FormData?{}:{'Content-Type':'application/json'}),...(session?.token?{'Authorization':`Bearer ${session.token}`} : {}),...(opt.headers||{})};
-  const r=await fetch(API+path,{...fetchOptions,headers,signal:controller.signal});
-  const raw=await r.text();
-  if(!r.ok){
-   let message=raw||`Request failed (${r.status})`;
-   let code='';
-   try{const parsed=JSON.parse(raw);message=parsed.message||parsed.error||message;code=parsed.error||''}catch{}
-   // A short-lived/stale JWT can happen while an admin page is open. Refresh once
-   // through /auth/me and retry the original request before declaring the session dead.
-   if(r.status===401&&!_retry&&session?.token&&path!=='/auth/me'){
-    const refreshed=await refreshSessionToken();
-    if(refreshed){clearTimeout(timeout);return api(path,opt,true);}
-   }
-   const err=new Error(message); err.status=r.status; err.code=code;
-   // 403 means authenticated but not permitted; do not destroy a valid session.
-   if(r.status===401){
-    localStorage.removeItem('ai_user');
-    localStorage.removeItem('nova_page');
-    window.dispatchEvent(new Event('nova-session-expired'));
-   }
-   throw err;
+ delete fetchOptions.retries;
+ delete fetchOptions.signal;
+
+ for(let attempt=0;attempt<=maxRetries;attempt++){
+  const controller=new AbortController();
+  let timedOut=false;
+  const onExternalAbort=()=>controller.abort();
+  if(externalSignal){
+   if(externalSignal.aborted){const err=new Error('Request cancelled.');err.name='AbortError';throw err;}
+   externalSignal.addEventListener('abort',onExternalAbort,{once:true});
   }
-  if(r.status===204||!raw){if(!silentUpdate&&opt.method&&/^(POST|PUT|PATCH)$/i.test(opt.method))window.dispatchEvent(new Event('nova:learning-updated'));return null;}
-  const parsedResult=(()=>{try{return JSON.parse(raw)}catch{return raw}})();
-  if(opt.method&&/^(POST|PUT|PATCH)$/i.test(opt.method))window.dispatchEvent(new Event('nova:learning-updated'));
-  return parsedResult
- }catch(e){
-  if(e.name==='AbortError') throw new Error('The request timed out. Check your connection and try again.');
-  if(e instanceof TypeError && /fetch/i.test(e.message||'')) throw new Error('Cannot reach NovaTutor right now. Check your connection and try again.');
-  throw e;
- }finally{clearTimeout(timeout)}
+  const timeout=setTimeout(()=>{timedOut=true;controller.abort();},timeoutMs);
+  try{
+   const session=readUser();
+   const headers={...(opt.body instanceof FormData?{}:{'Content-Type':'application/json'}),...(session?.token?{'Authorization':`Bearer ${session.token}`} : {}),...(opt.headers||{})};
+   const r=await fetch(API+path,{...fetchOptions,headers,signal:controller.signal});
+   const raw=await r.text();
+   if(!r.ok){
+    if(isIdempotent&&isTransientStatus(r.status)&&attempt<maxRetries){
+     clearTimeout(timeout);
+     if(externalSignal)externalSignal.removeEventListener('abort',onExternalAbort);
+     const delay=Math.round(700*Math.pow(2,attempt)+Math.random()*350);
+     await sleep(delay);
+     continue;
+    }
+    let message=raw||`Request failed (${r.status})`;
+    let code='';
+    try{const parsed=JSON.parse(raw);message=parsed.message||parsed.error||message;code=parsed.error||''}catch{}
+    // A short-lived/stale JWT can happen while a workspace is open. Refresh once
+    // through /auth/me and retry the original request before declaring the session dead.
+    if(r.status===401&&!_retry&&session?.token&&path!=='/auth/me'){
+     const refreshed=await refreshSessionToken();
+     if(refreshed){clearTimeout(timeout);if(externalSignal)externalSignal.removeEventListener('abort',onExternalAbort);return api(path,opt,true);}
+    }
+    const err=new Error(message); err.status=r.status; err.code=code;
+    // 403 means authenticated but not permitted; do not destroy a valid session.
+    if(r.status===401){
+     localStorage.removeItem('ai_user');
+     localStorage.removeItem('nova_page');
+     window.dispatchEvent(new Event('nova-session-expired'));
+    }
+    throw err;
+   }
+   if(r.status===204||!raw){if(!silentUpdate&&opt.method&&/^(POST|PUT|PATCH)$/i.test(opt.method))window.dispatchEvent(new Event('nova:learning-updated'));return null;}
+   const parsedResult=(()=>{try{return JSON.parse(raw)}catch{return raw}})();
+   if(!silentUpdate&&opt.method&&/^(POST|PUT|PATCH)$/i.test(opt.method))window.dispatchEvent(new Event('nova:learning-updated'));
+   return parsedResult;
+  }catch(e){
+   const isNetErr=e instanceof TypeError && /fetch|network/i.test(e.message||'');
+   if(isIdempotent&&(isNetErr||timedOut)&&attempt<maxRetries&&!externalSignal?.aborted){
+    clearTimeout(timeout);
+    if(externalSignal)externalSignal.removeEventListener('abort',onExternalAbort);
+    const delay=Math.round(700*Math.pow(2,attempt)+Math.random()*350);
+    await sleep(delay);
+    continue;
+   }
+   if(e.name==='AbortError'){
+    if(externalSignal?.aborted) throw e;
+    throw new Error('The request timed out. The server may still be waking up — please try again.');
+   }
+   if(isNetErr) throw new Error('Cannot reach NovaTutor right now. Check your connection and try again.');
+   throw e;
+  }finally{
+   clearTimeout(timeout);
+   if(externalSignal)externalSignal.removeEventListener('abort',onExternalAbort);
+  }
+ }
 }
-async function apiStream(path,opt={},onChunk){
+
+async function apiStream(path,opt={},onChunk,_retry=false){
  const session=readUser();
  const headers={
   'Content-Type':'application/json',
@@ -93,22 +133,43 @@ async function apiStream(path,opt={},onChunk){
   ...(session?.token?{'Authorization':`Bearer ${session.token}`} : {}),
   ...(opt.headers||{})
  };
+ const externalSignal=opt.signal;
  const controller=new AbortController();
+ let timedOut=false;
+ const onExternalAbort=()=>controller.abort();
+ if(externalSignal){
+  if(externalSignal.aborted){const err=new Error('Stream cancelled.');err.name='AbortError';throw err;}
+  externalSignal.addEventListener('abort',onExternalAbort,{once:true});
+ }
  const fetchOptions={...opt};
  delete fetchOptions.timeoutMs;
  delete fetchOptions.silentUpdate;
- // V70.47.2: this is an IDLE timeout, not a total response timeout.
- // A long answer may continue beyond this window as long as new data keeps arriving.
+ delete fetchOptions.retries;
+ delete fetchOptions.signal;
+ // Idle timeout (not total timeout): long answers stay alive while chunks arrive.
  const STREAM_IDLE_TIMEOUT_MS=45000;
- let idleTimer=setTimeout(()=>controller.abort(),STREAM_IDLE_TIMEOUT_MS);
- const resetIdleTimer=()=>{clearTimeout(idleTimer);idleTimer=setTimeout(()=>controller.abort(),STREAM_IDLE_TIMEOUT_MS);};
+ let idleTimer=setTimeout(()=>{timedOut=true;controller.abort();},STREAM_IDLE_TIMEOUT_MS);
+ const resetIdleTimer=()=>{clearTimeout(idleTimer);idleTimer=setTimeout(()=>{timedOut=true;controller.abort();},STREAM_IDLE_TIMEOUT_MS);};
  try{
   const r=await fetch(API+path,{...fetchOptions,headers,signal:controller.signal});
   resetIdleTimer();
   if(!r.ok){
+   if(r.status===401&&!_retry&&session?.token){
+    const refreshed=await refreshSessionToken();
+    if(refreshed){
+     clearTimeout(idleTimer);
+     if(externalSignal)externalSignal.removeEventListener('abort',onExternalAbort);
+     return apiStream(path,opt,onChunk,true);
+    }
+   }
    const raw=await r.text();
    let message=raw||`Request failed (${r.status})`;
    try{const parsed=JSON.parse(raw);message=parsed.message||parsed.error||message}catch{}
+   if(r.status===401){
+    localStorage.removeItem('ai_user');
+    localStorage.removeItem('nova_page');
+    window.dispatchEvent(new Event('nova-session-expired'));
+   }
    const err=new Error(message);err.status=r.status;throw err;
   }
   if(!r.body)throw new Error('Streaming is not supported by this browser.');
@@ -118,11 +179,6 @@ async function apiStream(path,opt={},onChunk){
   let sawDone=false;
   const consume=(event)=>{
     const lines=event.split(/\r?\n/);
-    // SSE "data:" payload: strip ONLY the field prefix. Spring's SseEmitter
-    // writes "data:" with NO separator space, so any leading space in the
-    // chunk is real content (Gemini chunks often begin with one: " HTML",
-    // " the"). trimStart() here ate those spaces and concatenated words like
-    // "toHTML"/"arediving".
     const data=lines.filter(x=>x.startsWith('data:')).map(x=>x.slice(5)).join('\n');
     if(!data)return;
     if(data==='done'){sawDone=true;return}
@@ -138,18 +194,19 @@ async function apiStream(path,opt={},onChunk){
    buffer=events.pop()||'';
    for(const event of events)consume(event);
   }
-  // Flush a multi-byte character split across the final network chunk and
-  // process a final SSE event that arrived without its trailing blank line.
   buffer+=decoder.decode();
   if(buffer.trim())consume(buffer);
-  // A closed socket without the server's done event means the answer may be
-  // partial. Keep what arrived and mark the interruption instead of pretending
-  // the response completed normally.
   if(!sawDone)throw new Error('The AI stream ended before completion. You can retry to continue.');
  }catch(e){
-  if(e.name==='AbortError')throw new Error('AI request timed out. Please try again.');
+  if(e.name==='AbortError'){
+   if(externalSignal?.aborted&&!timedOut)throw e;
+   throw new Error('AI request timed out. Please try again.');
+  }
   throw e;
- }finally{clearTimeout(idleTimer)}
+ }finally{
+  clearTimeout(idleTimer);
+  if(externalSignal)externalSignal.removeEventListener('abort',onExternalAbort);
+ }
 }
 
 export {api,apiStream,readUser,refreshSessionToken,API};
