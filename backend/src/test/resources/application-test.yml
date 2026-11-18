@@ -39,6 +39,6 @@ app:
   cors:
     allowed-origins: "http://localhost:5173"
 
-gemini:
-  api:
-    key: ""
+ai:
+  gemini:
+    api-key: ""

@@ -247,4 +247,37 @@ class Wave2BackendFunctionalTest {
         assertTrue(cancel.isCancelled());
         assertTrue(closed.get(), "StreamCancellation.cancel() must close attached upstream stream immediately");
     }
+
+    @Test
+    void dsaSaveCodePersistsLargeSubmissionsAbove64KbAndRejectsOversizedPayloads() throws Exception {
+        User student = createUser("dsalarge", "STUDENT");
+        String token = jwt.token(student);
+        String largeCode = "// " + "a".repeat(75_000);
+
+        mvc.perform(post("/api/dsa/progress/two-sum/code")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"language\":\"Java\",\"code\":\"" + largeCode + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.saved", is(true)));
+
+        // Exceeding 250k char limit returns 400 CODE_TOO_LARGE
+        String hugeCode = "// " + "b".repeat(260_000);
+        mvc.perform(post("/api/dsa/progress/two-sum/code")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"language\":\"Java\",\"code\":\"" + hugeCode + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error", is("CODE_TOO_LARGE")));
+
+        // Verify Docker sandbox command enforces non-root user, read-only workspace, Go cache in /tmp, and compile exit code 99
+        SandboxExecutionService svc = new SandboxExecutionService(
+                true, 5, 256, "eclipse-temurin:21-jdk", "python:3.12-alpine", "gcc:14", "node:22-alpine",
+                "golang:1.24-alpine", "docker", null);
+        var goCmd = svc.command("go", "main.go", java.nio.file.Path.of("/tmp/demo"));
+        assertTrue(goCmd.contains("--user") && goCmd.contains("65534:65534"), "Docker must run as non-root user");
+        assertTrue(goCmd.contains("GOCACHE=/tmp/.cache"), "Go cache must be directed to writable /tmp");
+        assertTrue(goCmd.stream().anyMatch(s -> s.endsWith(":/workspace:ro")), "Workspace mount must be read-only");
+        assertTrue(goCmd.get(goCmd.size() - 1).contains("exit 99"), "Compiled languages must distinguish COMPILE_ERROR via exit 99");
+    }
 }

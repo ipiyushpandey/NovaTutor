@@ -116,4 +116,50 @@ class DsaLangHarnessTest {
         String pyh = DsaLang.PYTHON.harness(DsaSig.A2I, "def solve(a):\n    note = '%ARGS%'\n    return len(a)");
         assertTrue(pyh.contains("note = '%ARGS%'"), "Literal %ARGS% in Python user code must not be substituted");
     }
+
+    @Test
+    void goHarnessHoistsAndDeduplicatesSingleAndBlockImports() {
+        String goCode = """
+                package main
+                import "sort"
+                import (
+                    "fmt"
+                    "math"
+                    "strings"
+                )
+                func solve(nums []int) int {
+                    sort.Ints(nums)
+                    return int(math.Abs(float64(len(nums))))
+                }
+                """;
+        String gh = DsaLang.GO.harness(DsaSig.A2I, goCode);
+        int importBlockEnd = gh.indexOf(')', gh.indexOf("import ("));
+        int userStart = gh.indexOf("// ===== student solution =====");
+        assertTrue(importBlockEnd > 0 && importBlockEnd < userStart, "Top import block must appear before student solution");
+        String topBlock = gh.substring(0, importBlockEnd + 1);
+        String userSection = gh.substring(userStart);
+        assertTrue(topBlock.contains("\"sort\""), "User single import must be hoisted");
+        assertTrue(topBlock.contains("\"math\""), "User block import must be hoisted");
+        // Deduplicated: "fmt" must appear only once in the import block
+        assertEquals(topBlock.indexOf("\"fmt\""), topBlock.lastIndexOf("\"fmt\""), "Duplicate fmt import must be deduplicated");
+        assertFalse(userSection.contains("import \"sort\""), "Hoisted imports must be removed from user body");
+        assertFalse(userSection.contains("import ("), "Hoisted import blocks must be removed from user body");
+    }
+
+    @Test
+    void cHarnessPreservesEmptyPipeFieldsAndBoundsMatrixRowParsing() {
+        String ch = DsaLang.C.harness(DsaSig.SS2I, "void solve(const char* s, const char* t, Result* out) { out->i = 0; }");
+        assertFalse(ch.contains("strtok("), "C harness must not use strtok which collapses empty pipe fields");
+        assertTrue(ch.contains("strchr(cur, '|')"), "C harness must split on '|' via strchr");
+        assertTrue(ch.contains("_parseArrN(p, rowEnd,"), "C matrix parser must bound each row by rowEnd");
+    }
+
+    @Test
+    void javaHarnessHoistsImportsWithCommentsAndHandlesPublicFinalSolution() {
+        String code = "import java.math.BigInteger; // big ints\npublic final class Solution { public static int solve(int[] a) { return a.length; } }";
+        String jh = DsaLang.JAVA.harness(DsaSig.A2I, code);
+        assertTrue(jh.indexOf("import java.math.BigInteger;") < jh.indexOf("public class Main"));
+        assertFalse(jh.contains("public final class Solution"));
+        assertTrue(jh.contains("class Solution"));
+    }
 }

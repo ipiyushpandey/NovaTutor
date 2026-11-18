@@ -16,6 +16,6 @@ CREATE TABLE IF NOT EXISTS pending_registrations (
     KEY idx_pending_reg_expires (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Widen dsa_problem_states.last_code from TEXT (64 KiB) to MEDIUMTEXT (16 MiB)
+-- Widen dsa_problem_state.last_code from TEXT (64 KiB) to MEDIUMTEXT (16 MiB)
 -- so large student submissions do not truncate/fail with MySQL error 1406 on TiDB.
-ALTER TABLE dsa_problem_states MODIFY COLUMN last_code MEDIUMTEXT;
+ALTER TABLE dsa_problem_state MODIFY COLUMN last_code MEDIUMTEXT;

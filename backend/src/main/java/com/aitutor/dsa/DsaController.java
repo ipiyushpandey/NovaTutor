@@ -154,6 +154,12 @@ public class DsaController {
     public Map<String, Object> saveCode(@PathVariable String slug, @RequestBody SaveCodeRequest request,
                                         Authentication authentication) {
         User user = authenticatedUser.require(authentication);
+        if (request == null) {
+            throw new com.aitutor.controller.ApiException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Request body is required.");
+        }
+        if (request.code() != null && request.code().length() > 250_000) {
+            throw new com.aitutor.controller.ApiException(org.springframework.http.HttpStatus.BAD_REQUEST, "CODE_TOO_LARGE", "Code exceeds the maximum allowed size.");
+        }
         DsaProblemState st = states.findByUserIdAndSlug(user.getId(), slug)
                 .orElseGet(() -> new DsaProblemState(user, slug));
         if (request.language() != null) st.setLastLanguage(request.language());
