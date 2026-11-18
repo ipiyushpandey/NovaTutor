@@ -370,4 +370,25 @@ test('security & stabilization source invariants hold across frontend files', ()
   assert.match(mainJsx, /nova_today_done_\$\{idStr\}_/);
   assert.match(mainJsx, /nova_challenge_seen_\$\{idStr\}_/);
   assert.match(mainJsx, /nova_module_state_\$\{idStr\}_/);
+
+  // 8. ADDITIONAL SCOPE (Sections 8-11): Weekly Challenges flex hierarchy & scoped asides
+  assert.match(stylesCss, /\.app > aside\.sidebar\{display:flex;flex-direction:column;height:100vh;min-height:100vh/);
+  assert.match(stylesCss, /\.challenge-main-row\{display:flex;align-items:center;/);
+  assert.match(stylesCss, /\.challenge-action-row\{display:flex;align-items:center;/);
+  assert.match(stylesCss, /\.community-side\{[^}]*height:auto!important;min-height:0!important/);
+
+  // 9. ADDITIONAL SCOPE (Section 13): AI Chat mobile actions & delete history confirmation
+  assert.match(stylesCss, /\.chat-history-actions \.chat-action-btn\{display:inline-flex;align-items:center;gap:6px;padding:8px 11px;min-height:40px/);
+  assert.match(stylesCss, /\.chat-history-actions \.chat-action-btn\{min-height:40px;padding:9px 12px;font-size:12px\}/);
+  assert.match(stylesCss, /\.chat-delete-confirm\{min-height:40px/);
+  assert.match(mainJsx, /\[confirmDelete,setConfirmDelete\]=useState\(false\)/);
+  assert.match(mainJsx, /<button type="button" className="danger-btn compact" onClick=\{deleteHistory\}>Yes, delete<\/button>/);
+
+  // 10. ADDITIONAL SCOPE (Section 14): Voice Tutor Indian English / natural voice & stop cancellation
+  assert.match(mainJsx, /const indianRegex=\/\(rishi\|veena\|neerja\|swara\|kavya\|heera\|prabhat\|madhur\|google\\s\*\(\?:en-in\|hi-in\|hindi\)\|india\)\/i/);
+  assert.match(mainJsx, /u\.rate=0\.98/);
+  assert.match(mainJsx, /u\.pitch=1\.0/);
+  assert.match(mainJsx, /playbackSessionRef\.current\+=1/);
+  assert.match(mainJsx, /abortControllerRef\.current\.abort\(\)/);
 });
+

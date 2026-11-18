@@ -26,7 +26,7 @@ public class AnalyticsController {
 
     public record CourseStat(Long courseId, String title, int completedLessons, int totalLessons, double percent) {}
     public record AnalyticsView(int coursesStarted, int lessonsCompleted, int lessonsAvailable,
-                                double overallProgress, int xp, int level, List<String> badges,
+                                double overallProgress, int xp, int level, int streak, List<String> badges,
                                 List<CourseStat> courses) {}
 
     @GetMapping("/{userId}")
@@ -34,7 +34,7 @@ public class AnalyticsController {
     AnalyticsView analytics(@PathVariable Long userId, Authentication authentication) {
         authenticatedUser.requireSame(authentication, userId);
         if (!userRepository.existsById(userId)) {
-            return new AnalyticsView(0, 0, 0, 0, 0, 1, List.of(), List.of());
+            return new AnalyticsView(0, 0, 0, 0, 0, 1, 0, List.of(), List.of());
         }
         List<Progress> rows = progressRepository.findByUserId(userId);
 
@@ -43,6 +43,7 @@ public class AnalyticsController {
         double overall = available == 0 ? 0 : completed * 100.0 / available;
         int xp = (int)Math.min(Integer.MAX_VALUE, learningAnalytics.summary(userId).xp());
         int level = Math.max(1, 1 + xp / 500);
+        int streak = learningAnalytics.streak(userId);
 
         List<String> badges = new ArrayList<>();
         if (completed >= 1) badges.add("First Step");
@@ -57,7 +58,7 @@ public class AnalyticsController {
                 .sorted(Comparator.comparingDouble(CourseStat::percent).reversed())
                 .toList();
 
-        return new AnalyticsView(rows.size(), completed, available, overall, xp, level, badges, courses);
+        return new AnalyticsView(rows.size(), completed, available, overall, xp, level, streak, badges, courses);
     }
 
 }
