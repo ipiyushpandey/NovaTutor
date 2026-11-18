@@ -127,7 +127,7 @@ async function api(path,opt={},_retry=false){
     // A short-lived/stale JWT can happen while a workspace is open. Refresh once
     // through /auth/me and retry the original request before declaring the session dead.
     let refreshStatus='unauthorized';
-    if(r.status===401&&!_retry&&session?.token&&path!=='/auth/me'&&!isCredentialCheckPath(path)){
+    if(r.status===401&&!_retry&&session?.token&&isSameSession(session)&&path!=='/auth/me'&&!isCredentialCheckPath(path)){
      refreshStatus=await refreshSessionTokenWithStatus();
      if(refreshStatus==='ok'){clearTimeout(timeout);if(externalSignal)externalSignal.removeEventListener('abort',onExternalAbort);return api(path,opt,true);}
     }
@@ -198,7 +198,7 @@ async function apiStream(path,opt={},onChunk,_retry=false){
   resetIdleTimer();
   if(!r.ok){
    let refreshStatus='unauthorized';
-   if(r.status===401&&!_retry&&session?.token){
+   if(r.status===401&&!_retry&&session?.token&&isSameSession(session)){
     refreshStatus=await refreshSessionTokenWithStatus();
     if(refreshStatus==='ok'){
      clearTimeout(idleTimer);

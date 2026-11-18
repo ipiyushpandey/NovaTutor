@@ -237,22 +237,95 @@ test('REAUDIT-04: delayed /auth/me cannot resurrect logged-out session or overwr
   assert.deepEqual(JSON.parse(globalThis.localStorage.getItem('ai_user')), JSON.parse(userB));
   assert.equal(events.filter((e) => e === 'nova:session-refreshed').length, 0);
 
-  // 3. Delayed 401 from User A's request after switching to User B MUST NOT wipe User B's session
+  // 3. MERGE-BLOCKER-01 (normal api): Delayed 401 from User A after switching to User B MUST NOT
+  //    call /auth/me for User B, MUST NOT replay User A's request under User B's token, and MUST keep User B signed in.
   globalThis.localStorage.setItem('ai_user', userA);
-  let resolveStale401;
-  globalThis.fetch = async () => new Promise((resolve) => { resolveStale401 = resolve; });
-  const staleReq = mod.api('/courses', { retries: 0 });
+  let resolveStaleApi401;
+  let staleApiCalls = 0;
+  let authMeCallsAfterSwitch = 0;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.endsWith('/auth/me')) {
+      authMeCallsAfterSwitch += 1;
+      return new Response(userB, { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    staleApiCalls += 1;
+    if (staleApiCalls === 1) {
+      return new Promise((resolve) => { resolveStaleApi401 = resolve; });
+    }
+    return new Response(JSON.stringify({ replayedUnderWrongUser: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  const staleApiReq = mod.api('/quizzes/course/1/submit', { method: 'POST', body: JSON.stringify({ answers: [{ questionId: 1, selectedOption: 0 }] }), retries: 0 });
   mod.invalidatePendingSessionRefresh();
   globalThis.localStorage.setItem('ai_user', userB);
-  resolveStale401(new Response(JSON.stringify({ message: 'Old token expired' }), {
+  resolveStaleApi401(new Response(JSON.stringify({ message: 'Old token expired' }), {
     status: 401,
     headers: { 'Content-Type': 'application/json' },
   }));
-  // If /auth/me were triggered for User B it shouldn't fail User B; here fetch still returns pending unless guarded:
-  globalThis.fetch = async () => new Response(JSON.stringify({ message: 'Unauthorized' }), { status: 401 });
-  await assert.rejects(() => staleReq, /Old token expired/i);
+  await assert.rejects(() => staleApiReq, /Old token expired/i);
+  assert.equal(authMeCallsAfterSwitch, 0, 'Stale User A 401 must NOT trigger /auth/me for User B');
+  assert.equal(staleApiCalls, 1, 'Stale User A request must NOT be replayed under User B token');
   assert.deepEqual(JSON.parse(globalThis.localStorage.getItem('ai_user')), JSON.parse(userB));
   assert.equal(events.filter((e) => e === 'nova-session-expired').length, 0);
+
+  // 4. MERGE-BLOCKER-01 (apiStream): Delayed 401 from User A's stream after switching to User B MUST NOT
+  //    call /auth/me for User B, MUST NOT replay User A's stream under User B's token, and MUST keep User B signed in.
+  globalThis.localStorage.setItem('ai_user', userA);
+  let resolveStaleStream401;
+  let staleStreamCalls = 0;
+  let streamAuthMeCalls = 0;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.endsWith('/auth/me')) {
+      streamAuthMeCalls += 1;
+      return new Response(userB, { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    staleStreamCalls += 1;
+    if (staleStreamCalls === 1) {
+      return new Promise((resolve) => { resolveStaleStream401 = resolve; });
+    }
+    return new Response('data: replayed\n\nevent: done\ndata: done\n\n', { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+  };
+  const staleStreamReq = mod.apiStream('/ai/ask/stream', { method: 'POST', body: JSON.stringify({ task: 'CODING', message: 'hi' }) }, () => {});
+  mod.invalidatePendingSessionRefresh();
+  globalThis.localStorage.setItem('ai_user', userB);
+  resolveStaleStream401(new Response(JSON.stringify({ message: 'Old stream token expired' }), {
+    status: 401,
+    headers: { 'Content-Type': 'application/json' },
+  }));
+  await assert.rejects(() => staleStreamReq, /Old stream token expired/i);
+  assert.equal(streamAuthMeCalls, 0, 'Stale User A stream 401 must NOT trigger /auth/me for User B');
+  assert.equal(staleStreamCalls, 1, 'Stale User A stream must NOT be replayed under User B token');
+  assert.deepEqual(JSON.parse(globalThis.localStorage.getItem('ai_user')), JSON.parse(userB));
+  assert.equal(events.filter((e) => e === 'nova-session-expired').length, 0);
+
+  // 5. Same-session legitimate 401 refresh-and-retry STILL works when originating session is unchanged
+  globalThis.localStorage.setItem('ai_user', userB);
+  let sameSessionApiCalls = 0;
+  let sameSessionAuthMeCalls = 0;
+  let retryAuthHeader = '';
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    if (u.endsWith('/auth/me')) {
+      sameSessionAuthMeCalls += 1;
+      return new Response(JSON.stringify({ id: 99, name: 'User B', email: 'b@test.com', role: 'STUDENT', token: 'tok-B-rotated' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    sameSessionApiCalls += 1;
+    if (sameSessionApiCalls === 1) {
+      return new Response(JSON.stringify({ message: 'Expired token' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+    }
+    retryAuthHeader = init?.headers?.Authorization || '';
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  const retried = await mod.api('/courses', { retries: 0 });
+  assert.deepEqual(retried, { ok: true });
+  assert.equal(sameSessionAuthMeCalls, 1);
+  assert.equal(sameSessionApiCalls, 2);
+  assert.equal(retryAuthHeader, 'Bearer tok-B-rotated');
+  assert.equal(JSON.parse(globalThis.localStorage.getItem('ai_user')).token, 'tok-B-rotated');
 });
 
 test('security & stabilization source invariants hold across frontend files', () => {
