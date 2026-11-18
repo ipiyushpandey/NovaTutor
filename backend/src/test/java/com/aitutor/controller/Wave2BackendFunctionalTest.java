@@ -160,4 +160,91 @@ class Wave2BackendFunctionalTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.completedLessons", is(1)));
     }
+
+    @Test
+    void concurrentLessonCompletionIsAtomicAndDeleteLessonReconcilesProgress() throws Exception {
+        User student = createUser("progconc", "STUDENT");
+        User admin = createUser("progadm", "ADMIN");
+        String studentToken = jwt.token(student);
+        String adminToken = jwt.token(admin);
+
+        Course c = new Course("Concurrent Course " + System.nanoTime(), "Desc", "Beginner", "📘");
+        c.setPublished(true);
+        c.setTotalLessons(2);
+        c = courses.save(c);
+
+        Lesson l1 = new Lesson();
+        l1.setCourse(c); l1.setTitle("L1"); l1.setTopic("T1"); l1.setOrderIndex(1); l1.setContent("C1");
+        l1 = lessons.save(l1);
+        Lesson l2 = new Lesson();
+        l2.setCourse(c); l2.setTitle("L2"); l2.setTopic("T2"); l2.setOrderIndex(2); l2.setContent("C2");
+        l2 = lessons.save(l2);
+
+        // Fire 6 concurrent completions of the SAME lesson l1
+        final Long courseId = c.getId();
+        final Long lesson1Id = l1.getId();
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(6);
+        var latch = new java.util.concurrent.CountDownLatch(1);
+        var futures = new java.util.ArrayList<java.util.concurrent.Future<Integer>>();
+        for (int i = 0; i < 6; i++) {
+            futures.add(pool.submit(() -> {
+                latch.await();
+                return mvc.perform(post("/api/progress/" + student.getId() + "/course/" + courseId + "/lesson/" + lesson1Id + "/complete")
+                                .header("Authorization", "Bearer " + studentToken))
+                        .andReturn().getResponse().getStatus();
+            }));
+        }
+        latch.countDown();
+        for (var f : futures) assertEquals(200, f.get());
+        pool.shutdownNow();
+
+        // Must be exactly 1 completed lesson (never 2+)
+        mvc.perform(get("/api/progress/" + student.getId()).header("Authorization", "Bearer " + studentToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.courseId==" + courseId + ")].completedLessons", contains(1)));
+
+        // Complete l2 -> now 2/2 (100%)
+        mvc.perform(post("/api/progress/" + student.getId() + "/course/" + courseId + "/lesson/" + l2.getId() + "/complete")
+                        .header("Authorization", "Bearer " + studentToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.completedLessons", is(2)))
+                .andExpect(jsonPath("$.totalLessons", is(2)));
+
+        // Delete l2 -> Progress row must reconcile to 1/1 (100%), not stale 2/1 (200%)!
+        mvc.perform(delete("/api/admin/lessons/" + l2.getId()).header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk());
+
+        mvc.perform(get("/api/progress/" + student.getId()).header("Authorization", "Bearer " + studentToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.courseId==" + courseId + ")].completedLessons", contains(1)))
+                .andExpect(jsonPath("$[?(@.courseId==" + courseId + ")].totalLessons", contains(1)))
+                .andExpect(jsonPath("$[?(@.courseId==" + courseId + ")].percent", contains(100.0)));
+    }
+
+    @Test
+    void aiControllerRejectsNullTaskAndStreamCancellationClosesActiveStream() throws Exception {
+        User student = createUser("ainull", "STUDENT");
+        String token = jwt.token(student);
+
+        mvc.perform(post("/api/ai/ask")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"topic\":\"DSA\",\"message\":\"Hi\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error", is("INVALID_AI_REQUEST")));
+
+        mvc.perform(post("/api/ai/ask/stream")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"topic\":\"DSA\",\"message\":\"Hi\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error", is("INVALID_AI_REQUEST")));
+
+        var cancel = new com.aitutor.ai.StreamCancellation();
+        var closed = new java.util.concurrent.atomic.AtomicBoolean(false);
+        cancel.attachStream(() -> closed.set(true));
+        cancel.cancel();
+        assertTrue(cancel.isCancelled());
+        assertTrue(closed.get(), "StreamCancellation.cancel() must close attached upstream stream immediately");
+    }
 }

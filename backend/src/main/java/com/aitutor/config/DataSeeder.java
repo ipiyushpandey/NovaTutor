@@ -113,12 +113,10 @@ public class DataSeeder {
             List<Course> courseList
     ) {
         if (meta.existsById(CURRICULUM_KEY)) return;
-        // Never rebuild or delete an existing production curriculum implicitly.
-        // Fresh empty databases may be seeded; populated databases require an
-        // explicit migration rather than a startup wipe.
-        if (lessons.count() > 0) return;
-
+        boolean seededAny = false;
         for (Course course : courseList) {
+            // Never overwrite an already-seeded course; resume any missing courses after a partial startup failure.
+            if (lessons.countByCourseId(course.getId()) > 0) continue;
             List<ProductionCurriculum.LessonSpec> specs = ProductionCurriculum.forCourse(course.getTitle());
             if (specs.size() != 105) {
                 throw new IllegalStateException("Production curriculum for " + course.getTitle() + " must contain exactly 105 lessons; found " + specs.size());
@@ -138,17 +136,27 @@ public class DataSeeder {
             lessons.saveAll(batch);
             course.setTotalLessons(105);
             courses.save(course);
+            seededAny = true;
         }
 
-        for (Progress p : progress.findAll()) {
-            Course course = p.getCourse();
-            if (course == null) continue;
-            int completed = Math.min(Math.max(0, p.getCompletedLessons()), 105);
-            p.setTotalLessons(105);
-            p.setCompletedLessons(completed);
-            p.setPercent(completed * 100.0 / 105.0);
+        if (seededAny) {
+            List<Progress> existingProgress = progress.findAll();
+            List<Progress> remapped = new ArrayList<>();
+            for (Progress p : existingProgress) {
+                Course course = p.getCourse();
+                if (course == null) continue;
+                int total = Math.max(1, course.getTotalLessons() > 0 ? course.getTotalLessons() : 105);
+                int completed = Math.min(Math.max(0, p.getCompletedLessons()), total);
+                p.setTotalLessons(total);
+                p.setCompletedLessons(completed);
+                p.setPercent(completed * 100.0 / total);
+                remapped.add(p);
+            }
+            if (!remapped.isEmpty()) {
+                progress.saveAll(remapped);
+                progress.flush();
+            }
         }
-        progress.flush();
         meta.save(new AppMeta(CURRICULUM_KEY, "13 courses x 105 production curriculum lessons; topic-specific content and practice; legacy generic expansion removed"));
     }
 
@@ -157,9 +165,10 @@ public class DataSeeder {
             ensureQuizExpansion(quizzes, courses, meta);
             return;
         }
-        // Never delete an existing quiz bank during startup. Seed only a fresh DB.
-        if (quizzes.count() > 0) return;
         for (Course course : courses.findAll()) {
+            // Seed per course so an interrupted first startup resumes cleanly without wiping populated courses.
+            if (quizzes.countByCourseId(course.getId()) > 0) continue;
+            List<QuizQuestion> batch = new ArrayList<>();
             for (QuizBank.Q item : QuizBank.forCourse(course.getTitle())) {
                 QuizQuestion q = new QuizQuestion();
                 q.setCourse(course);
@@ -172,8 +181,9 @@ public class DataSeeder {
                 q.setExplanation(item.explanation());
                 q.setTopic(conceptFromQuestion(course, item.question()));
                 q.setDifficulty(item.difficulty());
-                quizzes.save(q);
+                batch.add(q);
             }
+            if (!batch.isEmpty()) quizzes.saveAll(batch);
         }
         meta.save(new AppMeta(QUIZ_KEY, "Curated course-specific quiz bank restored after curriculum foundation cleanup"));
         ensureQuizExpansion(quizzes, courses, meta);
@@ -184,6 +194,7 @@ public class DataSeeder {
         if (meta.existsById(key)) return;
         int added = 0;
         for (Course course : courses.findAll()) {
+            List<QuizQuestion> batch = new ArrayList<>();
             for (QuizBank.Q item : QuizExpansion.forCourse(course.getTitle())) {
                 QuizQuestion q = new QuizQuestion();
                 q.setCourse(course);
@@ -196,9 +207,10 @@ public class DataSeeder {
                 q.setExplanation(item.explanation());
                 q.setTopic(conceptFromQuestion(course, item.question()));
                 q.setDifficulty(item.difficulty());
-                quizzes.save(q);
+                batch.add(q);
                 added++;
             }
+            if (!batch.isEmpty()) quizzes.saveAll(batch);
         }
         meta.save(new AppMeta(key, "Added exactly " + added + " original course-specific exam-style questions."));
     }

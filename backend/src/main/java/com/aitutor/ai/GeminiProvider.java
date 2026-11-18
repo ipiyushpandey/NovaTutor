@@ -99,18 +99,31 @@ public class GeminiProvider implements AiProvider {
      * fallback model is attempted once.
      */
     public void stream(AiRequest r, Consumer<String> onChunk) throws Exception {
+        stream(r, onChunk, null);
+    }
+
+    public void stream(AiRequest r, Consumer<String> onChunk, StreamCancellation cancellation) throws Exception {
         if (!available()) throw new IllegalStateException("Gemini API key missing");
+        if (cancellation != null && cancellation.isCancelled()) {
+            throw new IllegalStateException("Client disconnected");
+        }
         String prompt = PromptEngine.build(r);
         Exception last = null;
         for (String modelName : buildModelChain()) {
+            if (cancellation != null && cancellation.isCancelled()) {
+                throw new IllegalStateException("Client disconnected");
+            }
             AtomicBoolean emitted = new AtomicBoolean(false);
             try {
                 streamModel(modelName, prompt, r.task(), chunk -> {
                     emitted.set(true);
                     onChunk.accept(chunk);
-                });
+                }, cancellation);
                 return;
             } catch (Exception e) {
+                if (cancellation != null && cancellation.isCancelled()) {
+                    throw new IllegalStateException("Client disconnected");
+                }
                 Exception scrubbed = new IllegalStateException(safeMessage(e.getMessage()));
                 last = scrubbed;
                 // Never switch models after partial output: doing so would duplicate
@@ -121,7 +134,8 @@ public class GeminiProvider implements AiProvider {
         throw last == null ? new IllegalStateException("Gemini streaming request failed") : last;
     }
 
-    private void streamModel(String modelName, String prompt, AiTask task, Consumer<String> onChunk) throws Exception {
+    private void streamModel(String modelName, String prompt, AiTask task, Consumer<String> onChunk,
+                             StreamCancellation cancellation) throws Exception {
         Map<String, Object> body = buildBody(prompt, task, false);
         String json = objectMapper.writeValueAsString(body);
         // The streaming endpoint rejects the x-goog-api-key header for newer
@@ -152,9 +166,18 @@ public class GeminiProvider implements AiProvider {
 
         boolean emitted = false;
         String finishReason = "";
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
+        long deadlineNanos = System.nanoTime() + Duration.ofSeconds(180).toNanos();
+        java.io.InputStream rawBody = response.body();
+        if (cancellation != null) cancellation.attachStream(rawBody);
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(rawBody, StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
+                if (cancellation != null && cancellation.isCancelled()) {
+                    throw new IllegalStateException("Client disconnected");
+                }
+                if (System.nanoTime() > deadlineNanos) {
+                    throw new IllegalStateException("Gemini stream exceeded maximum duration");
+                }
                 if (!line.startsWith("data:")) continue;
                 String data = line.substring(5).trim();
                 if (data.isBlank() || "[DONE]".equals(data)) continue;
@@ -172,6 +195,8 @@ public class GeminiProvider implements AiProvider {
                     }
                 }
             }
+        } finally {
+            if (cancellation != null) cancellation.attachStream(null);
         }
         if (!emitted) throw new IllegalStateException("Gemini returned no text");
         // Surface provider-side truncation instead of presenting a partial answer

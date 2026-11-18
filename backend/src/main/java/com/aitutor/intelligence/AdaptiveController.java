@@ -107,7 +107,6 @@ public class AdaptiveController {
     }
 
     @PostMapping("/{userId}/ai-question")
-    @Transactional
     public Question aiQuestion(@PathVariable Long userId, Authentication authentication) {
         authenticatedUser.requireSame(authentication,userId);
         User u=users.findById(userId).orElseThrow();

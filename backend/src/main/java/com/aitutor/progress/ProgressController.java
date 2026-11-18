@@ -32,20 +32,24 @@ public class ProgressController {
             throw new IllegalArgumentException("Lesson does not belong to this course");
         }
         int total=Math.max(1, c.getTotalLessons() > 0 ? c.getTotalLessons() : (int) lr.countByCourseId(courseId));
-        Progress p=pr.findByUserIdAndCourseId(userId,courseId).orElseGet(()->{Progress x=new Progress();x.setUser(u);x.setCourse(c);x.setTotalLessons(total);return x;});
         String dedupeKey = "LESSON_COMPLETED:" + u.getId() + ":" + c.getId() + ":" + lesson.getId();
-        boolean alreadyCompleted = events.findByUserIdAndDedupeKey(u.getId(), dedupeKey).isPresent();
-        if (!alreadyCompleted) {
+        // Atomic first-writer-wins insert BEFORE mutating Progress prevents double-counting under concurrent requests.
+        boolean newlyCompleted = eventService.recordIfAbsent(
+                u, "LESSON_COMPLETED", c.getTitle(), lesson.getTitle(), 100, 0,
+                "Completed lesson #" + (lesson.getOrderIndex() == null ? 1 : lesson.getOrderIndex()), dedupeKey);
+        pr.ensureRowExists(userId, courseId, total);
+        Progress p = pr.findByUserIdAndCourseIdForUpdate(userId, courseId).orElseThrow();
+        if (newlyCompleted) {
             int nextCompleted = Math.min(total, p.getCompletedLessons() + 1);
             p.setCompletedLessons(nextCompleted);
             p.setTotalLessons(total);
             p.setPercent(nextCompleted * 100.0 / total);
             pr.save(p);
-            eventService.record(u, "LESSON_COMPLETED", c.getTitle(), lesson.getTitle(), 100, 0,
-                    "Completed lesson #" + nextCompleted, dedupeKey);
         } else if (p.getTotalLessons() != total) {
+            int clamped = Math.min(total, p.getCompletedLessons());
+            p.setCompletedLessons(clamped);
             p.setTotalLessons(total);
-            p.setPercent(Math.min(total, p.getCompletedLessons()) * 100.0 / total);
+            p.setPercent(clamped * 100.0 / total);
             pr.save(p);
         }
         return new View(courseId,p.getCompletedLessons(),p.getTotalLessons(),p.getPercent());

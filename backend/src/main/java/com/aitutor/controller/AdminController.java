@@ -434,13 +434,19 @@ public class AdminController {
     }
 
     @PostMapping("/courses/{courseId}/lessons")
+    @Transactional
     public Lesson createLesson(@RequestHeader(value="Authorization", required=false) String authorization, @PathVariable Long courseId, @RequestBody LessonRequest r) {
         admin(authorization);
         Course c = courses.findById(courseId).orElseThrow(() -> new IllegalArgumentException("Course not found"));
         if (r.title() == null || r.title().isBlank()) throw new IllegalArgumentException("Lesson title is required");
         int next = lessons.findByCourseIdOrderByOrderIndex(courseId).stream().mapToInt(x -> x.getOrderIndex() == null ? 0 : x.getOrderIndex()).max().orElse(0) + 1;
         Lesson l = new Lesson(); l.setCourse(c); l.setTitle(r.title().trim()); l.setTopic(r.topic() == null || r.topic().isBlank() ? "Core Concepts" : r.topic().trim()); l.setOrderIndex(next); l.setContent(r.content() == null ? "" : r.content());
-        Lesson saved = lessons.save(l); c.setTotalLessons(next); courses.save(c); return saved;
+        Lesson saved = lessons.save(l);
+        int total = (int) lessons.countByCourseId(courseId);
+        c.setTotalLessons(total);
+        courses.save(c);
+        reconcileCourseProgress(courseId, total);
+        return saved;
     }
 
     @PutMapping("/lessons/{lessonId}")
@@ -463,8 +469,22 @@ public class AdminController {
         List<Lesson> remaining = lessons.findByCourseIdOrderByOrderIndex(courseId);
         for (int i = 0; i < remaining.size(); i++) { remaining.get(i).setOrderIndex(i + 1); }
         lessons.saveAll(remaining);
-        courses.findById(courseId).ifPresent(c -> { c.setTotalLessons(remaining.size()); courses.save(c); });
+        int total = remaining.size();
+        courses.findById(courseId).ifPresent(c -> { c.setTotalLessons(total); courses.save(c); });
+        reconcileCourseProgress(courseId, total);
         return Map.of("deleted", true, "lessonId", lessonId);
+    }
+
+    private void reconcileCourseProgress(Long courseId, int newTotal) {
+        List<Progress> rows = progress.findByCourseId(courseId);
+        if (rows.isEmpty()) return;
+        for (Progress p : rows) {
+            int clamped = Math.min(Math.max(0, p.getCompletedLessons()), newTotal);
+            p.setCompletedLessons(clamped);
+            p.setTotalLessons(newTotal);
+            p.setPercent(newTotal <= 0 ? 0.0 : (clamped * 100.0 / newTotal));
+        }
+        progress.saveAll(rows);
     }
 
     @PutMapping("/courses/{courseId}/lessons/reorder")
