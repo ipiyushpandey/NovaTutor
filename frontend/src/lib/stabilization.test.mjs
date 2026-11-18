@@ -194,6 +194,67 @@ test('api.js preserves session on non-session 401 and transient /auth/me network
   assert.equal(events.filter((e) => e === 'nova-session-expired').length, 1);
 });
 
+test('REAUDIT-04: delayed /auth/me cannot resurrect logged-out session or overwrite switched account', async () => {
+  const events = setupBrowserGlobals();
+  const mod = await import('./api.js?t=' + Date.now() + '_race');
+
+  // 1. Logout while /auth/me is still in-flight -> delayed 200 MUST NOT restore ai_user or emit nova:session-refreshed
+  const userA = JSON.stringify({ id: 10, name: 'User A', email: 'a@test.com', role: 'STUDENT', token: 'tok-A' });
+  globalThis.localStorage.setItem('ai_user', userA);
+  let resolveAuthMeA;
+  globalThis.fetch = async (url) => {
+    assert.ok(String(url).endsWith('/auth/me'));
+    return new Promise((resolve) => { resolveAuthMeA = resolve; });
+  };
+  const pendingLogoutRefresh = mod.refreshSessionToken();
+  // Simulate logout while /auth/me is pending
+  mod.invalidatePendingSessionRefresh();
+  globalThis.localStorage.removeItem('ai_user');
+  resolveAuthMeA(new Response(JSON.stringify({ id: 10, name: 'User A', email: 'a@test.com', role: 'STUDENT', token: 'tok-A-rotated' }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  }));
+  const okAfterLogout = await pendingLogoutRefresh;
+  assert.equal(okAfterLogout, false);
+  assert.equal(globalThis.localStorage.getItem('ai_user'), null);
+  assert.equal(events.filter((e) => e === 'nova:session-refreshed').length, 0);
+
+  // 2. Account switch User A -> User B while User A's /auth/me is still in-flight -> User B MUST NOT be overwritten
+  globalThis.localStorage.setItem('ai_user', userA);
+  let resolveSwitchAuthMe;
+  globalThis.fetch = async () => new Promise((resolve) => { resolveSwitchAuthMe = resolve; });
+  const pendingSwitchRefresh = mod.refreshSessionToken();
+  // Switch to User B before User A's /auth/me returns
+  const userB = JSON.stringify({ id: 99, name: 'User B', email: 'b@test.com', role: 'STUDENT', token: 'tok-B' });
+  mod.invalidatePendingSessionRefresh();
+  globalThis.localStorage.setItem('ai_user', userB);
+  resolveSwitchAuthMe(new Response(JSON.stringify({ id: 10, name: 'User A', email: 'a@test.com', role: 'STUDENT', token: 'tok-A-new' }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  }));
+  const okAfterSwitch = await pendingSwitchRefresh;
+  assert.equal(okAfterSwitch, false);
+  assert.deepEqual(JSON.parse(globalThis.localStorage.getItem('ai_user')), JSON.parse(userB));
+  assert.equal(events.filter((e) => e === 'nova:session-refreshed').length, 0);
+
+  // 3. Delayed 401 from User A's request after switching to User B MUST NOT wipe User B's session
+  globalThis.localStorage.setItem('ai_user', userA);
+  let resolveStale401;
+  globalThis.fetch = async () => new Promise((resolve) => { resolveStale401 = resolve; });
+  const staleReq = mod.api('/courses', { retries: 0 });
+  mod.invalidatePendingSessionRefresh();
+  globalThis.localStorage.setItem('ai_user', userB);
+  resolveStale401(new Response(JSON.stringify({ message: 'Old token expired' }), {
+    status: 401,
+    headers: { 'Content-Type': 'application/json' },
+  }));
+  // If /auth/me were triggered for User B it shouldn't fail User B; here fetch still returns pending unless guarded:
+  globalThis.fetch = async () => new Response(JSON.stringify({ message: 'Unauthorized' }), { status: 401 });
+  await assert.rejects(() => staleReq, /Old token expired/i);
+  assert.deepEqual(JSON.parse(globalThis.localStorage.getItem('ai_user')), JSON.parse(userB));
+  assert.equal(events.filter((e) => e === 'nova-session-expired').length, 0);
+});
+
 test('security & stabilization source invariants hold across frontend files', () => {
   const mainJsx = fs.readFileSync(path.join(SRC_DIR, 'main.jsx'), 'utf8');
   const stylesCss = fs.readFileSync(path.join(SRC_DIR, 'styles.css'), 'utf8');

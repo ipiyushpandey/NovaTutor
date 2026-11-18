@@ -23,28 +23,59 @@ const readJSON=(key,fallback=null)=>{try{const raw=localStorage.getItem(key);ret
 const readUser=()=>{const u=readJSON('ai_user',null);if(!u||typeof u!=='object'||!u.id||!u.token)return null;return {...u,role:String(u.role||'STUDENT').toUpperCase()}};
 
 let sessionRefreshPromise=null;
-// Returns 'ok' | 'unauthorized' | 'network_error' so transient network/timeout errors
-// on /auth/me never destroy a valid local session.
+let sessionRefreshController=null;
+let sessionGeneration=0;
+
+const isSameSession=(originating)=>{
+ if(!originating?.id||!originating?.token)return false;
+ const latest=readUser();
+ return Boolean(latest&&String(latest.id)===String(originating.id)&&latest.token===originating.token);
+};
+
+// Invalidates any in-flight /auth/me refresh when logging out or switching accounts so a
+// delayed response can never resurrect a logged-out user or overwrite the next session.
+function invalidatePendingSessionRefresh(){
+ sessionGeneration+=1;
+ try{sessionRefreshController?.abort()}catch{}
+ sessionRefreshController=null;
+ sessionRefreshPromise=null;
+}
+
+// Returns 'ok' | 'unauthorized' | 'network_error' | 'stale' so transient network/timeout
+// errors never destroy a valid local session and stale refreshes never overwrite a newer session.
 async function refreshSessionTokenWithStatus(){
  const current=readUser();
  if(!current?.token)return 'unauthorized';
  if(sessionRefreshPromise)return sessionRefreshPromise;
- sessionRefreshPromise=(async()=>{
-  const controller=new AbortController();
+ const gen=sessionGeneration;
+ const controller=new AbortController();
+ sessionRefreshController=controller;
+ const pending=(async()=>{
   const timeout=setTimeout(()=>controller.abort(),15000);
   try{
    const r=await fetch(API+'/auth/me',{headers:{Authorization:`Bearer ${current.token}`},signal:controller.signal});
+   if(gen!==sessionGeneration||!isSameSession(current))return 'stale';
    if(r.status===401||r.status===403)return 'unauthorized';
    if(!r.ok)return 'network_error';
    const fresh=await r.json();
+   if(gen!==sessionGeneration||!isSameSession(current))return 'stale';
    const next={...current,...fresh,token:fresh.token||current.token,role:String(fresh.role||current.role||'STUDENT').toUpperCase()};
    localStorage.setItem('ai_user',JSON.stringify(next));
    window.dispatchEvent(new Event('nova:session-refreshed'));
    return 'ok';
-  }catch{return 'network_error'}
-  finally{clearTimeout(timeout);sessionRefreshPromise=null}
+  }catch{
+   return gen!==sessionGeneration||!isSameSession(current)?'stale':'network_error';
+  }
+  finally{
+   clearTimeout(timeout);
+   if(sessionRefreshPromise===pending){
+    sessionRefreshPromise=null;
+    sessionRefreshController=null;
+   }
+  }
  })();
- return sessionRefreshPromise;
+ sessionRefreshPromise=pending;
+ return pending;
 }
 async function refreshSessionToken(){
  return (await refreshSessionTokenWithStatus())==='ok';
@@ -101,9 +132,10 @@ async function api(path,opt={},_retry=false){
      if(refreshStatus==='ok'){clearTimeout(timeout);if(externalSignal)externalSignal.removeEventListener('abort',onExternalAbort);return api(path,opt,true);}
     }
     const err=new Error(message); err.status=r.status; err.code=code;
-    // 403 means authenticated but not permitted; credential checks (e.g. wrong current password)
-    // and transient /auth/me network errors must not destroy a valid session.
-    if(r.status===401&&!isCredentialCheckPath(path)&&refreshStatus==='unauthorized'){
+    // 403 means authenticated but not permitted; credential checks (e.g. wrong current password),
+    // transient /auth/me network errors, and stale responses after logout/switch must not destroy a valid session.
+    if(r.status===401&&!isCredentialCheckPath(path)&&refreshStatus==='unauthorized'&&isSameSession(session)){
+     invalidatePendingSessionRefresh();
      localStorage.removeItem('ai_user');
      localStorage.removeItem('nova_page');
      window.dispatchEvent(new Event('nova-session-expired'));
@@ -177,7 +209,8 @@ async function apiStream(path,opt={},onChunk,_retry=false){
    const raw=await r.text();
    let message=raw||`Request failed (${r.status})`;
    try{const parsed=JSON.parse(raw);message=parsed.message||parsed.error||message}catch{}
-   if(r.status===401&&refreshStatus==='unauthorized'){
+   if(r.status===401&&refreshStatus==='unauthorized'&&isSameSession(session)){
+    invalidatePendingSessionRefresh();
     localStorage.removeItem('ai_user');
     localStorage.removeItem('nova_page');
     window.dispatchEvent(new Event('nova-session-expired'));
@@ -235,4 +268,4 @@ async function apiStream(path,opt={},onChunk,_retry=false){
  }
 }
 
-export {api,apiStream,readUser,refreshSessionToken,API};
+export {api,apiStream,readUser,refreshSessionToken,invalidatePendingSessionRefresh,API};

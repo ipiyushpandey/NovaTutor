@@ -184,12 +184,14 @@ public class AdaptiveController {
         return Map.of("success",true,"recorded",recorded);
     }
 
+    private static final int DAILY_ADAPTIVE_XP_CAP = 30;
+
     @PostMapping("/{userId}/revision-complete")
     @Transactional
     public Map<String,Object> revisionComplete(@PathVariable Long userId,@RequestBody Map<String,Object> body, Authentication authentication){
         authenticatedUser.requireSame(authentication,userId);
         boolean admin = authenticatedUser.isAdmin(authentication);
-        User u=users.findById(userId).orElseThrow();
+        User u=users.findByIdForUpdate(userId).orElseThrow();
         String subject = body == null ? "" : String.valueOf(body.getOrDefault("subject","")).trim();
         String topic = body == null ? "Quiz mastery" : String.valueOf(body.getOrDefault("topic","Quiz mastery")).trim();
         if (subject.isBlank() || subject.length() > 120) {
@@ -204,9 +206,8 @@ public class AdaptiveController {
         if (!validSubject) {
             throw new IllegalArgumentException("Revision subject must match an available published course");
         }
-        ZoneId ist = ZoneId.of("Asia/Kolkata");
-        LocalDate todayIst = LocalDate.now(ist);
-        LocalDateTime startOfToday = todayIst.atStartOfDay(ist).withZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime();
+        LocalDate todayIst = LearningEventAnalyticsService.todayIst();
+        LocalDateTime startOfToday = LearningEventAnalyticsService.startOfTodayIst();
         long todayRevisions = events.countByUserIdAndTypeInAndCreatedAtGreaterThanEqual(
                 userId, List.of("REVISION_COMPLETED"), startOfToday);
         boolean saved = false;
@@ -234,9 +235,26 @@ public class AdaptiveController {
     @Transactional
     public Map<String,Object> answer(@PathVariable Long userId,@RequestBody Map<String,Object> body, Authentication authentication){
         authenticatedUser.requireSame(authentication,userId);
-        User u=users.findById(userId).orElseThrow();
-        Long qid=Long.valueOf(String.valueOf(body.get("questionId")));
-        int selected=Integer.parseInt(String.valueOf(body.get("selectedOption")));
+        if (body == null || body.get("questionId") == null || body.get("selectedOption") == null) {
+            throw new IllegalArgumentException("questionId and selectedOption are required");
+        }
+        Long qid;
+        int selected;
+        try {
+            qid = Long.valueOf(String.valueOf(body.get("questionId")).trim());
+            selected = Integer.parseInt(String.valueOf(body.get("selectedOption")).trim());
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException("Invalid questionId or selectedOption");
+        }
+        if (selected < 0 || selected > 3) {
+            throw new IllegalArgumentException("selectedOption must be between 0 and 3");
+        }
+        User u=users.findByIdForUpdate(userId).orElseThrow();
+        LocalDate todayIst = LearningEventAnalyticsService.todayIst();
+        LocalDateTime startOfToday = LearningEventAnalyticsService.startOfTodayIst();
+        long todayAdaptiveXp = events.countByUserIdAndTypeInAndCreatedAtGreaterThanEqual(
+                userId, List.of("ADAPTIVE_QUESTION"), startOfToday);
+        boolean xpCapped = todayAdaptiveXp >= DAILY_ADAPTIVE_XP_CAP;
         if (qid <= 0) {
             String generatedKey = "ADAPTIVE_AI_GENERATED:" + userId + ":" + qid;
             LearningEvent generated = events.findByUserIdAndDedupeKey(userId, generatedKey)
@@ -251,10 +269,17 @@ public class AdaptiveController {
             }
             int expected = parseCorrectOption(generated.getDetails());
             boolean correct = selected == expected;
-            eventService.record(u, "ADAPTIVE_QUESTION", generated.getSubject(), "Adaptive practice",
-                    correct ? 100 : 0, 0, "aiQuestion;qid=" + qid + ";" + (correct ? "Correct" : "Incorrect"),
-                    answerKey);
-            return Map.of("correct", correct, "correctOption", expected,
+            if (!xpCapped) {
+                eventService.recordIfAbsent(u, "ADAPTIVE_QUESTION", generated.getSubject(), "Adaptive practice",
+                        correct ? 100 : 0, 0, "aiQuestion;qid=" + qid + ";" + (correct ? "Correct" : "Incorrect"),
+                        answerKey);
+            } else {
+                // Consume the single-use AI question without awarding additional XP once daily cap is reached.
+                eventService.recordIfAbsent(u, "ADAPTIVE_QUESTION_CAPPED", generated.getSubject(), "Adaptive practice",
+                        null, 0, "aiQuestion;qid=" + qid + ";" + (correct ? "Correct" : "Incorrect"),
+                        answerKey);
+            }
+            return Map.of("correct", correct, "correctOption", expected, "xpCapped", xpCapped,
                     "message", correct ? "Correct. Difficulty can increase." : "Not quite. This concept should be revised before the next attempt.");
         }
         QuizQuestion q=questions.findById(qid).orElseThrow();
@@ -263,9 +288,12 @@ public class AdaptiveController {
             throw new NoSuchElementException("Question not found");
         }
         boolean correct=selected==q.getCorrectOption();
-        LocalDate todayIst = LocalDate.now(ZoneId.of("Asia/Kolkata"));
-        eventService.record(u,"ADAPTIVE_QUESTION",c==null?null:c.getTitle(),"Adaptive practice",correct?100:0,0,"questionId="+qid+";"+(correct?"Correct":"Incorrect"),"ADAPTIVE_QUESTION:"+u.getId()+":"+qid+":"+todayIst);
-        return Map.of("correct",correct,"correctOption",q.getCorrectOption(),"message",correct?"Correct. Difficulty can increase.":"Not quite. This concept should be revised before the next attempt.");
+        if (!xpCapped) {
+            eventService.recordIfAbsent(u,"ADAPTIVE_QUESTION",c==null?null:c.getTitle(),"Adaptive practice",
+                    correct?100:0,0,"questionId="+qid+";"+(correct?"Correct":"Incorrect"),
+                    "ADAPTIVE_QUESTION:"+u.getId()+":"+qid+":"+todayIst);
+        }
+        return Map.of("correct",correct,"correctOption",q.getCorrectOption(),"xpCapped",xpCapped,"message",correct?"Correct. Difficulty can increase.":"Not quite. This concept should be revised before the next attempt.");
     }
 
     private static int parseCorrectOption(String details) {

@@ -21,7 +21,7 @@ import {readWorkspace,writeWorkspace,workspaceKey,subscribeWorkspace,migrateWork
 import AiMarkdown, {normalizeAiText, mdInlineText} from './AiMarkdown.jsx';
 import {registerWorkspaceFlusher,beginNavigationPersistence} from './persistence/appWorkspace.js';
 import {readRuntimeState,writeRuntimeState,subscribeRuntimeState,getRuntimeModuleSnapshot,updateRuntimeState,removeRuntimeState,clearRuntimeUser} from './persistence/runtimeStore.js';
-import {api,apiStream,readUser,refreshSessionToken} from './lib/api.js';
+import {api,apiStream,readUser,refreshSessionToken,invalidatePendingSessionRefresh} from './lib/api.js';
 /* V69 FOUNDATION REPAIR — production curriculum + stable learning foundation */
 /* V51 VOICE SPEED + CHAT CONTROLS */
 /* V34 FINAL EVENTS */
@@ -277,7 +277,7 @@ function NovaCoach({user,go,courses,initialTab='focus'}){
  const [data,setData]=useState(null); const [analytics,setAnalytics]=useState(null); const [progress,setProgress]=useState([]); const [loading,setLoading]=useState(true); const [command,setCommand]=useState(''); const [room,setRoom]=useState(()=>readJSON(`nova_study_room_${user?.id||'guest'}`,null)); const [timer,setTimer]=useState(1500); const [running,setRunning]=useState(false); const [confidence,setConfidence]=useState(3); const [notice,setNotice]=useState('');
  useModulePersistence(user?.id,`nova-coach-${initialTab}`,{tab,timer,running,confidence,room},{tab:x=>setTab(x||initialTab),timer:x=>setTimer(Number(x)||1500),running:x=>setRunning(Boolean(x)),confidence:x=>setConfidence(Number(x)||3),room:x=>setRoom(x||null)});
  const cacheKey=`nova_coach_cache_${user?.id||'guest'}`;
- useEffect(()=>{let alive=true; setLoading(true); Promise.allSettled([api('/intelligence/'+user.id),api('/analytics/'+user.id),api('/progress/'+user.id)]).then(rs=>{if(!alive)return; const [i,a,p]=rs; const next=i.status==='fulfilled'?i.value:null; setData(next); setAnalytics(a.status==='fulfilled'?a.value:null); setProgress(p.status==='fulfilled'&&Array.isArray(p.value)?p.value:[]); if(next)localStorage.setItem(cacheKey,JSON.stringify({at:Date.now(),data:next,analytics:a.status==='fulfilled'?a.value:null,progress:p.status==='fulfilled'?p.value:[]})); else {const cached=readJSON(cacheKey); if(cached){setData(cached.data);setAnalytics(cached.analytics);setProgress(Array.isArray(cached.progress)?cached.progress:[])}} }).finally(()=>alive&&setLoading(false)); return()=>{alive=false}},[user?.id]);
+ useEffect(()=>{let alive=true; const activeId=String(user.id); setLoading(true); Promise.allSettled([api('/intelligence/'+user.id),api('/analytics/'+user.id),api('/progress/'+user.id)]).then(rs=>{if(!alive)return; const [i,a,p]=rs; const next=i.status==='fulfilled'?i.value:null; setData(next); setAnalytics(a.status==='fulfilled'?a.value:null); setProgress(p.status==='fulfilled'&&Array.isArray(p.value)?p.value:[]); if(next&&String(readUser()?.id||'')===activeId)localStorage.setItem(cacheKey,JSON.stringify({at:Date.now(),data:next,analytics:a.status==='fulfilled'?a.value:null,progress:p.status==='fulfilled'?p.value:[]})); else if(!next) {const cached=readJSON(cacheKey); if(cached){setData(cached.data);setAnalytics(cached.analytics);setProgress(Array.isArray(cached.progress)?cached.progress:[])}} }).finally(()=>alive&&setLoading(false)); return()=>{alive=false}},[user?.id]);
  useEffect(()=>{const fn=()=>{api('/intelligence/'+user.id).then(setData).catch(()=>{});api('/analytics/'+user.id).then(setAnalytics).catch(()=>{});};window.addEventListener('nova:learning-updated',fn);return()=>window.removeEventListener('nova:learning-updated',fn)},[user?.id]);
  useEffect(()=>{if(!running)return;const id=setInterval(()=>setTimer(x=>{if(x<=1){setRunning(false);api('/intelligence/'+user.id+'/events',{method:'POST',body:JSON.stringify({type:'STUDY_SPRINT_COMPLETED',subject:'Nova Focus',topic:'Focus sprint',durationSeconds:1500,details:'Completed a Nova Coach focus sprint.'})}).catch(()=>{});setNotice('Focus sprint complete. Great work — take a short break, then continue the next action.');return 1500}return x-1}),1000);return()=>clearInterval(id)},[running]);
  useEffect(()=>{const onKey=e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();document.getElementById('nova-coach-command')?.focus()} if(e.key==='Escape')setCommand('')};window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey)},[]);
@@ -587,6 +587,7 @@ function App(){
  const clearUserClientState=useCallback((exitingUser)=>{
   const exitingId=exitingUser?.id;
   const isGuest=String(exitingUser?.role||'').toUpperCase()==='GUEST';
+  invalidatePendingSessionRefresh();
   bootstrappedUserRef.current=null;
   localStorage.removeItem('ai_user');
   localStorage.removeItem('nova_page');
@@ -653,13 +654,15 @@ function App(){
  // Runs once per distinct signed-in user id so /auth/me never loops.
  const bootstrappedUserRef=useRef(null);
  useEffect(()=>{
-  const sync=()=>{const fresh=readUser();if(fresh)setUser(prev=>prev&&prev.token===fresh.token&&prev.role===fresh.role&&prev.profileComplete===fresh.profileComplete&&prev.name===fresh.name?prev:fresh)};
+  const sync=()=>{const fresh=readUser();if(!fresh)return;setUser(prev=>{if(!prev||String(prev.id)!==String(fresh.id))return prev;return prev.token===fresh.token&&prev.role===fresh.role&&prev.profileComplete===fresh.profileComplete&&prev.name===fresh.name?prev:fresh})};
   window.addEventListener('nova:session-refreshed',sync);
   return()=>window.removeEventListener('nova:session-refreshed',sync);
  },[]);
  useEffect(()=>{
   if(!user?.token||!user?.id)return;
   if(bootstrappedUserRef.current===user.id)return;
+  const activeId=String(user.id);
+  const activeToken=user.token;
   bootstrappedUserRef.current=user.id;
   let alive=true;
   const wakeTimer=setTimeout(()=>{if(alive)setWakingServer(true)},2500);
@@ -668,8 +671,8 @@ function App(){
    setWakingServer(false);
    if(!ok)return;
    const fresh=readUser();
-   if(!fresh)return;
-   setUser(prev=>prev&&prev.token===fresh.token&&prev.role===fresh.role&&prev.profileComplete===fresh.profileComplete&&prev.name===fresh.name?prev:fresh);
+   if(!fresh||String(fresh.id)!==activeId)return;
+   setUser(prev=>{if(!prev||String(prev.id)!==activeId)return prev;return prev.token===fresh.token&&prev.role===fresh.role&&prev.profileComplete===fresh.profileComplete&&prev.name===fresh.name?prev:fresh});
    if(String(fresh.role||'STUDENT').toUpperCase()!=='ADMIN'&&fresh.profileComplete===false){
     setPage(p=>{if(p!=='onboarding'){localStorage.setItem('nova_page','onboarding');window.location.hash='#/onboarding';return 'onboarding'}return p});
     return;
@@ -691,17 +694,19 @@ function App(){
  useEffect(()=>{if(user?.id && user?.role!=='ADMIN' && user.profileComplete===false && page!=='onboarding'){setPage('onboarding');localStorage.setItem('nova_page','onboarding');window.location.hash='#/onboarding'}},[user?.id,user?.role,user?.profileComplete,page]);
  useEffect(()=>{
   if(!user?.id)return;
+  const activeId=String(user.id);
   let alive=true;
   api('/users/'+user.id).then(profile=>{
-   if(!alive||!profile||typeof profile!=='object')return;
+   const cur=readUser();
+   if(!alive||!profile||typeof profile!=='object'||!cur||String(cur.id)!==activeId)return;
    setUser(prev=>{
-    if(!prev)return prev;
+    if(!prev||String(prev.id)!==activeId)return prev;
     const next={...prev,...profile};
     if(typeof profile.profileComplete!=='boolean')next.profileComplete=prev.profileComplete;
     try{localStorage.setItem('ai_user',JSON.stringify(next))}catch{}
     return next;
    });
-   if(profile.preferredAiLanguage)localStorage.setItem(AI_LANGUAGE_KEY,profile.preferredAiLanguage);
+   if(profile.preferredAiLanguage&&String(readUser()?.id||'')===activeId)localStorage.setItem(AI_LANGUAGE_KEY,profile.preferredAiLanguage);
   }).catch(()=>{});
   return()=>{alive=false};
  },[user?.id]);
@@ -901,7 +906,7 @@ function App(){
  const logout=()=>{if(role!=='GUEST'){persistBeforeNavigation('logout')}else{api('/auth/guest',{method:'DELETE'}).catch(()=>{})}clearUserClientState(user)};
  const switchAccount=()=>{if(role!=='GUEST'){persistBeforeNavigation('switch-account')}else{api('/auth/guest',{method:'DELETE'}).catch(()=>{})}clearUserClientState(user)};
  const updateUser=next=>{const normalized={...(user||{}),...(next||{}),role:String(next?.role||user?.role||'STUDENT').toUpperCase()};localStorage.setItem('ai_user',JSON.stringify(normalized));setUser(normalized)};
- if(!user)return <Auth onLogin={u=>{bootstrappedUserRef.current=null;inAppNavCountRef.current=0;const next={...u,role:String(u.role||'STUDENT').toUpperCase()};resetTransientLearningState(next.id);localStorage.removeItem('nova_nav_stack');const needsProfile=next.role!=='ADMIN'&&next.profileComplete===false;const target=needsProfile?'onboarding':'dashboard';localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page',target);setUser(next);setPage(target);window.location.hash='#/'+target}} dark={dark} setDark={setDark}/>;
+ if(!user)return <Auth onLogin={u=>{invalidatePendingSessionRefresh();bootstrappedUserRef.current=null;inAppNavCountRef.current=0;const next={...u,role:String(u.role||'STUDENT').toUpperCase()};resetTransientLearningState(next.id);localStorage.removeItem('nova_nav_stack');const needsProfile=next.role!=='ADMIN'&&next.profileComplete===false;const target=needsProfile?'onboarding':'dashboard';localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page',target);setUser(next);setPage(target);window.location.hash='#/'+target}} dark={dark} setDark={setDark}/>;
  return <div className="app app-topnav">
  <TopNav
   user={user} role={role} page={page} go={go} dark={dark} setDark={setDark}
@@ -2040,24 +2045,29 @@ function BrandMark({size=26}){
 function AILearningProfile({user,courses,go}){
  const [state,setState]=useState(null),[adaptive,setAdaptive]=useState(null),[loading,setLoading]=useState(true),[goal,setGoal]=useState(user.learningGoal||''),[interests,setInterests]=useState(user.interests||''),[strengths,setStrengths]=useState(user.strengths||''),[weaknesses,setWeaknesses]=useState(user.weaknesses||''),[style,setStyle]=useState(user.learningStyle||'Visual + practical'),[saved,setSaved]=useState('');
  useEffect(()=>{
+  let alive=true;
+  const activeId=String(user.id);
   Promise.all([
     api(`/users/${user.id}`).catch(()=>null),
     api('/mentor/state/'+user.id).catch(()=>null),
     api('/adaptive/'+user.id).catch(()=>null)
   ]).then(([profile,a,b])=>{
+    if(!alive)return;
     if(profile){
       setGoal(profile.learningGoal||'');setInterests(profile.interests||'');setStrengths(profile.strengths||'');setWeaknesses(profile.weaknesses||'');setStyle(profile.learningStyle||'Visual + practical');
-      const current=readUser(); if(current){localStorage.setItem('ai_user',JSON.stringify({...current,...profile,token:current.token}))}
+      const current=readUser(); if(current&&String(current.id)===activeId){localStorage.setItem('ai_user',JSON.stringify({...current,...profile,token:current.token}))}
     }
     setState(a);setAdaptive(b)
-  }).finally(()=>setLoading(false))
-},[user.id]);
+  }).finally(()=>alive&&setLoading(false));
+  return()=>{alive=false};
+ },[user.id]);
  async function save(){
  setSaved('');
+ const activeId=String(user.id);
  try{
   const payload={name:user.name,learningGoal:goal,interests,strengths,weaknesses,learningStyle:style,dailyStudyMinutes:Number(user.dailyStudyMinutes||60),preferredAiLanguage:getAiLanguage()};
   const updated=await api(`/users/${user.id}`,{method:'PUT',body:JSON.stringify(payload)});
-  const current=readUser(); if(current&&updated) localStorage.setItem('ai_user',JSON.stringify({...current,...updated,token:current.token}));
+  const current=readUser(); if(current&&updated&&String(current.id)===activeId) localStorage.setItem('ai_user',JSON.stringify({...current,...updated,token:current.token}));
   // Refresh all memory/intelligence layers immediately so the new profile affects recommendations without logout/reload.
   const [fresh,mentorFresh,adaptiveFresh,intelligenceFresh]=await Promise.all([
     api(`/users/${user.id}`).catch(()=>updated||null),
@@ -2065,7 +2075,9 @@ function AILearningProfile({user,courses,go}){
     api('/adaptive/'+user.id).catch(()=>null),
     api('/intelligence/'+user.id).catch(()=>null)
   ]);
-  if(fresh){setGoal(fresh.learningGoal||goal);setInterests(fresh.interests||interests);setStrengths(fresh.strengths||strengths);setWeaknesses(fresh.weaknesses||weaknesses);setStyle(fresh.learningStyle||style);const cur=readUser();if(cur)localStorage.setItem('ai_user',JSON.stringify({...cur,...fresh,token:cur.token}))}
+  const curAfter=readUser();
+  if(!curAfter||String(curAfter.id)!==activeId)return;
+  if(fresh){setGoal(fresh.learningGoal||goal);setInterests(fresh.interests||interests);setStrengths(fresh.strengths||strengths);setWeaknesses(fresh.weaknesses||weaknesses);setStyle(fresh.learningStyle||style);localStorage.setItem('ai_user',JSON.stringify({...curAfter,...fresh,token:curAfter.token}))}
   setState(mentorFresh);setAdaptive(adaptiveFresh);
   setSaved('Profile saved. Nova memory, adaptive data and recommendations were refreshed.');
  }catch(e){setSaved('Could not update profile: '+e.message)}

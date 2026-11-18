@@ -625,6 +625,79 @@ test.describe('NovaTutor Stabilization Verification (Pass 1, Pass 2, Pass 3)', (
     expect(Math.abs(restoredScroll - savedScroll)).toBeLessThanOrEqual(15);
   });
 
+  test('Pass 2G (REAUDIT-04 Session Race): Delayed /auth/me cannot resurrect logged-out session or overwrite switched user', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const USER_B = {
+      id: 99,
+      name: 'User Beta',
+      email: 'userb@novatutor.test',
+      role: 'STUDENT',
+      profileComplete: true,
+      token: 'mock-jwt-token-user-b',
+    };
+
+    await installMockApi(page, { user: MOCK_USER });
+    // Override /auth/me and /auth/login so User A's /auth/me is delayed 450ms (outliving Logout & Account Switch)
+    await page.route('**/api/auth/me', async (route) => {
+      const auth = route.request().headers()['authorization'] || '';
+      if (auth.includes(MOCK_USER.token)) {
+        await new Promise((r) => setTimeout(r, 450));
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ ...MOCK_USER, token: 'mock-jwt-token-student-rotated' }),
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(USER_B),
+      });
+    });
+    await page.route('**/api/auth/login', async (route) => {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(USER_B),
+      });
+    });
+
+    // Scenario 1: Logout while User A's /auth/me is in-flight -> must STAY on #/login with ai_user === null
+    await seedSignedIn(page, MOCK_USER);
+    await page.goto('/#/dashboard');
+    await expect(page.getByRole('button', { name: 'Account menu' })).toBeVisible();
+    await page.getByRole('button', { name: 'Account menu' }).click();
+    await page.getByRole('menuitem', { name: 'Log out' }).click();
+    await expect(page).toHaveURL(/#\/login/);
+
+    // Wait well past the 450ms delayed /auth/me response
+    await page.waitForTimeout(750);
+    await expect(page).toHaveURL(/#\/login/);
+    expect(await page.evaluate(() => localStorage.getItem('ai_user'))).toBeNull();
+
+    // Scenario 2: Re-enter as User A, immediately log out while /auth/me is in-flight, and sign in as User B
+    await page.evaluate((u) => {
+      localStorage.setItem('ai_user', JSON.stringify(u));
+      window.location.hash = '#/dashboard';
+    }, MOCK_USER);
+    await page.reload();
+    await expect(page.getByRole('button', { name: 'Account menu' })).toBeVisible();
+    await page.getByRole('button', { name: 'Account menu' }).click();
+    await page.getByRole('menuitem', { name: 'Log out' }).click();
+    await expect(page).toHaveURL(/#\/login/);
+
+    await page.locator('#auth-email').fill(USER_B.email);
+    await page.locator('#auth-pass').fill('ValidPassword123!');
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+    await expect(page).toHaveURL(/#\/dashboard/);
+
+    // Wait well past User A's 450ms delayed /auth/me response -> User B MUST still own ai_user
+    await page.waitForTimeout(750);
+    const activeAfterDelay = await page.evaluate(() => JSON.parse(localStorage.getItem('ai_user') || 'null'));
+    expect(activeAfterDelay?.id).toBe(USER_B.id);
+    expect(activeAfterDelay?.email).toBe(USER_B.email);
+  });
+
   test('Pass 3: 12-Viewport Dashboard Audit, multi-page desktop+mobile overflow, Escape mobile sheet & theme contrast', async ({ page }) => {
     const widths = [320, 360, 375, 390, 414, 430, 768, 1024, 1280, 1366, 1440, 1920];
     const errors = [];

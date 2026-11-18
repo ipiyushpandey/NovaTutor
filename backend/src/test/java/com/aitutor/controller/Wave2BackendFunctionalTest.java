@@ -507,4 +507,160 @@ class Wave2BackendFunctionalTest {
             }
         }
     }
+
+    @Test
+    void dailyXpCapsRespectIstBoundariesWhenHostTimezoneIsUtc() throws Exception {
+        java.util.TimeZone previousTz = java.util.TimeZone.getDefault();
+        java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("UTC"));
+        try {
+            User student = createUser("utc_cap", "STUDENT");
+            String token = jwt.token(student);
+
+            Course pub = courses.save(new Course("UTC Boundary Course", "Published", "Beginner", "📘"));
+            pub.setPublished(true);
+            pub = courses.save(pub);
+
+            // Persist yesterday-evening IST events (20:00 IST yesterday = 14:30 UTC yesterday).
+            // Before REAUDIT-01 fix, withZoneSameInstant(UTC) shifted startOfToday to yesterday 18:30,
+            // wrongly counting these yesterday events against today's cap and locking out students!
+            java.time.LocalDateTime yesterdayEveningIst = com.aitutor.intelligence.LearningEventAnalyticsService
+                    .todayIst().minusDays(1).atTime(20, 0);
+            for (int i = 1; i <= 3; i++) {
+                com.aitutor.intelligence.LearningEvent ev = new com.aitutor.intelligence.LearningEvent(
+                        student, "REVISION_COMPLETED", pub.getTitle(), "YesterdayRev" + i, 100, 0,
+                        "Yesterday evening IST", "UTC_TEST_REV_" + student.getId() + "_" + i);
+                ev.setCreatedAt(yesterdayEveningIst);
+                learningEvents.save(ev);
+            }
+            for (int i = 1; i <= 4; i++) {
+                com.aitutor.intelligence.LearningEvent ev = new com.aitutor.intelligence.LearningEvent(
+                        student, "DPP_COMPLETED", pub.getTitle(), "YesterdayDpp" + i, 100, 0,
+                        "Yesterday evening IST", "UTC_TEST_DPP_" + student.getId() + "_" + i);
+                ev.setCreatedAt(yesterdayEveningIst);
+                learningEvents.save(ev);
+            }
+
+            // Under UTC host timezone, all 3 revisions for TODAY must still be accepted, and only the 4th capped.
+            for (int i = 1; i <= 3; i++) {
+                mvc.perform(post("/api/adaptive/" + student.getId() + "/revision-complete")
+                                .header("Authorization", "Bearer " + token)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"subject\":\"UTC Boundary Course\",\"topic\":\"TodayRev" + i + "\"}"))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.saved", is(true)))
+                        .andExpect(jsonPath("$.capped", is(false)));
+            }
+            mvc.perform(post("/api/adaptive/" + student.getId() + "/revision-complete")
+                            .header("Authorization", "Bearer " + token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"subject\":\"UTC Boundary Course\",\"topic\":\"TodayRev4\"}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.saved", is(false)))
+                    .andExpect(jsonPath("$.capped", is(true)));
+
+            // All 4 DPPs for TODAY must still be accepted under UTC, and only the 5th capped.
+            for (int i = 1; i <= 4; i++) {
+                mvc.perform(post("/api/intelligence/" + student.getId() + "/events")
+                                .header("Authorization", "Bearer " + token)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"type\":\"DPP_COMPLETED\",\"subject\":\"UTC Boundary Course\",\"topic\":\"TodayDpp" + i + "\",\"score\":100}"))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.saved", is(true)));
+            }
+            mvc.perform(post("/api/intelligence/" + student.getId() + "/events")
+                            .header("Authorization", "Bearer " + token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"type\":\"DPP_COMPLETED\",\"subject\":\"UTC Boundary Course\",\"topic\":\"TodayDpp5\",\"score\":100}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.saved", is(false)))
+                    .andExpect(jsonPath("$.capped", is(true)));
+        } finally {
+            java.util.TimeZone.setDefault(previousTz);
+        }
+    }
+
+    @Test
+    void emptyAndInvalidQuizSubmissionsRejectedAndQuizAndAdaptiveXpAreCapped() throws Exception {
+        User student = createUser("quiz_cap", "STUDENT");
+        String token = jwt.token(student);
+
+        Course pub = courses.save(new Course("Quiz Cap Course", "Published", "Beginner", "📘"));
+        pub.setPublished(true);
+        pub = courses.save(pub);
+
+        com.aitutor.quiz.QuizQuestion q1 = new com.aitutor.quiz.QuizQuestion();
+        q1.setCourse(pub);
+        q1.setTopic("Arrays");
+        q1.setQuestion("What is O(1) lookup?");
+        q1.setOptionA("HashMap");
+        q1.setOptionB("LinkedList");
+        q1.setOptionC("BubbleSort");
+        q1.setOptionD("DFS");
+        q1.setCorrectOption(0);
+        q1.setDifficulty("Easy");
+        q1 = quizQuestions.save(q1);
+
+        // 1. Empty answers payload MUST be rejected with 400 — zero attempts and zero XP created
+        mvc.perform(post("/api/quizzes/course/" + pub.getId() + "/submit")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"answers\":[]}"))
+                .andExpect(status().isBadRequest());
+
+        // 2. Fabricated questionId and out-of-range selectedOption MUST be rejected with 400
+        mvc.perform(post("/api/quizzes/course/" + pub.getId() + "/submit")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"answers\":[{\"questionId\":999999,\"selectedOption\":0}]}"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/quizzes/course/" + pub.getId() + "/submit")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"answers\":[{\"questionId\":" + q1.getId() + ",\"selectedOption\":9}]}"))
+                .andExpect(status().isBadRequest());
+
+        assertEquals(0, attempts.findByUserId(student.getId()).size(), "Invalid submissions must never create QuizAttempts");
+        assertEquals(0, learningEvents.countByUserIdAndType(student.getId(), "QUIZ_COMPLETED"), "Invalid submissions must never award QUIZ_COMPLETED XP");
+
+        // 3. Legitimate repeated quiz submissions keep grading & saving attempts, but QUIZ_COMPLETED XP caps at 10/day
+        //    and identical QUIZ_QUESTION events deduplicate per IST day.
+        for (int i = 0; i < 12; i++) {
+            mvc.perform(post("/api/quizzes/course/" + pub.getId() + "/submit")
+                            .header("Authorization", "Bearer " + token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"answers\":[{\"questionId\":" + q1.getId() + ",\"selectedOption\":0}]}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.total", is(1)))
+                    .andExpect(jsonPath("$.correct", is(1)))
+                    .andExpect(jsonPath("$.score", is(100)));
+        }
+        assertEquals(12, attempts.findByUserId(student.getId()).size(), "Legitimate quiz attempts must still be recorded");
+        assertEquals(10, learningEvents.countByUserIdAndType(student.getId(), "QUIZ_COMPLETED"), "QUIZ_COMPLETED XP must cap at 10/day");
+        assertEquals(1, learningEvents.countByUserIdAndType(student.getId(), "QUIZ_QUESTION"), "Repeated identical QUIZ_QUESTION must dedupe daily");
+
+        // 4. AdaptiveController.answer: invalid option rejected (400), and ADAPTIVE_QUESTION XP caps at 30/day
+        mvc.perform(post("/api/adaptive/" + student.getId() + "/answer")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"questionId\":" + q1.getId() + ",\"selectedOption\":5}"))
+                .andExpect(status().isBadRequest());
+
+        // Seed 30 today IST ADAPTIVE_QUESTION events to reach the daily cap
+        for (int i = 1; i <= 30; i++) {
+            com.aitutor.intelligence.LearningEvent ev = new com.aitutor.intelligence.LearningEvent(
+                    student, "ADAPTIVE_QUESTION", pub.getTitle(), "Adaptive practice", 100, 0,
+                    "seeded=" + i, "ADAPTIVE_SEED_" + student.getId() + "_" + i);
+            learningEvents.save(ev);
+        }
+        // 31st adaptive answer still grades normally, returns xpCapped=true, and does NOT insert another ADAPTIVE_QUESTION row
+        mvc.perform(post("/api/adaptive/" + student.getId() + "/answer")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"questionId\":" + q1.getId() + ",\"selectedOption\":0}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.correct", is(true)))
+                .andExpect(jsonPath("$.xpCapped", is(true)));
+        assertEquals(30, learningEvents.countByUserIdAndType(student.getId(), "ADAPTIVE_QUESTION"),
+                "ADAPTIVE_QUESTION XP must remain capped at 30/day");
+    }
 }

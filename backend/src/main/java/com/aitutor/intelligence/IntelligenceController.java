@@ -24,10 +24,11 @@ public class IntelligenceController {
  public record MistakePattern(String label,int count,String detail){}
  public record MemoryView(String learnerName,int learningEvents,int quizzes,int lessons,int studyMinutes,int xp,int streak,List<WeakArea> weakAreas,List<Recommendation> recommendations,List<Map<String,Object>> recentActivity,List<Mastery> mastery,List<MistakePattern> mistakePatterns,Map<String,Integer> activityByDay){}
  @PostMapping("/{userId}/events")
+ @Transactional
  public Map<String,Object> event(@PathVariable Long userId,@RequestBody EventRequest req, Authentication authentication){
    authenticatedUser.requireSame(authentication,userId);
    boolean admin = authenticatedUser.isAdmin(authentication);
-   User u=users.findById(userId).orElseThrow();
+   User u=users.findByIdForUpdate(userId).orElseThrow();
    if(req==null||req.type()==null||req.type().isBlank()) throw new IllegalArgumentException("Learning event type is required");
    if(req.score()!=null && (req.score()<0 || req.score()>100)) throw new IllegalArgumentException("Score must be between 0 and 100");
    if(req.durationSeconds()!=null && req.durationSeconds()<0) throw new IllegalArgumentException("Duration cannot be negative");
@@ -35,8 +36,7 @@ public class IntelligenceController {
    if(!Set.of("DPP_COMPLETED","STUDY_SPRINT_COMPLETED","STUDY_SESSION_COMPLETED").contains(type)) throw new IllegalArgumentException("Unsupported client learning event type");
    String cleanedSubject = clean(req.subject(), 120);
    String cleanedTopic = clean(req.topic(), 180);
-   ZoneId ist = ZoneId.of("Asia/Kolkata");
-   LocalDateTime startOfToday = LocalDate.now(ist).atStartOfDay(ist).withZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime();
+   LocalDateTime startOfToday = LearningEventAnalyticsService.startOfTodayIst();
    if (Set.of("STUDY_SPRINT_COMPLETED", "STUDY_SESSION_COMPLETED").contains(type)) {
      long todaySelfReported = events.countByUserIdAndTypeInAndCreatedAtGreaterThanEqual(
              userId, List.of("STUDY_SPRINT_COMPLETED", "STUDY_SESSION_COMPLETED"), startOfToday);

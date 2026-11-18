@@ -16,6 +16,16 @@ public class LearningEventAnalyticsService {
         this.repository = repository;
     }
 
+    /** Current IST calendar day matching how {@code learning_events.created_at} is persisted. */
+    public static LocalDate todayIst() {
+        return LocalDate.now(LEARNING_ZONE);
+    }
+
+    /** Start of the current IST day as naive LocalDateTime matching {@code learning_events.created_at} regardless of host JVM timezone. */
+    public static LocalDateTime startOfTodayIst() {
+        return todayIst().atStartOfDay();
+    }
+
     public record Summary(long eventCount, long lessonCount, long studySeconds, long xp) {}
     public record DailyActivity(long count, long studySeconds, long xp) {}
 

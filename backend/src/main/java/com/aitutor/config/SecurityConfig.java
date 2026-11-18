@@ -125,6 +125,9 @@ public class SecurityConfig {
                         .addHeaderWriter(new org.springframework.security.web.header.writers.StaticHeadersWriter(
                                 "Permissions-Policy", "camera=(), microphone=(self), geolocation=()")))
                 .authorizeHttpRequests(a -> a
+                        // Allow internal container ASYNC/ERROR dispatches (e.g. SseEmitter completion) after the
+                        // initial REQUEST was already authenticated and authorized; ordinary REQUESTs stay protected.
+                        .dispatcherTypeMatchers(jakarta.servlet.DispatcherType.ASYNC, jakarta.servlet.DispatcherType.ERROR).permitAll()
                         .requestMatchers(org.springframework.http.HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(org.springframework.http.HttpMethod.GET,
                                 "/api/courses", "/api/courses/**", "/api/gate-cse/notes/**").permitAll()
