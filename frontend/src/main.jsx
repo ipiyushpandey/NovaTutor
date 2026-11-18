@@ -1,4 +1,4 @@
-import React,{useEffect,useLayoutEffect,useState,useRef,useMemo,useSyncExternalStore} from 'react';
+import React,{useEffect,useLayoutEffect,useState,useRef,useMemo,useCallback,useSyncExternalStore} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Icon as NovaIcon,BookOpen,BrainCircuit,Code2,FileText,LayoutDashboard,MessageCircle,Target,Sparkles,ChevronRight,Send,Menu,LogOut,Plus,Trash2,CheckCircle2,PlayCircle,BarChart3,RotateCcw,UploadCloud,FileSearch,CalendarDays,Layers3,WandSparkles,Clock3,GraduationCap,Lightbulb,Brain,RefreshCw,Mic,MicOff,Volume2,VolumeX,UserRound,Trophy,StopCircle,Bell,Sun,Moon,Users,Briefcase} from './icons.jsx';
 /* Load order matters: the LEGACY stylesheet first (it still defines its own
@@ -543,18 +543,21 @@ function parseAppHash(rawHash=window.location.hash){
 }
 
 function App(){
- const [adminDenied,setAdminDenied]=useState(false);
  const initialParsed=useMemo(()=>parseAppHash(window.location.hash),[]);
+ const initialNonAdminBlocked=useMemo(()=>{const s=readUser();return Boolean(s&&initialParsed.page==='admin'&&String(s.role||'STUDENT').toUpperCase()!=='ADMIN')},[]);
+ const [adminDenied,setAdminDenied]=useState(initialNonAdminBlocked);
  const [page,setPage]=useState(()=>{
   const session=readUser();if(!session)return 'login';
   const needsProfile=String(session.role||'STUDENT').toUpperCase()!=='ADMIN'&&session.profileComplete===false;
   if(needsProfile)return 'onboarding';
   const h=initialParsed.page;
+  if(h==='admin'&&String(session.role||'STUDENT').toUpperCase()!=='ADMIN')return 'dashboard';
   const saved=localStorage.getItem('nova_page')||'dashboard';
   if(h==='onboarding'||h==='login')return 'dashboard';
   if(h==='course'&&!initialParsed.courseId)return 'dashboard';
   return ALLOWED_PAGES.includes(h)?h:(ALLOWED_PAGES.includes(saved)&&saved!=='login'?saved:'dashboard');
  });
+ useEffect(()=>{if(initialNonAdminBlocked&&window.location.hash!=='#/dashboard'){window.location.replace('#/dashboard')}},[initialNonAdminBlocked]);
  const [courseId,setCourseId]=useState(()=>initialParsed.courseId);
  const [lessonId,setLessonId]=useState(()=>initialParsed.lessonId);
  const [dsaSlug,setDsaSlug]=useState(()=>initialParsed.dsaSlug);
@@ -576,8 +579,9 @@ function App(){
  const routeKeyRef=useRef(routeKey);
  routeKeyRef.current=routeKey;
  const navModeRef=useRef('init');
+ const restoringScrollRef=useRef(false);
  const scrollStoreKey=(key)=>`nova_scroll_v2:${key}`;
- const saveCurrentScroll=()=>{try{sessionStorage.setItem(scrollStoreKey(routeKeyRef.current),String(Math.max(0,Math.round(window.scrollY||0))))}catch{}};
+ const saveCurrentScroll=()=>{if(restoringScrollRef.current)return;try{sessionStorage.setItem(scrollStoreKey(routeKeyRef.current),String(Math.max(0,Math.round(window.scrollY||0))))}catch{}};
 
  // Single authoritative session bootstrap + token-refresh listener.
  // Runs once per distinct signed-in user id so /auth/me never loops.
@@ -716,15 +720,18 @@ function App(){
   const mode=navModeRef.current;
   navModeRef.current='pop';
   if(mode==='push'){
+   restoringScrollRef.current=false;
    window.scrollTo({top:0,left:0,behavior:'auto'});
    return;
   }
   const raw=sessionStorage.getItem(scrollStoreKey(routeKey));
   const target=Number(raw);
   if(!Number.isFinite(target)||target<=0){
+   restoringScrollRef.current=false;
    window.scrollTo({top:0,left:0,behavior:'auto'});
    return;
   }
+  restoringScrollRef.current=true;
   let cancelled=false,userInteracted=false,raf=0;
   const startedAt=Date.now();
   const stopUser=()=>{userInteracted=true;cleanup();};
@@ -744,6 +751,7 @@ function App(){
   const maxTimer=setTimeout(()=>cleanup(),2600);
   const cleanup=()=>{
    cancelled=true;
+   restoringScrollRef.current=false;
    cancelAnimationFrame(raf);
    clearInterval(timer);
    clearTimeout(maxTimer);
@@ -768,6 +776,9 @@ function App(){
    const h=parsed.page==='login'?'dashboard':(ALLOWED_PAGES.includes(parsed.page)?parsed.page:'dashboard');
    if(h==='admin'&&String(session.role||'STUDENT').toUpperCase()!=='ADMIN'){
     setPage('dashboard');window.location.hash='#/dashboard';setAdminDenied(true);return;
+   }
+   if(navModeRef.current!=='push'&&parsed.routeKey!==routeKeyRef.current){
+    restoringScrollRef.current=true;
    }
    if(h==='course'){
     if(!parsed.courseId){setPage('dashboard');window.location.hash='#/dashboard';return}
