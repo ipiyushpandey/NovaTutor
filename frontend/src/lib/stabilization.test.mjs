@@ -378,7 +378,7 @@ test('security & stabilization source invariants hold across frontend files', ()
   assert.match(stylesCss, /\.community-side\{[^}]*height:auto!important;min-height:0!important/);
 
   // 9. ADDITIONAL SCOPE (Section 13): AI Chat mobile actions & delete history confirmation
-  assert.match(stylesCss, /\.chat-history-actions \.chat-action-btn\{display:inline-flex;align-items:center;gap:6px;padding:8px 11px;min-height:38px/);
+  assert.match(stylesCss, /\.chat-history-actions \.chat-action-btn\{display:inline-flex;align-items:center;gap:6px;padding:8px 11px;min-height:40px/);
   assert.match(stylesCss, /\.chat-history-actions \.chat-action-btn\{min-height:40px;padding:9px 12px;font-size:12px\}/);
   assert.match(stylesCss, /\.chat-delete-confirm\{min-height:40px/);
   assert.match(mainJsx, /\[confirmDelete,setConfirmDelete\]=useState\(false\)/);
