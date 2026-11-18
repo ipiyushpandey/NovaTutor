@@ -20,7 +20,7 @@ import './ui/premium.css';
 import {readWorkspace,writeWorkspace,workspaceKey,subscribeWorkspace,migrateWorkspaceIfNeeded,removeWorkspace} from './persistence/workspaceStore.js';
 import AiMarkdown, {normalizeAiText, mdInlineText} from './AiMarkdown.jsx';
 import {registerWorkspaceFlusher,beginNavigationPersistence} from './persistence/appWorkspace.js';
-import {readRuntimeState,writeRuntimeState,subscribeRuntimeState,getRuntimeModuleSnapshot,updateRuntimeState,removeRuntimeState} from './persistence/runtimeStore.js';
+import {readRuntimeState,writeRuntimeState,subscribeRuntimeState,getRuntimeModuleSnapshot,updateRuntimeState,removeRuntimeState,clearRuntimeUser} from './persistence/runtimeStore.js';
 import {api,apiStream,readUser,refreshSessionToken} from './lib/api.js';
 /* V69 FOUNDATION REPAIR — production curriculum + stable learning foundation */
 /* V51 VOICE SPEED + CHAT CONTROLS */
@@ -99,6 +99,8 @@ function useModulePersistence(userId,module,state,restore){
 
   const flushBeforeNavigation=()=>{
     clearTimeout(durableTimerRef.current);
+    const active=readUser();
+    if(!active||String(active.id)!==String(userId))return;
     if(hydrationRef.current===persistenceKey&&!pendingRestoreRef.current){
       const latest=stateRef.current;
       writeRuntimeState(userId,module,latest);
@@ -127,6 +129,8 @@ function useModulePersistence(userId,module,state,restore){
     if(typeof window!=='undefined'&&window.__novaWorkspaceFlushers)window.__novaWorkspaceFlushers.delete(persistenceKey);
     alive=false;
     pendingRestoreRef.current=false;
+    const active=readUser();
+    if(!active||String(active.id)!==String(userId))return;
     const latest=stateRef.current;
     writeRuntimeState(userId,module,latest);
     if(hydrationRef.current===persistenceKey)writeModuleState(userId,module,latest);
@@ -135,10 +139,14 @@ function useModulePersistence(userId,module,state,restore){
 
  useLayoutEffect(()=>{
   if(hydratedKey!==persistenceKey||hydrationRef.current!==persistenceKey||pendingRestoreRef.current)return;
+  const active=readUser();
+  if(!active||String(active.id)!==String(userId))return;
   stateRef.current=state;
   writeRuntimeState(userId,module,state);
   clearTimeout(durableTimerRef.current);
   durableTimerRef.current=setTimeout(()=>{
+    const cur=readUser();
+    if(!cur||String(cur.id)!==String(userId))return;
     if(hydrationRef.current===persistenceKey&&!pendingRestoreRef.current){
       writeModuleState(userId,module,stateRef.current);
     }
@@ -567,7 +575,49 @@ function App(){
  const [vp,setVp]=useState(()=>typeof window!=='undefined'&&window.matchMedia('(max-width:960px)').matches);
  useEffect(()=>{const mq=window.matchMedia('(max-width:960px)');const on=e=>{setVp(e.matches);if(!e.matches)setMobile(false)};mq.addEventListener('change',on);return()=>mq.removeEventListener('change',on)},[]);
  const [dark,setDark]=useState(()=>localStorage.getItem('nova_theme')==='dark');
- useEffect(()=>{const expire=()=>{setUser(null);setPage('login');window.location.hash='#/login'};window.addEventListener('nova-session-expired',expire);return()=>window.removeEventListener('nova-session-expired',expire)},[]);
+ const clearUserClientState=useCallback((exitingUser)=>{
+  const exitingId=exitingUser?.id;
+  const isGuest=String(exitingUser?.role||'').toUpperCase()==='GUEST';
+  bootstrappedUserRef.current=null;
+  localStorage.removeItem('ai_user');
+  localStorage.removeItem('nova_page');
+  localStorage.removeItem('nova_nav_stack');
+  ['nova_ai_language','nova_career_goal','nova_career_saved_at','daily_goal',
+   'nova_teaching_mode','nova_prepare_tab','nova_learning_studio_tab',
+   'nova_courses_cache','nova_ai_prefill','nova_open_course','nova_bookmarks','nova_exam_best']
+   .forEach(k=>{try{localStorage.removeItem(k)}catch{}});
+  try{
+   Object.keys(sessionStorage).filter(k=>k.startsWith('nova_scroll_v2:')).forEach(k=>sessionStorage.removeItem(k));
+  }catch{}
+  if(exitingId){
+   resetTransientLearningState(exitingId);
+   if(isGuest){
+    clearRuntimeUser(exitingId);
+    try{
+     const idStr=String(exitingId);
+     Object.keys(localStorage).filter(k=>
+      k.startsWith(`dsa_code_${idStr}_`)
+      || k.startsWith(`nova_runtime_v2_${idStr}_`)
+      || k.startsWith(`nova_workspace_${idStr}`)
+      || k.endsWith(`_${idStr}`)
+     ).forEach(k=>localStorage.removeItem(k));
+    }catch{}
+   }
+  }
+  setCourses([]);
+  setProgress([]);
+  setCourseId(null);
+  setLessonId(null);
+  setDsaSlug(null);
+  setGateTab('overview');
+  setMobile(false);
+  setUser(null);
+  setPage('login');
+  window.location.hash='#/login';
+ },[]);
+ const userRef=useRef(user);
+ userRef.current=user;
+ useEffect(()=>{const expire=()=>{clearUserClientState(userRef.current)};window.addEventListener('nova-session-expired',expire);return()=>window.removeEventListener('nova-session-expired',expire)},[clearUserClientState]);
  useEffect(()=>{document.documentElement.classList.toggle('dark',dark);document.documentElement.setAttribute('data-theme',dark?'dark':'light');localStorage.setItem('nova_theme',dark?'dark':'light')},[dark]);
 
  const routeKey=useMemo(()=>{
@@ -806,8 +856,8 @@ function App(){
   {id:'community',label:'More',items:[['community','Community',Users],['achievements','Achievements',Trophy],['career','Career',Briefcase],['about','About NovaTutor',Lightbulb],...(role==='ADMIN'?[['admin','Admin Panel',WandSparkles]]:[])]},
  ];
  const navActiveGroup=navModel.find(g=>g.items.some(([id])=>id===page))?.id;
- const logout=()=>{bootstrappedUserRef.current=null;persistBeforeNavigation('logout');if(role==='GUEST')api('/auth/guest',{method:'DELETE'}).catch(()=>{});resetTransientLearningState(user?.id);localStorage.removeItem('ai_user');localStorage.removeItem('nova_page');localStorage.removeItem('nova_nav_stack');setUser(null);setMobile(false);setPage('login');window.location.hash='#/login'};
- const switchAccount=()=>{bootstrappedUserRef.current=null;persistBeforeNavigation('switch-account');if(role==='GUEST')api('/auth/guest',{method:'DELETE'}).catch(()=>{});resetTransientLearningState(user?.id);localStorage.removeItem('ai_user');localStorage.removeItem('nova_page');localStorage.removeItem('nova_nav_stack');setUser(null);setMobile(false);setPage('login');window.location.hash='#/login'};
+ const logout=()=>{if(role!=='GUEST'){persistBeforeNavigation('logout')}else{api('/auth/guest',{method:'DELETE'}).catch(()=>{})}clearUserClientState(user)};
+ const switchAccount=()=>{if(role!=='GUEST'){persistBeforeNavigation('switch-account')}else{api('/auth/guest',{method:'DELETE'}).catch(()=>{})}clearUserClientState(user)};
  const updateUser=next=>{const normalized={...(user||{}),...(next||{}),role:String(next?.role||user?.role||'STUDENT').toUpperCase()};localStorage.setItem('ai_user',JSON.stringify(normalized));setUser(normalized)};
  if(!user)return <Auth onLogin={u=>{bootstrappedUserRef.current=null;const next={...u,role:String(u.role||'STUDENT').toUpperCase()};resetTransientLearningState(next.id);localStorage.removeItem('nova_nav_stack');const needsProfile=next.role!=='ADMIN'&&next.profileComplete===false;const target=needsProfile?'onboarding':'dashboard';localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page',target);setUser(next);setPage(target);window.location.hash='#/'+target}} dark={dark} setDark={setDark}/>;
  return <div className="app app-topnav">
