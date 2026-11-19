@@ -1714,7 +1714,7 @@ function MasterySnapshot({user,go,sharedIntel}){
 
 
 function Stat({n,t}){return <div className="stat"><b>{n}</b><span>{t}</span></div>}
-function CourseCard({c,p,openCourse,i}){const percent=Math.round(p?.percent||0);const open=()=>openCourse(c.id);return <div className="course-card hover-lift clickable-card" onClick={open} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open()}}} role="button" tabIndex={0} aria-label={`${c.title}, ${percent}% complete`}><div className={'course-icon i'+i+' icon-rotate-subtle'}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:percent+'%'}}/></div><div className="course-foot"><small>{percent}% complete • {c.totalLessons} lessons</small><span className="course-card-arrow" aria-hidden="true"><ChevronRight size={14}/></span></div></div>}
+function CourseCard({c,p,openCourse,i}){const percent=Math.round(p?.percent||0);const open=()=>openCourse(c.id);const tints=['mint','blue','amber','violet','teal','rose'];const tint=tints[(i||0)%tints.length];return <div className={'course-card '+tint+' hover-lift clickable-card'} onClick={open} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open()}}} role="button" tabIndex={0} aria-label={`${c.title}, ${percent}% complete`}><div className={'course-icon i'+i+' icon-rotate-subtle'}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:percent+'%'}}/></div><div className="course-foot"><small>{percent}% complete • {c.totalLessons} lessons</small><span className="course-card-arrow" aria-hidden="true"><ChevronRight size={14}/></span></div></div>}
 function CoursePage({courseId,lessonId,onSelectLesson,courses,progress,refresh,onBack}){
  const [detail,setDetail]=useState(null),[error,setError]=useState('');
  const summary=courses.find(c=>String(c.id)===String(courseId));
@@ -1734,8 +1734,9 @@ function Courses({courses,progress,refresh,user,openCourse}){
  const handleOpen=id=>{if(openCourse){openCourse(id)}else{setSelected(id)}};
  if(error)return <div className="page-crash"><RefreshCw size={40}/><h2>Course could not load</h2><p>{error}</p><button className="secondary" onClick={()=>{setError('');setSelected(null)}}>Back</button></div>;
  if(detail)return <CourseDetail detail={detail} progress={progress.find(x=>x.courseId===detail.course.id)} refresh={refresh} back={()=>{setSelected(null);setDetail(null)}}/>;
+ const tints=['mint','blue','amber','violet','teal','rose'];
  return <><div className="page-title"><span className="eyebrow">CURRICULUM</span><h1>My <span>Learning.</span></h1><p>Detailed theory, examples and AI help — no videos required.</p></div><div className="course-filters"><input placeholder="Search courses…" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="Level" value={level} onChange={e=>setLevel(e.target.value)}><option>All</option><option>Beginner</option><option>Intermediate</option><option>Advanced</option></select></div>
-  {courses.length===0?<div className="empty-page"><BookOpen size={48}/><h3>No courses available yet</h3><p>Courses could not be loaded from the server right now. Check your connection and try reloading.</p><button className="primary" onClick={refresh}>Reload courses</button></div>:<div className="course-grid stagger-reveal">{visible.map((c,i)=><div className="course-card big hover-lift clickable-card" key={c.id} role="button" tabIndex={0} onClick={()=>handleOpen(c.id)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();handleOpen(c.id)}}}><div className={'course-icon i'+i+' icon-rotate-subtle'}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:(progress.find(x=>x.courseId===c.id)?.percent||0)+'%'}}/></div><div className="course-foot"><small>{progress.find(x=>x.courseId===c.id)?.completedLessons||0}/{c.totalLessons} lessons done</small><span className="course-card-arrow" aria-hidden="true"><ChevronRight size={14}/></span></div></div>)}</div>}
+  {courses.length===0?<div className="empty-page"><BookOpen size={48}/><h3>No courses available yet</h3><p>Courses could not be loaded from the server right now. Check your connection and try reloading.</p><button className="primary" onClick={refresh}>Reload courses</button></div>:<div className="course-grid stagger-reveal">{visible.map((c,i)=><div className={'course-card big '+tints[i%tints.length]+' hover-lift clickable-card'} key={c.id} role="button" tabIndex={0} onClick={()=>handleOpen(c.id)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();handleOpen(c.id)}}}><div className={'course-icon i'+i+' icon-rotate-subtle'}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:(progress.find(x=>x.courseId===c.id)?.percent||0)+'%'}}/></div><div className="course-foot"><small>{progress.find(x=>x.courseId===c.id)?.completedLessons||0}/{c.totalLessons} lessons done</small><span className="course-card-arrow" aria-hidden="true"><ChevronRight size={14}/></span></div></div>)}</div>}
  </>;
 }
 function TheoryContent({content}){
@@ -2181,12 +2182,71 @@ createRoot(document.getElementById('root')).render(<ErrorBoundary><App/></ErrorB
    nav regions, Escape closes, click-outside closes, focus ring on all
    interactive elements. No AI status, no refresh, no technical controls.
    ===================================================================== */
+function ThemeToggle({dark,setDark}){
+ return (
+  <button
+   type="button"
+   role="switch"
+   aria-checked={Boolean(dark)}
+   aria-label={dark?'Switch to bright theme':'Switch to dark theme'}
+   title={dark?'Switch to bright theme':'Switch to dark theme'}
+   className={'theme-toggle'+(dark?' dark':'')}
+   onClick={()=>setDark(d=>!d)}
+  >
+   <span className="theme-toggle-track">
+    <span className="theme-toggle-icon sun" aria-hidden="true">
+     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="4.5"/>
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+     </svg>
+    </span>
+    <span className="theme-toggle-icon moon" aria-hidden="true">
+     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+     </svg>
+    </span>
+    <span className="theme-toggle-thumb" aria-hidden="true">
+     {dark ? (
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+       <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+     ) : (
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
+       <circle cx="12" cy="12" r="4.5"/>
+       <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" stroke="currentColor" strokeWidth="2.5" fill="none"/>
+      </svg>
+     )}
+    </span>
+   </span>
+  </button>
+ );
+}
+
 function TopNav({user,role,page,go,dark,setDark,navModel,activeGroup,mobile,setMobile,vp,logout,aiConfigured}){
  // Dropdowns start closed and render as floating overlays (zero layout shift).
  const [openMenu,setOpenMenu]=useState(null);
  const [accountOpen,setAccountOpen]=useState(false);
  const rootRef=useRef(null);
+ const hoverTimerRef=useRef(null);
  const firstPage=useRef(page);
+
+ const handleMenuEnter=id=>{
+  if(vp)return;
+  if(hoverTimerRef.current)clearTimeout(hoverTimerRef.current);
+  setOpenMenu(id);
+ };
+ const handleMenuLeave=()=>{
+  if(vp)return;
+  if(hoverTimerRef.current)clearTimeout(hoverTimerRef.current);
+  hoverTimerRef.current=setTimeout(()=>{
+   setOpenMenu(null);
+  },160);
+ };
+
+ useEffect(()=>{
+  return()=>{if(hoverTimerRef.current)clearTimeout(hoverTimerRef.current)};
+ },[]);
+
  useEffect(()=>{
   const close=e=>{if(rootRef.current&&!rootRef.current.contains(e.target)){setOpenMenu(null);setAccountOpen(false)}};
   const esc=e=>{if(e.key==='Escape'){setOpenMenu(null);setAccountOpen(false);setMobile(false)}};
@@ -2217,7 +2277,12 @@ function TopNav({user,role,page,go,dark,setDark,navModel,activeGroup,mobile,setM
      {navModel.map(g=>{
       const isOpen=openMenu===g.id;
       const groupActive=activeGroup===g.id;
-      return <div className="topnav-menu" key={g.id}>
+      return <div
+       className="topnav-menu"
+       key={g.id}
+       onMouseEnter={()=>handleMenuEnter(g.id)}
+       onMouseLeave={handleMenuLeave}
+      >
        <button
         className={'topnav-menu-btn'+(isOpen?' open':'')+(groupActive?' current':'')}
         aria-expanded={isOpen} aria-haspopup="true"
@@ -2236,6 +2301,7 @@ function TopNav({user,role,page,go,dark,setDark,navModel,activeGroup,mobile,setM
     <div className="topnav-right">
      {!vp&&<GlobalSearch courses={coursesSafe()} go={go}/>}
      {!vp&&<button className={'topnav-icon-btn'+(page==='notifications'?' has-badge':'')} aria-label="Today's plan" title="Today's plan" onClick={()=>go('notifications')}><Bell size={17}/></button>}
+     <ThemeToggle dark={dark} setDark={setDark}/>
      <div className="topnav-account">
       <button className={'topnav-avatar'+(accountOpen?' open':'')} aria-expanded={accountOpen} aria-haspopup="true" aria-label="Account menu" onClick={()=>setAccountOpen(x=>!x)}>{initial}</button>
       {accountOpen&&<div className="topnav-panel account-panel" role="menu">

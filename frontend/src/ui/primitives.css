@@ -69,6 +69,12 @@
 .nv-badge--success{background:var(--success-soft);color:var(--success)}
 .nv-badge--warning{background:var(--warning-soft);color:var(--warning)}
 .nv-badge--danger{background:var(--danger-soft);color:var(--danger)}
+.nv-badge--mint{background:var(--tint-mint-bg);color:var(--tint-mint);border-color:var(--tint-mint-border)}
+.nv-badge--blue{background:var(--tint-blue-bg);color:var(--tint-blue);border-color:var(--tint-blue-border)}
+.nv-badge--amber{background:var(--tint-amber-bg);color:var(--tint-amber);border-color:var(--tint-amber-border)}
+.nv-badge--violet{background:var(--tint-violet-bg);color:var(--tint-violet);border-color:var(--tint-violet-border)}
+.nv-badge--rose{background:var(--tint-rose-bg);color:var(--tint-rose);border-color:var(--tint-rose-border)}
+.nv-badge--teal{background:var(--tint-teal-bg);color:var(--tint-teal);border-color:var(--tint-teal-border)}
 
 /* ============ Inputs ============ */
 .nv-field{display:grid;gap:6px}

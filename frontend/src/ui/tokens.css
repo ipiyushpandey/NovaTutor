@@ -57,6 +57,32 @@
   --live:#6B5CE7;      /* AI / streaming / live state (only place violet survives) */
   --live-soft:#EFEDFC;
 
+  /* ---- Notion-Inspired Semantic Palette (Light Mode) ---- */
+  /* Mint / Emerald (DSA, Algorithms, Code, Programming) */
+  --tint-mint:#1E7A5F;
+  --tint-mint-bg:#EBF7F2;
+  --tint-mint-border:#C8EADB;
+  /* Indigo / Slate Blue (Systems, OS, Architecture, Networks, DBMS) */
+  --tint-blue:#2563EB;
+  --tint-blue-bg:#EEF4FF;
+  --tint-blue-border:#D1E0FF;
+  /* Amber / Warm Honey (GATE CSE, Math, Logic, XP, Milestones) */
+  --tint-amber:#B45309;
+  --tint-amber-bg:#FEF7EE;
+  --tint-amber-border:#FBE2C5;
+  /* Violet / Iris (AI Studio, AI Teacher, Mentorship, Doubt Solver) */
+  --tint-violet:#7C3AED;
+  --tint-violet-bg:#F5F1FD;
+  --tint-violet-border:#DDD1F8;
+  /* Rose / Coral (Alerts, Deadlines, Critical Milestones) */
+  --tint-rose:#E11D48;
+  --tint-rose-bg:#FFF1F2;
+  --tint-rose-border:#FECDD3;
+  /* Teal / Cyan (Career, Analytics, Primitives) */
+  --tint-teal:#0D9488;
+  --tint-teal-bg:#F0FDFA;
+  --tint-teal-border:#CCFBF1;
+
   /* ---- Color · code surfaces (both modes; editor stays dark for focus) ---- */
   --code-bg:#171A23;
   --code-border:#2A2E3C;
@@ -153,6 +179,32 @@
   --danger:#E5766B;   --danger-soft:#3A1D1A;
   --info:#7FB3D8;     --info-soft:#1A2A36;
   --live:#8B7CF7;     --live-soft:#1F1B33;
+
+  /* ---- Notion-Inspired Semantic Palette (Dark Mode) ---- */
+  /* Mint / Emerald (DSA, Algorithms, Code, Programming) */
+  --tint-mint:#4ED2AC;
+  --tint-mint-bg:#132D24;
+  --tint-mint-border:#1E4D3D;
+  /* Indigo / Slate Blue (Systems, OS, Architecture, Networks, DBMS) */
+  --tint-blue:#7CA7ED;
+  --tint-blue-bg:#162238;
+  --tint-blue-border:#22385C;
+  /* Amber / Warm Honey (GATE CSE, Math, Logic, XP, Milestones) */
+  --tint-amber:#E8B45A;
+  --tint-amber-bg:#2E2214;
+  --tint-amber-border:#4D3720;
+  /* Violet / Iris (AI Studio, AI Teacher, Mentorship, Doubt Solver) */
+  --tint-violet:#A78DF5;
+  --tint-violet-bg:#271E3B;
+  --tint-violet-border:#423063;
+  /* Rose / Coral (Alerts, Deadlines, Critical Milestones) */
+  --tint-rose:#FB7185;
+  --tint-rose-bg:#381820;
+  --tint-rose-border:#5E2632;
+  /* Teal / Cyan (Career, Analytics, Primitives) */
+  --tint-teal:#2DD4BF;
+  --tint-teal-bg:#122B29;
+  --tint-teal-border:#1D4B46;
 
   --code-bg:#12151D;
   --code-border:#262B38;
