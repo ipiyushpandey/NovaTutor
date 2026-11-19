@@ -34,6 +34,7 @@ function useScrollReveal(containerRef, deps = []) {
   if (typeof window === 'undefined') return;
   const isReduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const root = containerRef?.current || document;
+  const targetRoot = root.querySelector?.('main') || root.body || root;
   const observeAll = (obs) => {
    const elements = root.querySelectorAll('.reveal:not(.in-view), .stagger-reveal:not(.in-view)');
    elements.forEach(el => {
@@ -59,12 +60,25 @@ function useScrollReveal(containerRef, deps = []) {
   observeAll(io);
   let rafId = null;
   const mo = new MutationObserver((mutations) => {
-   const hasAdded = mutations.some(m => m.addedNodes && m.addedNodes.length > 0);
-   if (!hasAdded) return;
+   let hasPotentialReveal = false;
+   for (let i = 0; i < mutations.length; i++) {
+    const nodes = mutations[i].addedNodes;
+    for (let j = 0; j < nodes.length; j++) {
+     const n = nodes[j];
+     if (n.nodeType === 1) {
+      if (n.classList?.contains('reveal') || n.classList?.contains('stagger-reveal') || n.querySelector?.('.reveal, .stagger-reveal')) {
+       hasPotentialReveal = true;
+       break;
+      }
+     }
+    }
+    if (hasPotentialReveal) break;
+   }
+   if (!hasPotentialReveal) return;
    if (rafId) cancelAnimationFrame(rafId);
    rafId = requestAnimationFrame(() => observeAll(io));
   });
-  mo.observe(root.body || root, { childList: true, subtree: true });
+  mo.observe(targetRoot, { childList: true, subtree: true });
   return () => {
    if (rafId) cancelAnimationFrame(rafId);
    io.disconnect();
@@ -860,12 +874,26 @@ function App(){
   setMobile(false);
  };
 
- // Continuous scroll tracking keyed by full routeKey (e.g. course/1/lesson/27, dsa/two-sum, dashboard).
+ // Debounced scroll tracking keyed by full routeKey (e.g. course/1/lesson/27, dsa/two-sum, dashboard).
+ // Route navigation handlers save synchronously before transitions; debouncing scroll events
+ // eliminates main-thread sessionStorage serialization stutters on active touch and wheel gestures.
  useEffect(()=>{
-  let frame=0;
-  const save=()=>{if(frame)return;frame=requestAnimationFrame(()=>{frame=0;saveCurrentScroll()})};
+  let timer=null;
+  const save=()=>{
+   if(timer)clearTimeout(timer);
+   timer=setTimeout(()=>{
+    timer=null;
+    saveCurrentScroll();
+   },120);
+  };
   window.addEventListener('scroll',save,{passive:true});
-  return()=>{window.removeEventListener('scroll',save);if(frame)cancelAnimationFrame(frame)};
+  return()=>{
+   window.removeEventListener('scroll',save);
+   if(timer){
+    clearTimeout(timer);
+    saveCurrentScroll();
+   }
+  };
  },[routeKey]);
 
  // Deterministic scroll restoration: forward pushes start at 0; Back/Forward restores
@@ -1817,7 +1845,7 @@ ${lessonContext}`;
  const isDone=selectedLesson?sequenceFor(selectedLesson)<=completed:false;
  const [chaptersOpen,setChaptersOpen]=useState(false);
  const gotoLesson=l=>{if(l){setSelectedLesson(l);setChaptersOpen(false);if(onSelectLesson){onSelectLesson(l.id)}else{window.scrollTo({top:0})}}};
- return <><div className="page-title">{back&&<div style={{marginBottom:6}}><button type="button" className="text-btn course-back-btn" onClick={back}>← Back</button></div>}<span className="eyebrow">{c.level} • {c.totalLessons} THEORY LESSONS</span><h1>{c.title}</h1><p>{c.description}</p><div className="course-meta"><span>📚 {detail.lessons?.length||0} lessons</span><span>⏱️ ~{Math.max(5,(selectedLesson?.content||'').split(/\s+/).length/160|0)} min reading</span></div></div>{error&&<div className="error-banner">{error}</div>}<div className={'lesson-layout'+(chaptersOpen?' chapters-open':'')}><div className="lesson-list"><button className="chapters-toggle" onClick={()=>setChaptersOpen(o=>!o)} aria-expanded={chaptersOpen}>{chaptersOpen?'Hide chapters':'Chapters'} <ChevronRight size={14}/></button><div className="lesson-chapters"><div className="lesson-summary"><b>{Math.round(localProgress?.percent||0)}%</b><span>course progress • {detail.lessons?.length||0} lessons</span><div className="progress"><span style={{width:(localProgress?.percent||0)+'%'}}/></div></div>{groupedLessons.map(([topic,items],groupIndex)=><section className="lesson-topic-group" key={topic}><div className="lesson-topic-head"><span>{String(groupIndex+1).padStart(2,'0')}</span><div><b>{topic}</b><small>{items.length} lectures</small></div></div>{items.map((l,lectureIndex)=>{const lDone=sequenceFor(l)<=completed;return <div className={'lesson-item '+(selectedLesson?.id===l.id?'selected':'')+(lDone?' done':'')} key={l.id} onClick={()=>gotoLesson(l)}><div className="lesson-number">{lDone?'✓':lectureIndex+1}</div><div><b>{lectureLabel(l,lectureIndex)}</b><small>{lDone?'Completed • review anytime':'Theory ready • open anytime'}</small></div><button className="icon-btn" disabled={working} onClick={e=>{e.stopPropagation();launchTeacher(l)}} title="Open AI Teacher & learn"><PlayCircle size={18}/></button></div>})}</section>)}</div></div><div className="lesson-ai">{selectedLesson?<><div className="lesson-top-actions"><span className="eyebrow">LECTURE {lectureNumberFor(selectedLesson)} OF {flatLessons.length}</span><button className={'round-btn '+(bookmarked?'saved':'')} onClick={toggleBookmark} title="Bookmark lesson">★</button></div><h3>{lectureLabel(selectedLesson,lectureNumberFor(selectedLesson)-1)}</h3><div className="lesson-reading"><div className="lesson-content">{selectedLesson.content?<TheoryContent content={cleanLessonContent(selectedLesson.content)}/>:<div className="empty"><BookOpen/><b>No lesson content yet</b><span>Ask the AI teacher to explain the topic.</span></div>}</div></div><div className="lesson-bottombar"><button className="nv-icon-btn" disabled={!prevLesson} onClick={()=>gotoLesson(prevLesson)} aria-label="Previous lesson">←</button><button className={'primary '+(isDone?'ghosted':'')} disabled={working} onClick={()=>complete(selectedLesson.id)}>{working?'Saving…':isDone?'✓ Completed':'Mark lesson complete'}</button><button className="nv-icon-btn" disabled={!nextLesson} onClick={()=>gotoLesson(nextLesson)} aria-label="Next lesson">→</button></div><div className="lesson-actions"><button className="secondary" disabled={working} onClick={askAI}><Sparkles size={15}/> Explain with AI</button><button className="secondary" disabled={working} onClick={()=>launchTeacher(selectedLesson)}>{working?'Opening AI Teacher…':'Learn with AI Teacher'} <BrainCircuit size={15}/></button></div></>:<><BrainCircuit size={28}/><h3>Select a lesson</h3><p>Choose a theory lesson from the list.</p></>}</div></div></>;
+ return <><div className="page-title">{back&&<div style={{marginBottom:6}}><button type="button" className="text-btn course-back-btn" onClick={back}>← Back</button></div>}<span className="eyebrow">{c.level} • {c.totalLessons} THEORY LESSONS</span><h1>{c.title}</h1><p>{c.description}</p><div className="course-meta"><span>📚 {detail.lessons?.length||0} lessons</span><span>⏱️ ~{Math.max(5,(selectedLesson?.content||'').split(/\s+/).length/160|0)} min reading</span></div></div>{error&&<div className="error-banner">{error}</div>}<div className={'lesson-layout'+(chaptersOpen?' chapters-open':'')}><div className="lesson-list"><button className="chapters-toggle" onClick={()=>setChaptersOpen(o=>!o)} aria-expanded={chaptersOpen}>{chaptersOpen?'Hide chapters':'Chapters'} <ChevronRight size={14}/></button><div className="lesson-chapters"><div className="lesson-summary"><b>{Math.round(localProgress?.percent||0)}%</b><span>course progress • {detail.lessons?.length||0} lessons</span><div className="progress"><span style={{width:(localProgress?.percent||0)+'%'}}/></div></div>{groupedLessons.map(([topic,items],groupIndex)=><section className="lesson-topic-group" key={topic}><div className="lesson-topic-head"><span>{String(groupIndex+1).padStart(2,'0')}</span><div><b>{topic}</b><small>{items.length} lectures</small></div></div>{items.map((l,lectureIndex)=>{const lDone=sequenceFor(l)<=completed;return <div className={'lesson-item '+(selectedLesson?.id===l.id?'selected':'')+(lDone?' done':'')} key={l.id} onClick={()=>gotoLesson(l)}><div className="lesson-number">{lDone?'✓':lectureIndex+1}</div><div><b>{lectureLabel(l,lectureIndex)}</b><small>{lDone?'Completed • review anytime':'Theory ready • open anytime'}</small></div><button className="icon-btn" disabled={working} onClick={e=>{e.stopPropagation();launchTeacher(l)}} title="Open AI Teacher & learn"><PlayCircle size={18}/></button></div>})}</section>)}</div></div><div className="lesson-ai">{selectedLesson?<><div className="lesson-top-actions"><span className="eyebrow">LECTURE {lectureNumberFor(selectedLesson)} OF {flatLessons.length}</span><button className={'round-btn '+(bookmarked?'saved':'')} onClick={toggleBookmark} title="Bookmark lesson">★</button></div><h3>{lectureLabel(selectedLesson,lectureNumberFor(selectedLesson)-1)}</h3><div className="lesson-reading"><div className="lesson-content">{selectedLesson.content?<TheoryContent content={cleanLessonContent(selectedLesson.content)}/>:<div className="empty"><BookOpen/><b>No lesson content yet</b><span>Ask the AI teacher to explain the topic.</span></div>}</div></div><div className="lesson-bottombar"><button className="nv-icon-btn" disabled={!prevLesson} onClick={()=>gotoLesson(prevLesson)} aria-label="Previous lesson">←</button><button className={'primary '+(isDone?'ghosted':'')} disabled={working} onClick={()=>complete(selectedLesson.id)}>{working?'Saving…':isDone?'✓ Completed':'Mark lesson complete'}</button><button className="nv-icon-btn" disabled={!nextLesson} onClick={()=>gotoLesson(nextLesson)} aria-label="Next lesson">→</button></div><div className="lesson-actions"><button className="secondary" disabled={working} onClick={askAI}><Sparkles size={15}/> {working?'Opening AI Teacher…':'Explain with AI'}</button></div></>:<><BrainCircuit size={28}/><h3>Select a lesson</h3><p>Choose a theory lesson from the list.</p></>}</div></div></>;
 }
 function CodeLab({user}){
  const codeInitial=React.useMemo(()=>({language:'Java',mode:'EXPLAIN',hintLevel:1,code:'public class Main {\n    public static void main(String[] args) {\n        int[] nums = {2, 4, 6, 8};\n        int sum = 0;\n        for (int n : nums) sum += n;\n        System.out.println(sum);\n    }\n}',question:'',level:'beginner',answer:'',runResult:null}),[]);
