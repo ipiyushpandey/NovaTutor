@@ -40,4 +40,24 @@ class AiMetricsTest {
         assertEquals(0.0, snapshot.get("failureRate"));
         assertTrue(((List<?>) snapshot.get("tasks")).isEmpty());
     }
+
+    @Test
+    void tracksDailyUsageAndQuotaLimitsAccurately() {
+        AiMetrics metrics = new AiMetrics(100);
+        metrics.record("TUTOR", 500, true);
+        metrics.record("QA", 400, true);
+
+        Map<String, Object> snapshot = metrics.snapshot();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> quota = (Map<String, Object>) snapshot.get("dailyQuota");
+        assertNotNull(quota);
+        assertEquals(2L, quota.get("todayRequests"));
+        assertEquals(100, quota.get("dailyLimit"));
+        assertEquals(98L, quota.get("remainingQuota"));
+        assertEquals(2.0, quota.get("percentConsumed"));
+        assertEquals(98.0, quota.get("percentRemaining"));
+        assertEquals("NORMAL", quota.get("limitStatus"));
+        assertNotNull(quota.get("resetAt"));
+        assertTrue(String.valueOf(quota.get("resetSchedule")).contains("00:00 UTC"));
+    }
 }

@@ -267,7 +267,7 @@ public class GeminiProvider implements AiProvider {
 
     private Map<String, Object> buildBody(String prompt, AiTask task, boolean compact) {
         int taskOutputTokens = switch (task) {
-            case TUTOR, ADAPTIVE_TUTOR -> Math.min(maxOutputTokens, 9000);
+            case TUTOR, ADAPTIVE_TUTOR -> Math.min(maxOutputTokens, 3500);
             case CODE, CODING -> Math.min(maxOutputTokens, 3500);
             case STUDY_PLAN, EXAM_STRATEGY -> Math.min(maxOutputTokens, 4500);
             case SUMMARIZE -> Math.min(maxOutputTokens, 3500);

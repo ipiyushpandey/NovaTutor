@@ -13,16 +13,105 @@ const ArrowLeft=p=><NovaIcon name="ChevronLeft" {...p}/>; const Users=p=><NovaIc
      backend; deleted users are revoked immediately because every request
      re-validates the account against the database). */
 
-function BrandMark({size=24}){
- return <svg className="brand-mark" width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden="true">
-  <rect x="1" y="1" width="30" height="30" rx="9.5" fill="var(--ink)"/>
-  <path d="M9.4 23.2V10.6a1 1 0 0 1 1.72-.7L21.3 21.6" stroke="var(--on-ink)" strokeWidth="2.55" strokeLinecap="round" strokeLinejoin="round"/>
-  <path d="M22.6 8.8v12.7" stroke="var(--on-ink)" strokeWidth="2.55" strokeLinecap="round"/>
-  <circle cx="24.7" cy="6.9" r="2.1" fill="var(--live)"/>
- </svg>;
+function AdminThemeToggle({dark,setDark}){
+ return (
+  <button
+   type="button"
+   role="switch"
+   aria-checked={Boolean(dark)}
+   aria-label={dark?'Switch to bright theme':'Switch to dark theme'}
+   title={dark?'Switch to bright theme':'Switch to dark theme'}
+   className={'theme-toggle'+(dark?' dark':'')}
+   onClick={()=>setDark?.(d=>!d)}
+  >
+   <span className="theme-toggle-track">
+    <span className="theme-toggle-icon sun" aria-hidden="true">
+     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="4.5"/>
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+     </svg>
+    </span>
+    <span className="theme-toggle-icon moon" aria-hidden="true">
+     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+     </svg>
+    </span>
+    <span className="theme-toggle-thumb" aria-hidden="true"/>
+   </span>
+  </button>
+ );
 }
 
-export default function AdminControlCenter({user,courses:propCourses=[],refreshCourses,api,onBack}){
+function DailyQuotaCard({usage,onRefresh,compact=false}){
+ const q=usage?.dailyQuota||{};
+ const today=q.todayRequests??usage?.totalRequests??0;
+ const limit=q.dailyLimit??1500;
+ const remaining=q.remainingQuota??Math.max(0,limit-today);
+ const pctConsumed=q.percentConsumed??(limit>0?Math.round((today/limit)*1000)/10:0);
+ const pctRemaining=q.percentRemaining??Math.max(0,Math.round((100-pctConsumed)*10)/10);
+ const status=q.limitStatus||(today>=limit?'EXHAUSTED':today>=(limit*0.8)?'APPROACHING_LIMIT':'NORMAL');
+ const statusColor=status==='EXHAUSTED'?'red':status==='APPROACHING_LIMIT'?'amber':'green';
+ const statusText=status==='EXHAUSTED'?'Quota Exhausted':status==='APPROACHING_LIMIT'?'Approaching Limit':'Normal Operational';
+ const resetText=q.resetSchedule||'Resets daily at 00:00 UTC (05:30 IST)';
+
+ return (
+  <section className={'ac-panel ac-quota-panel'+(compact?' compact':'')}>
+   <div className="ac-quota-top">
+    <div>
+     <span className="eyebrow">DAILY USAGE LIMIT & RATE CONTROL</span>
+     <h2 className="ac-quota-title">AI Request Quota & Daily Limit</h2>
+     <p className="ac-quota-sub">Backend-enforced rate limits and daily quota tracking for Gemini AI. {resetText}</p>
+    </div>
+    <div className="ac-quota-badges">
+     <span className={'ac-pill '+statusColor}>{statusText}</span>
+     {onRefresh&&<button className="secondary compact" onClick={onRefresh} title="Refresh AI metrics"><RefreshCw size={13}/> Refresh</button>}
+    </div>
+   </div>
+
+   <div className="ac-quota-progress-container">
+    <div className="ac-quota-progress-labels">
+     <span><b>{today.toLocaleString()}</b> requests used today</span>
+     <span><b>{remaining.toLocaleString()}</b> remaining of <b>{limit.toLocaleString()}</b> daily limit</span>
+    </div>
+    <div className="ac-quota-progress-track" role="progressbar" aria-valuenow={pctConsumed} aria-valuemin="0" aria-valuemax="100">
+     <div
+      className={'ac-quota-progress-fill '+statusColor}
+      style={{width:`${Math.min(100,Math.max(today>0?2:0,pctConsumed))}%`}}
+     />
+    </div>
+    <div className="ac-quota-pct-row">
+     <span>{pctConsumed}% consumed</span>
+     <span>{pctRemaining}% quota available</span>
+    </div>
+   </div>
+
+   <div className="ac-quota-grid">
+    <div className="ac-quota-box">
+     <span className="ac-quota-box-label">Today's Usage</span>
+     <b className="ac-quota-box-val">{today.toLocaleString()}</b>
+     <small className="ac-quota-box-sub">Live synchronized count</small>
+    </div>
+    <div className="ac-quota-box">
+     <span className="ac-quota-box-label">Configured Daily Limit</span>
+     <b className="ac-quota-box-val">{limit.toLocaleString()}</b>
+     <small className="ac-quota-box-sub">Daily threshold cap</small>
+    </div>
+    <div className="ac-quota-box">
+     <span className="ac-quota-box-label">Remaining Quota</span>
+     <b className={'ac-quota-box-val '+statusColor}>{remaining.toLocaleString()}</b>
+     <small className="ac-quota-box-sub">{pctRemaining}% of budget free</small>
+    </div>
+    <div className="ac-quota-box">
+     <span className="ac-quota-box-label">Quota Reset Schedule</span>
+     <b className="ac-quota-box-val reset">00:00 UTC</b>
+     <small className="ac-quota-box-sub">05:30 IST / Auto-resets daily</small>
+    </div>
+   </div>
+  </section>
+ );
+}
+
+export default function AdminControlCenter({user,courses:propCourses=[],refreshCourses,api,onBack,dark,setDark}){
  const [tab,setTab]=useState('dashboard');
  const [loading,setLoading]=useState(true),[error,setError]=useState('');
  const [adminCourses,setAdminCourses]=useState(propCourses||[]);
@@ -163,57 +252,82 @@ export default function AdminControlCenter({user,courses:propCourses=[],refreshC
   <header className="ac-topbar">
    <div className="ac-topbar-inner">
     <div className="ac-topbar-left">
-     <button className="ac-back-btn" onClick={onBack} title="Back to NovaTutor" aria-label="Back to NovaTutor Main App">
-      <ArrowLeft size={14}/> <span>Exit to App</span>
+     <button
+      className={'ac-nav-toggle'+(navOpen?' open':'')}
+      aria-expanded={navOpen}
+      aria-controls="admin-nav"
+      aria-label="Open Admin Navigation Menu"
+      onClick={()=>setNavOpen(x=>!x)}
+     >
+      <Menu size={18}/> <span>Admin Menu</span>
      </button>
-     <div className="ac-brand">
-      <BrandMark size={24}/>
-      <h1 className="ac-brand-title">NovaTutor <span className="ac-brand-sub">Admin</span></h1>
-      <span className="ac-role-badge">CONSOLE</span>
+     <div className="ac-breadcrumb" aria-label="Current section">
+      <span className="ac-bc-root">Admin</span>
+      <span className="ac-bc-sep">/</span>
+      <span className="ac-bc-curr">{nav.find(([id])=>id===tab)?.[1]||'Dashboard'}</span>
      </div>
      <div className="ac-topbar-health">
-      <span className="ac-health-pill ok" title="API Status"><span className="pulse-dot"/> API Online</span>
+      <span className="ac-health-pill ok" title="API Status"><span className="pulse-dot"/> Online</span>
       <span className="ac-health-pill ok" title="Database Connected"><span className="pulse-dot"/> DB Connected</span>
       <span className={'ac-health-pill '+(aiStatus?.configured?'ok':'warn')} title="AI Status"><span className="pulse-dot"/> {aiStatus?.configured?'AI Ready':'AI Config Required'}</span>
      </div>
     </div>
     <div className="ac-topbar-right">
-     <button className="ac-btn-icon" onClick={loadAll} title="Refresh console data" aria-label="Refresh console data">
-      <RefreshCw size={15}/>
-     </button>
+     <AdminThemeToggle dark={dark} setDark={setDark}/>
      <div className="ac-user-pill" title={user?.email}>
-      <span className="ac-user-avatar">{user.name?.[0]?.toUpperCase()||'A'}</span>
+      <span className="ac-user-avatar">{user?.name?.[0]?.toUpperCase()||'A'}</span>
       <span className="ac-user-email">{user?.email}</span>
+      <span className="ac-user-role-badge">ADMIN</span>
      </div>
-     <button
-      className={'ac-nav-toggle'+(navOpen?' open':'')}
-      aria-expanded={navOpen}
-      aria-controls="admin-nav"
-      aria-label="Admin sections menu"
-      onClick={()=>setNavOpen(x=>!x)}
-     >
-      <Menu size={16}/> <span>{nav.find(([id])=>id===tab)?.[1]||'Menu'}</span>
+     <button className="ac-back-btn" onClick={onBack} title="Exit to NovaTutor Main App" aria-label="Exit to NovaTutor Main App">
+      <ArrowLeft size={14}/> <span>Exit to App</span>
      </button>
-    </div>
-   </div>
-   {navOpen&&<div className="ac-nav-backdrop" onClick={()=>setNavOpen(false)} aria-hidden="true"/>}
-   <div id="admin-nav" className={'ac-nav'+(navOpen?' open':'')} role="navigation" aria-label="Admin sections">
-    <div className="ac-nav-mobile-head">
-     <span>ADMIN SECTIONS</span>
-     <button type="button" className="ac-nav-close" onClick={()=>setNavOpen(false)} aria-label="Close menu">✕</button>
-    </div>
-    <div className="ac-nav-scroll">
-     {nav.map(([id,label,I])=><button key={id} className={'ac-nav-tab'+(tab===id?' active':'')} onClick={()=>{setTab(id);setQuery('');setNavOpen(false)}}><I size={15}/> <span>{label}</span></button>)}
     </div>
    </div>
   </header>
+  {navOpen&&<div className="ac-nav-backdrop" onClick={()=>setNavOpen(false)} aria-hidden="true"/>}
+  <aside id="admin-nav" className={'ac-nav-drawer'+(navOpen?' open':'')} role="navigation" aria-label="Admin Navigation Drawer">
+   <div className="ac-drawer-head">
+    <div>
+     <span className="ac-drawer-eyebrow">CONTROL CONSOLE</span>
+     <h2 className="ac-drawer-title">Admin Navigation</h2>
+    </div>
+    <button type="button" className="ac-drawer-close" onClick={()=>setNavOpen(false)} aria-label="Close navigation menu">✕</button>
+   </div>
+   <div className="ac-drawer-scroll">
+    <div className="ac-drawer-group-label">ALL SECTIONS ({nav.length})</div>
+    {nav.map(([id,label,I])=>(
+     <button
+      key={id}
+      className={'ac-drawer-item'+(tab===id?' active':'')}
+      onClick={()=>{setTab(id);setQuery('');setNavOpen(false)}}
+     >
+      <div className="ac-drawer-icon-wrap"><I size={17}/></div>
+      <span className="ac-drawer-label">{label}</span>
+      {tab===id&&<span className="ac-drawer-active-dot" aria-hidden="true">•</span>}
+     </button>
+    ))}
+   </div>
+   <div className="ac-drawer-footer">
+    <div className="ac-drawer-user-info">
+     <span className="ac-user-avatar">{user?.name?.[0]?.toUpperCase()||'A'}</span>
+     <div>
+      <b>{user?.name||'Administrator'}</b>
+      <small>{user?.email}</small>
+     </div>
+    </div>
+    <button className="ac-drawer-exit-btn" onClick={onBack}>
+     <ArrowLeft size={13}/> <span>Return to Main App</span>
+    </button>
+   </div>
+  </aside>
   <main className="ac-body">
-  {tab==='dashboard'&&<><div className="ac-stats"><Stat label="Total users" value={dash?.users??0} icon={<Users size={19}/>}/><Stat label="Active users" value={dash?.activeUsers??0} icon={<CheckCircle2 size={19}/>}/><Stat label="Courses" value={dash?.courses??0} icon={<BookOpen size={19}/>}/><Stat label="Published courses" value={dash?.publishedCourses??0} icon={<BookOpen size={19}/>}/><Stat label="Lessons" value={dash?.lessons??0} icon={<FileText size={19}/>}/><Stat label="Questions" value={dash?.questions??0} icon={<Target size={19}/>}/><Stat label="Quiz attempts" value={dash?.attempts??0} icon={<BarChart3 size={19}/>}/><Stat label="Audit events" value={dash?.auditEvents??0} icon={<ShieldCheck size={19}/>}/></div><div className="ac-grid"><section className="ac-panel"><PanelTitle title="Operational snapshot" sub="Live backend-backed counts"/><div className="ac-health-list"><div><span>Backend</span><b className="ok">Operational</b></div><div><span>Database</span><b className="ok">Connected</b></div><div><span>AI provider</span><b className={aiStatus?.configured?'ok':'warn'}>{aiStatus?.configured?'Configured':'Configuration required'}</b></div><div><span>Current admin</span><b>{user?.email}</b></div></div></section><section className="ac-panel"><PanelTitle title="Recent admin activity" sub="Latest 6 audit events"/><div className="ac-activity">{audit.slice(0,6).map(x=><div key={x.id}><b>{x.action}</b><span>{x.target||'Platform'} • {new Date(x.createdAt).toLocaleString()}</span></div>)}{!audit.length&&<Empty text="No admin activity recorded yet."/>}</div></section></div></>}
+  {tab==='dashboard'&&<><DailyQuotaCard usage={aiUsage} onRefresh={()=>api('/admin/ai/usage').then(setAiUsage).catch(()=>{})} compact/><div className="ac-stats"><Stat label="Total users" value={dash?.users??0} icon={<Users size={19}/>}/><Stat label="Active users" value={dash?.activeUsers??0} icon={<CheckCircle2 size={19}/>}/><Stat label="Courses" value={dash?.courses??0} icon={<BookOpen size={19}/>}/><Stat label="Published courses" value={dash?.publishedCourses??0} icon={<BookOpen size={19}/>}/><Stat label="Lessons" value={dash?.lessons??0} icon={<FileText size={19}/>}/><Stat label="Questions" value={dash?.questions??0} icon={<Target size={19}/>}/><Stat label="Quiz attempts" value={dash?.attempts??0} icon={<BarChart3 size={19}/>}/><Stat label="Audit events" value={dash?.auditEvents??0} icon={<ShieldCheck size={19}/>}/></div><div className="ac-grid"><section className="ac-panel"><PanelTitle title="Operational snapshot" sub="Live backend-backed counts"/><div className="ac-health-list"><div><span>Backend</span><b className="ok">Operational</b></div><div><span>Database</span><b className="ok">Connected</b></div><div><span>AI provider</span><b className={aiStatus?.configured?'ok':'warn'}>{aiStatus?.configured?'Configured':'Configuration required'}</b></div><div><span>Current admin</span><b>{user?.email}</b></div></div></section><section className="ac-panel"><PanelTitle title="Recent admin activity" sub="Latest 6 audit events"/><div className="ac-activity">{audit.slice(0,6).map(x=><div key={x.id}><b>{x.action}</b><span>{x.target||'Platform'} • {new Date(x.createdAt).toLocaleString()}</span></div>)}{!audit.length&&<Empty text="No admin activity recorded yet."/>}</div></section></div></>}
    {tab==='users'&&<section className="ac-panel"><Toolbar title="User Management" sub="Verify accounts and recover passwords even when email delivery is unavailable. Search, secure status controls, roles and deletion." query={query} setQuery={setQuery} refresh={loadAll}/><div className="ac-bulkbar"><label className="ac-check"><input type="checkbox" checked={filteredUsers.filter(u=>u.role!=='ADMIN').length>0&&filteredUsers.filter(u=>u.role!=='ADMIN').every(u=>selectedUsers.includes(u.id))} onChange={selectAllUsers}/> Select all</label><span>{selectedUsers.length} selected</span><button className="danger-btn compact" disabled={!selectedUsers.length||!!busy} onClick={bulkDeleteUsers}><Trash2 size={14}/> Delete selected</button></div><div className="ac-table-wrap"><div className="ac-table">{filteredUsers.map(u=><div className={'ac-row'+(selectedUsers.includes(u.id)?' selected':'')} key={u.id}><div className="ac-avatar">{u.name?.[0]?.toUpperCase()||'U'}</div><div className="ac-user-main"><input type="checkbox" aria-label={`Select ${u.email}`} checked={selectedUsers.includes(u.id)} disabled={u.role==='ADMIN'} onChange={()=>toggleSelectUser(u.id)}/><div><b>{u.name}</b><span>{u.email}</span></div></div><div className="ac-user-badges"><span className={'ac-pill '+(u.role==='ADMIN'?'purple':'')}>{u.role}</span><span className={'ac-pill '+(u.emailVerified?'green':'amber')}>{u.emailVerified?'VERIFIED':'UNVERIFIED'}</span><span className={'ac-pill '+(u.blocked?'red':u.active?'green':'amber')}>{u.blocked?'BLOCKED':u.active?'ACTIVE':'INACTIVE'}</span></div><div className="ac-actions">{u.role!=='ADMIN'&&<>{!u.emailVerified&&<button className="secondary compact" onClick={()=>verifyUser(u)} disabled={!!busy}>Verify</button>}<button className="secondary compact" onClick={()=>resetPassword(u)} disabled={!!busy}>Reset password</button><button className="secondary compact" onClick={()=>toggleUser(u,'block')} disabled={!!busy}>{u.blocked?'Unblock':'Block'}</button><button className="secondary compact" onClick={()=>toggleUser(u,'active')} disabled={!!busy}>{u.active?'Deactivate':'Activate'}</button><button className="secondary compact" onClick={()=>changeRole(u)} disabled={!!busy}>Role</button><button className="danger-btn compact" onClick={()=>deleteUser(u)} disabled={!!busy} title="Permanently delete this user"><Trash2 size={14}/> Delete</button></>}</div></div>)}{!filteredUsers.length&&<Empty text="No matching users."/>}</div></div></section>}
   {tab==='courses'&&<><div className="ac-grid"><section className="ac-panel"><PanelTitle title="Course Management" sub="Create, publish and safely remove curriculum."/><div className="ac-form-grid"><input placeholder="Course title" value={courseForm.title} onChange={e=>setCourseForm({...courseForm,title:e.target.value})}/><input placeholder="Icon" value={courseForm.icon} onChange={e=>setCourseForm({...courseForm,icon:e.target.value})}/><select value={courseForm.level} onChange={e=>setCourseForm({...courseForm,level:e.target.value})}><option>Beginner</option><option>Intermediate</option><option>Advanced</option></select><textarea placeholder="Course description" value={courseForm.description} onChange={e=>setCourseForm({...courseForm,description:e.target.value})}/></div><button className="primary" disabled={busy==='course-create'} onClick={createCourse}><Plus size={15}/> Create course</button></section><section className="ac-panel"><PanelTitle title="Lecture Builder" sub="Group lessons by topic/category."/><select value={courseId} onChange={e=>setCourseId(e.target.value)}><option value="">Choose course</option>{courses.map(c=><option key={c.id} value={c.id}>{c.title}</option>)}</select><input placeholder="Lecture title" value={lessonForm.title} onChange={e=>setLessonForm({...lessonForm,title:e.target.value})}/><input placeholder="Topic / category" value={lessonForm.topic} onChange={e=>setLessonForm({...lessonForm,topic:e.target.value})}/><textarea className="ac-content-area" placeholder="Detailed lecture content" value={lessonForm.content} onChange={e=>setLessonForm({...lessonForm,content:e.target.value})}/><button className="primary" disabled={!courseId||!lessonForm.title.trim()||busy==='lesson-create'} onClick={addLesson}><Plus size={15}/> Publish lecture</button></section></div><section className="ac-panel"><PanelTitle title="Course Library" sub="Publish/unpublish without destroying content."/><div className="ac-course-list">{courses.map(c=><div className="ac-course-row" key={c.id}><div className="ac-course-icon">{c.icon}</div><div><b>{c.title}</b><span>{c.level} • {c.totalLessons||0} lessons</span><small>{c.description||'No description'}</small></div><span className={'ac-pill '+(c.published!==false?'green':'amber')}>{c.published!==false?'PUBLISHED':'DRAFT'}</span><div className="ac-actions"><button className="secondary compact" onClick={()=>publishCourse(c)} disabled={!!busy}>{c.published!==false?'Unpublish':'Publish'}</button><button className="danger-btn" onClick={()=>deleteCourse(c)} disabled={busy==='course-'+c.id}><Trash2 size={14}/> Delete</button></div></div>)}</div></section></>}
   {tab==='questions'&&<><div className="ac-grid"><section className="ac-panel"><PanelTitle title="Question Bank" sub="Create hard, explainable course questions."/><select value={questionForm.courseId} onChange={e=>setQuestionForm({...questionForm,courseId:e.target.value})}>{courses.map(c=><option key={c.id} value={c.id}>{c.title}</option>)}</select><textarea placeholder="Question" value={questionForm.question} onChange={e=>setQuestionForm({...questionForm,question:e.target.value})}/><input placeholder="Option A" value={questionForm.optionA} onChange={e=>setQuestionForm({...questionForm,optionA:e.target.value})}/><input placeholder="Option B" value={questionForm.optionB} onChange={e=>setQuestionForm({...questionForm,optionB:e.target.value})}/><input placeholder="Option C" value={questionForm.optionC} onChange={e=>setQuestionForm({...questionForm,optionC:e.target.value})}/><input placeholder="Option D" value={questionForm.optionD} onChange={e=>setQuestionForm({...questionForm,optionD:e.target.value})}/><div className="ac-two"><select value={questionForm.correctOption} onChange={e=>setQuestionForm({...questionForm,correctOption:e.target.value})}><option value="0">Correct: A</option><option value="1">Correct: B</option><option value="2">Correct: C</option><option value="3">Correct: D</option></select><select value={questionForm.difficulty} onChange={e=>setQuestionForm({...questionForm,difficulty:e.target.value})}><option>Easy</option><option>Medium</option><option>Hard</option></select></div><textarea placeholder="Explanation" value={questionForm.explanation} onChange={e=>setQuestionForm({...questionForm,explanation:e.target.value})}/><button className="primary" onClick={saveQuestion} disabled={busy==='question-save'}><Plus size={15}/> Add question</button></section><section className="ac-panel"><Toolbar title="Question Library" sub={`${questions.length} stored questions`} query={query} setQuery={setQuery} refresh={reloadQuestions}/><div className="ac-question-list">{filteredQuestions.slice(0,100).map(q=><div className="ac-question-row" key={q.id}><div><span className="ac-pill">{q.difficulty||'Unrated'}</span><b>{q.question}</b><small>{q.course} • Correct option {String.fromCharCode(65+(q.correctOption||0))}</small></div><button className="danger-btn" onClick={()=>deleteQuestion(q)} disabled={!!busy}><Trash2 size={14}/></button></div>)}{!filteredQuestions.length&&<Empty text="No questions found."/>}</div></section></div></>}
   {tab==='quizzes'&&<div className="ac-grid"><section className="ac-panel"><PanelTitle title="Quiz & Test Management" sub="Manage the question pools that power NovaTutor quizzes and tests."/><div className="ac-health-list"><div><span>Total question pool</span><b>{questions.length}</b></div><div><span>Total quiz attempts</span><b>{dash?.attempts??0}</b></div><div><span>Available courses</span><b>{courses.length}</b></div><div><span>Assessment engine</span><b className="ok">Operational</b></div></div><button className="primary" onClick={()=>setTab('questions')}><Target size={15}/> Manage question bank</button></section><section className="ac-panel"><PanelTitle title="Quiz Coverage" sub="Question distribution by course."/><div className="ac-course-list">{courses.map(c=>{const count=questions.filter(q=>String(q.courseId)===String(c.id)||q.course===c.title).length;return <div className="ac-course-row" key={c.id}><div className="ac-course-icon">{c.icon}</div><div><b>{c.title}</b><span>{count} question{count===1?'':'s'} in quiz pool</span></div><span className={'ac-pill '+(count?'green':'amber')}>{count?'READY':'EMPTY'}</span><div className="ac-actions"><button className="secondary compact" onClick={()=>{setQuestionForm(x=>({...x,courseId:c.id}));setTab('questions')}}>Manage</button></div></div>})}{!courses.length&&<Empty text="No courses available."/>}</div></section></div>}
-  {tab==='ai'&&<div className="ac-grid"><section className="ac-panel"><PanelTitle title="Measured AI performance" sub="Live timings from this backend instance. Median uses a 50 ms histogram."/><div className="ac-health-list"><div><span>Requests measured</span><b>{aiUsage?.totalRequests??0}</b></div><div><span>Failures</span><b className={(aiUsage?.failureRate||0)>0?'warn':'ok'}>{aiUsage?.failureRate??0}%</b></div><div><span>Tasks tracked</span><b>{aiUsage?.tasks?.length??0}</b></div></div><div className="ac-perf-table">{(aiUsage?.tasks||[]).map(t=><div key={t.task}><b>{t.task}</b><span>{t.requests} req · median {t.medianMs} ms · avg {t.averageMs} ms · max {t.maxMs} ms{t.firstTokenAvgMs?` · first token ${t.firstTokenAvgMs} ms`:''} · {t.failureRate}% fail</span></div>)}{!aiUsage?.tasks?.length&&<Empty text="No AI requests measured since the last restart."/>}</div><button className="secondary compact" onClick={()=>api('/admin/ai/usage').then(setAiUsage).catch(()=>{})}><RefreshCw size={14}/> Refresh metrics</button></section><section className="ac-panel"><PanelTitle title="AI Control Center" sub="Safe status and operational controls."/><div className="ac-control"><div><b>AI Provider</b><span>{aiStatus?.model||'Unknown model'}</span></div><span className={'ac-pill '+(aiStatus?.configured?'green':'red')}>{aiStatus?.configured?'READY':'NOT CONFIGURED'}</span></div><div className="ac-control"><div><b>API secret exposure</b><span>Keys remain server-side and are never displayed.</span></div><LockKeyhole size={18}/></div><div className="ac-control"><div><b>Existing AI integration</b><span>Preserved; admin panel does not replace provider wiring.</span></div><CheckCircle2 className="ok" size={18}/></div></section><section className="ac-panel"><PanelTitle title="AI Usage Guardrails" sub="Operational policy controls stored without secrets."/><label className="ac-setting"><span>AI enabled</span><input type="checkbox" checked={settingDraft['ai.enabled']!=='false'} onChange={e=>setSettingDraft({...settingDraft,'ai.enabled':String(e.target.checked)})}/></label><label className="ac-setting"><span>AI request limit / user / day</span><input value={settingDraft['ai.dailyLimit']||'100'} onChange={e=>setSettingDraft({...settingDraft,'ai.dailyLimit':e.target.value})}/></label><button className="primary" onClick={saveSettings}><SettingsIcon size={15}/> Save AI controls</button></section></div>}
+  {tab==='ai'&&<><DailyQuotaCard usage={aiUsage} onRefresh={()=>api('/admin/ai/usage').then(setAiUsage).catch(()=>{})}/><div className="ac-grid"><section className="ac-panel"><PanelTitle title="Measured AI performance" sub="Live timings from this backend instance. Median uses a 50 ms histogram."/><div className="ac-health-list"><div><span>Requests measured</span><b>{aiUsage?.totalRequests??0}</b></div><div><span>Failures</span><b className={(aiUsage?.failureRate||0)>0?'warn':'ok'}>{aiUsage?.failureRate??0}%</b></div><div><span>Tasks tracked</span><b>{aiUsage?.tasks?.length??0}</b></div></div><div className="ac-perf-table">{(aiUsage?.tasks||[]).map(t=><div key={t.task}><b>{t.task}</b><span>{t.requests} req · median {t.medianMs} ms · avg {t.averageMs} ms · max {t.maxMs} ms{t.firstTokenAvgMs?` · first token ${t.firstTokenAvgMs} ms`:''} · {t.failureRate}% fail</span></div>)}{!aiUsage?.tasks?.length&&<Empty text="No AI requests measured since the last restart."/>}</div><button className="secondary compact" onClick={()=>api('/admin/ai/usage').then(setAiUsage).catch(()=>{})}><RefreshCw size={14}/> Refresh metrics</button></section><section className="ac-panel"><PanelTitle title="AI Control Center" sub="Safe status and operational controls."/><div className="ac-control"><div><b>AI Provider</b><span>{aiStatus?.model||'Unknown model'}</span></div><span className={'ac-pill '+(aiStatus?.configured?'green':'red')}>{aiStatus?.configured?'READY':'NOT CONFIGURED'}</span></div><div className="ac-control"><div><b>API secret exposure</b><span>Keys remain server-side and are never displayed.</span></div><LockKeyhole size={18}/></div><div className="ac-control"><div><b>Existing AI integration</b><span>Preserved; admin panel does not replace provider wiring.</span></div><CheckCircle2 className="ok" size={18}/></div></section><section className="ac-panel"><PanelTitle title="AI Usage Guardrails" sub="Operational policy controls stored without secrets."/><label className="ac-setting"><span>AI enabled</span><input type="checkbox" checked={settingDraft['ai.enabled']!=='false'} onChange={e=>setSettingDraft({...settingDraft,'ai.enabled':String(e.target.checked)})}/></label><label className="ac-setting"><span>AI request limit / user / day</span><input value={settingDraft['ai.dailyLimit']||'100'} onChange={e=>setSettingDraft({...settingDraft,'ai.dailyLimit':e.target.value})}/></label><button className="primary" onClick={saveSettings}><SettingsIcon size={15}/> Save AI controls</button></section></div></>}
   {tab==='analytics'&&<div className="ac-grid"><section className="ac-panel"><PanelTitle title="Analytics Overview" sub="Live counts from existing persistence."/><div className="analytics-bars"><Bar label="Users" value={dash?.users||0} max={Math.max(1,dash?.users||1)}/><Bar label="Active users" value={dash?.activeUsers||0} max={Math.max(1,dash?.users||1)}/><Bar label="Courses" value={dash?.courses||0} max={Math.max(1,dash?.courses||1)}/><Bar label="Lessons" value={dash?.lessons||0} max={Math.max(1,dash?.lessons||1)}/><Bar label="Quiz attempts" value={dash?.attempts||0} max={Math.max(1,dash?.attempts||1)}/></div></section><section className="ac-panel"><PanelTitle title="Platform Signals" sub="Operational indicators."/><div className="ac-health-list"><div><span>Blocked accounts</span><b>{dash?.blockedUsers||0}</b></div><div><span>Questions</span><b>{dash?.questions||0}</b></div><div><span>Audit events</span><b>{dash?.auditEvents||0}</b></div><div><span>AI</span><b className={aiStatus?.configured?'ok':'warn'}>{aiStatus?.configured?'Healthy':'Needs configuration'}</b></div></div></section></div>}
   {tab==='announcements'&&<div className="ac-grid"><section className="ac-panel"><PanelTitle title="Create Announcement" sub="Publish platform notices without external messaging."/><input placeholder="Title" value={announcementForm.title} onChange={e=>setAnnouncementForm({...announcementForm,title:e.target.value})}/><textarea className="ac-content-area" placeholder="Message" value={announcementForm.message} onChange={e=>setAnnouncementForm({...announcementForm,message:e.target.value})}/><div className="ac-two"><select value={announcementForm.target} onChange={e=>setAnnouncementForm({...announcementForm,target:e.target.value})}><option>ALL</option><option>STUDENTS</option></select><label className="ac-check"><input type="checkbox" checked={announcementForm.published} onChange={e=>setAnnouncementForm({...announcementForm,published:e.target.checked})}/> Published</label></div><button className="primary" onClick={createAnnouncement}><Bell size={15}/> Publish announcement</button></section><section className="ac-panel"><PanelTitle title="Announcement History" sub="Recent platform announcements."/><div className="ac-announcements">{announcements.map(a=><div key={a.id}><div><b>{a.title}</b><span>{a.target} • {a.published?'Published':'Draft'} • {new Date(a.createdAt).toLocaleString()}</span></div><button className="danger-btn" onClick={()=>deleteAnnouncement(a.id)} disabled={!!busy}><Trash2 size={14}/></button><p>{a.message}</p></div>)}{!announcements.length&&<Empty text="No announcements yet."/>}</div></section></div>}
   {tab==='security'&&<div className="ac-grid"><section className="ac-panel"><PanelTitle title="Security Center" sub="Server-side authorization and account protection."/><div className="ac-security-checks"><Check text="Admin APIs verify JWT + ADMIN role server-side."/><Check text="Deleted or blocked users are rejected on every request."/><Check text="Secrets are excluded from admin responses."/><Check text="Destructive course/user operations require protected endpoints."/><Check text="File upload accepts PDF only and sanitizes filenames."/><Check text="Audit events capture important admin mutations."/></div></section><section className="ac-panel"><PanelTitle title="Audit Log" sub="Latest 200 events."/><div className="ac-audit">{audit.map(x=><div key={x.id}><b>{x.action}</b><span>{x.adminEmail} • {x.target||'—'} • {x.status}</span><small>{new Date(x.createdAt).toLocaleString()}</small></div>)}{!audit.length&&<Empty text="No audit events yet."/>}</div></section></div>}

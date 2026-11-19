@@ -24,12 +24,60 @@ public class AiMetrics {
     private final LongAdder totalRequests = new LongAdder();
     private final LongAdder totalFailures = new LongAdder();
     private volatile Instant startedAt = Instant.now();
+    private volatile int dailyLimit;
+    private volatile java.time.LocalDate todayDate = java.time.LocalDate.now(java.time.ZoneOffset.UTC);
+    private final LongAdder todayRequests = new LongAdder();
+
+    public AiMetrics() {
+        this(1500);
+    }
+
+    public AiMetrics(@org.springframework.beans.factory.annotation.Value("${ai.gemini.daily-limit:1500}") int dailyLimit) {
+        this.dailyLimit = Math.max(10, dailyLimit);
+    }
+
+    public void setDailyLimit(int limit) {
+        this.dailyLimit = Math.max(10, limit);
+    }
+
+    private void checkDateRoll() {
+        java.time.LocalDate current = java.time.LocalDate.now(java.time.ZoneOffset.UTC);
+        if (!current.equals(todayDate)) {
+            synchronized (this) {
+                if (!current.equals(todayDate)) {
+                    todayDate = current;
+                    todayRequests.reset();
+                }
+            }
+        }
+    }
+
+    public void setTodayBase(long base) {
+        checkDateRoll();
+        if (base > todayRequests.sum()) {
+            synchronized (this) {
+                long diff = base - todayRequests.sum();
+                if (diff > 0) todayRequests.add(diff);
+            }
+        }
+    }
+
+    public long getTodayRequests() {
+        checkDateRoll();
+        return todayRequests.sum();
+    }
+
+    public int getDailyLimit() {
+        return dailyLimit;
+    }
 
     public void record(String task, long durationMs, boolean success) {
         record(task, durationMs, success, -1);
     }
 
     public void record(String task, long durationMs, boolean success, long firstTokenMs) {
+        checkDateRoll();
+        todayRequests.increment();
         String key = task == null || task.isBlank() ? "UNKNOWN" : task.toUpperCase();
         TaskStat stat = tasks.computeIfAbsent(key, k -> new TaskStat());
         stat.count.increment();
@@ -77,6 +125,26 @@ public class AiMetrics {
         out.put("totalFailures", failures);
         out.put("failureRate", requests == 0 ? 0.0 : round((double) failures / requests * 100));
         out.put("tasks", rows);
+
+        checkDateRoll();
+        long today = todayRequests.sum();
+        long remaining = Math.max(0, dailyLimit - today);
+        double pctConsumed = round(dailyLimit <= 0 ? 0.0 : ((double) today / dailyLimit) * 100.0);
+        double pctRemaining = round(Math.max(0.0, 100.0 - pctConsumed));
+        String status = today >= dailyLimit ? "EXHAUSTED" : (today >= (dailyLimit * 0.8) ? "APPROACHING_LIMIT" : "NORMAL");
+        java.time.ZonedDateTime nextMidnight = java.time.LocalDate.now(java.time.ZoneOffset.UTC).plusDays(1).atStartOfDay(java.time.ZoneOffset.UTC);
+
+        Map<String, Object> dailyQuota = new LinkedHashMap<>();
+        dailyQuota.put("todayRequests", today);
+        dailyQuota.put("dailyLimit", dailyLimit);
+        dailyQuota.put("remainingQuota", remaining);
+        dailyQuota.put("percentConsumed", pctConsumed);
+        dailyQuota.put("percentRemaining", pctRemaining);
+        dailyQuota.put("limitStatus", status);
+        dailyQuota.put("resetAt", nextMidnight.toInstant().toString());
+        dailyQuota.put("resetSchedule", "Resets daily at 00:00 UTC (05:30 IST)");
+        out.put("dailyQuota", dailyQuota);
+
         return out;
     }
 

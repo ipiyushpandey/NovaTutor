@@ -128,9 +128,8 @@ public class MentorController {
             default -> "Answer the student's question first, then teach the next useful concept step-by-step. End with one short check question.";
         };
         String student = limit(r.message(), 6000, "Start teaching me.");
-        // Do not send an entire oversized lesson on every AI request. The lesson title,
-        // a focused content window and the learner question are enough for the fast path.
-        String lessonContent = limit(lesson.getContent(), 14000, "Lesson content is unavailable.");
+        // Focused content window keeps prompt processing fast (~1-2s time-to-first-token).
+        String lessonContent = limit(lesson.getContent(), 3500, "Lesson content is unavailable.");
         String context = "Student goal=" + safe(user.getLearningGoal())
                 + ", learning style=" + safe(user.getLearningStyle())
                 + ", weaknesses=" + safe(user.getWeaknesses())
