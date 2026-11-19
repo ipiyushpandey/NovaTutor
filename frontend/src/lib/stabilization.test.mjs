@@ -492,6 +492,17 @@ test('UI and motion invariants: LoginWakeUp, useLayoutEffect, and admin mobile d
   assert.match(stylesCss, /\.ac-nav-mobile-head\{/);
   assert.match(tokensCss, /--brand-evergreen:#1E7A5F;/);
   assert.match(tokensCss, /--brand-mint:#3FBF9A;/);
+
+  // Admin layout, AI mentor buttons, and ambient polish invariants
+  const adminJsx = fs.readFileSync(path.join(SRC_DIR, 'AdminControlCenter.jsx'), 'utf8');
+  assert.match(adminJsx, /className="ac-topbar-back"/);
+  assert.doesNotMatch(adminJsx, /className="ac-footer-back"/);
+  assert.doesNotMatch(adminJsx, /className="ac-drawer-exit-btn"/);
+  assert.match(stylesCss, /\.ac-topbar-back/);
+  assert.match(stylesCss, /\.mentor-start-btn\{min-height:48px/);
+  assert.match(stylesCss, /\.mode\{min-height:56px/);
+  assert.match(stylesCss, /\.dash-continue::before/);
+  assert.match(stylesCss, /\.dash-chip--energy svg\{color:var\(--energy\);animation:energyPulse/);
 });
 
 

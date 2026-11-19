@@ -253,13 +253,13 @@ export default function AdminControlCenter({user,courses:propCourses=[],refreshC
    <div className="ac-topbar-inner">
     <div className="ac-topbar-left">
      <button
-      className={'ac-nav-toggle'+(navOpen?' open':'')}
-      aria-expanded={navOpen}
-      aria-controls="admin-nav"
-      aria-label="Open Admin Navigation Menu"
-      onClick={()=>setNavOpen(x=>!x)}
+      type="button"
+      className="ac-topbar-back"
+      onClick={onBack}
+      aria-label="Back to App"
+      title="Back to App"
      >
-      <Menu size={18}/> <span>Admin Menu</span>
+      <ArrowLeft size={16}/> <span>Back</span>
      </button>
      <div className="ac-breadcrumb" aria-label="Current section">
       <span className="ac-bc-root">Admin</span>
@@ -279,8 +279,16 @@ export default function AdminControlCenter({user,courses:propCourses=[],refreshC
       <span className="ac-user-email">{user?.email}</span>
       <span className="ac-user-role-badge">ADMIN</span>
      </div>
-     <button className="ac-back-btn" onClick={onBack} title="Exit to NovaTutor Main App" aria-label="Exit to NovaTutor Main App">
-      <ArrowLeft size={14}/> <span>Exit to App</span>
+     <button
+      type="button"
+      className={'ac-nav-toggle'+(navOpen?' open':'')}
+      aria-expanded={navOpen}
+      aria-controls="admin-nav"
+      aria-label="Open Admin Navigation Menu"
+      title="Open Admin Navigation Menu"
+      onClick={()=>setNavOpen(x=>!x)}
+     >
+      <Menu size={19}/>
      </button>
     </div>
    </div>
@@ -316,9 +324,6 @@ export default function AdminControlCenter({user,courses:propCourses=[],refreshC
       <small>{user?.email}</small>
      </div>
     </div>
-    <button className="ac-drawer-exit-btn" onClick={onBack}>
-     <ArrowLeft size={13}/> <span>Return to Main App</span>
-    </button>
    </div>
   </aside>
   <main className="ac-body">
@@ -340,7 +345,6 @@ export default function AdminControlCenter({user,courses:propCourses=[],refreshC
   <footer className="ac-footer">
    <div className="ac-footer-inner">
     <div>NovaTutor Enterprise Administration · Logged in as <b>{user?.email}</b> (ADMIN)</div>
-    <button className="ac-footer-back" onClick={onBack}><ArrowLeft size={13}/> <span>Return to Main App</span></button>
    </div>
   </footer>
   {modal&&<ConfirmModal modal={modal} close={()=>setModal(null)}/>}
