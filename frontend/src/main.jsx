@@ -57,9 +57,19 @@ function useScrollReveal(containerRef, deps = []) {
    });
   }, { threshold: 0.05, rootMargin: '0px 0px 40px 0px' });
   observeAll(io);
-  const mo = new MutationObserver(() => observeAll(io));
+  let rafId = null;
+  const mo = new MutationObserver((mutations) => {
+   const hasAdded = mutations.some(m => m.addedNodes && m.addedNodes.length > 0);
+   if (!hasAdded) return;
+   if (rafId) cancelAnimationFrame(rafId);
+   rafId = requestAnimationFrame(() => observeAll(io));
+  });
   mo.observe(root.body || root, { childList: true, subtree: true });
-  return () => { io.disconnect(); mo.disconnect(); };
+  return () => {
+   if (rafId) cancelAnimationFrame(rafId);
+   io.disconnect();
+   mo.disconnect();
+  };
  }, deps);
 }
 
@@ -1704,7 +1714,7 @@ function MasterySnapshot({user,go,sharedIntel}){
 
 
 function Stat({n,t}){return <div className="stat"><b>{n}</b><span>{t}</span></div>}
-function CourseCard({c,p,openCourse,i}){const percent=Math.round(p?.percent||0);const open=()=>openCourse(c.id);return <div className="course-card hover-lift" onClick={open} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open()}}} role="button" tabIndex={0}><div className={'course-icon i'+i+' icon-rotate-subtle'}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:percent+'%'}}/></div><div className="course-foot"><small>{percent}% complete • {c.totalLessons} lessons</small><button onClick={e=>{e.stopPropagation();open()}}>Open <ChevronRight size={13}/></button></div></div>}
+function CourseCard({c,p,openCourse,i}){const percent=Math.round(p?.percent||0);const open=()=>openCourse(c.id);return <div className="course-card hover-lift clickable-card" onClick={open} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open()}}} role="button" tabIndex={0} aria-label={`${c.title}, ${percent}% complete`}><div className={'course-icon i'+i+' icon-rotate-subtle'}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:percent+'%'}}/></div><div className="course-foot"><small>{percent}% complete • {c.totalLessons} lessons</small><span className="course-card-arrow" aria-hidden="true"><ChevronRight size={14}/></span></div></div>}
 function CoursePage({courseId,lessonId,onSelectLesson,courses,progress,refresh,onBack}){
  const [detail,setDetail]=useState(null),[error,setError]=useState('');
  const summary=courses.find(c=>String(c.id)===String(courseId));
@@ -1725,7 +1735,7 @@ function Courses({courses,progress,refresh,user,openCourse}){
  if(error)return <div className="page-crash"><RefreshCw size={40}/><h2>Course could not load</h2><p>{error}</p><button className="secondary" onClick={()=>{setError('');setSelected(null)}}>Back</button></div>;
  if(detail)return <CourseDetail detail={detail} progress={progress.find(x=>x.courseId===detail.course.id)} refresh={refresh} back={()=>{setSelected(null);setDetail(null)}}/>;
  return <><div className="page-title"><span className="eyebrow">CURRICULUM</span><h1>My <span>Learning.</span></h1><p>Detailed theory, examples and AI help — no videos required.</p></div><div className="course-filters"><input placeholder="Search courses…" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="Level" value={level} onChange={e=>setLevel(e.target.value)}><option>All</option><option>Beginner</option><option>Intermediate</option><option>Advanced</option></select></div>
-  {courses.length===0?<div className="empty-page"><BookOpen size={48}/><h3>No courses available yet</h3><p>Courses could not be loaded from the server right now. Check your connection and try reloading.</p><button className="primary" onClick={refresh}>Reload courses</button></div>:<div className="course-grid stagger-reveal">{visible.map((c,i)=><div className="course-card big hover-lift clickable-card" key={c.id} role="button" tabIndex={0} onClick={()=>handleOpen(c.id)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();handleOpen(c.id)}}}><div className={'course-icon i'+i+' icon-rotate-subtle'}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:(progress.find(x=>x.courseId===c.id)?.percent||0)+'%'}}/></div><div className="course-foot"><small>{progress.find(x=>x.courseId===c.id)?.completedLessons||0}/{c.totalLessons} lessons done</small><button onClick={e=>{e.stopPropagation();handleOpen(c.id)}}>Open course <ChevronRight size={13}/></button></div></div>)}</div>}
+  {courses.length===0?<div className="empty-page"><BookOpen size={48}/><h3>No courses available yet</h3><p>Courses could not be loaded from the server right now. Check your connection and try reloading.</p><button className="primary" onClick={refresh}>Reload courses</button></div>:<div className="course-grid stagger-reveal">{visible.map((c,i)=><div className="course-card big hover-lift clickable-card" key={c.id} role="button" tabIndex={0} onClick={()=>handleOpen(c.id)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();handleOpen(c.id)}}}><div className={'course-icon i'+i+' icon-rotate-subtle'}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:(progress.find(x=>x.courseId===c.id)?.percent||0)+'%'}}/></div><div className="course-foot"><small>{progress.find(x=>x.courseId===c.id)?.completedLessons||0}/{c.totalLessons} lessons done</small><span className="course-card-arrow" aria-hidden="true"><ChevronRight size={14}/></span></div></div>)}</div>}
  </>;
 }
 function TheoryContent({content}){
@@ -1737,7 +1747,7 @@ function TheoryContent({content}){
     layer: a Markdown h2+ line inside a fence closes the code block, renders as a
     heading, and the stray closing fence that follows is consumed instead of
     opening a new block. Well-formed fences never contain such a line. */
- lines.forEach((raw,i)=>{const line=raw.trimEnd();if(line.trim().startsWith('```')){if(inCode){flushCode();inCode=false} else if(strayFence){strayFence=false} else {flushList();inCode=true}return}if(inCode){if(/^#{2,6}\s/.test(line)){flushCode();inCode=false;strayFence=true}else{code.push(line);return}}if(!line.trim()){flushList();out.push(<div className="theory-spacer" key={'s'+i}/>);return}if(line.startsWith('### ')){flushList();out.push(<h4 key={i}>{mdInlineText(line.slice(4))}</h4>);return}if(line.startsWith('## ')){flushList();out.push(<h3 key={i}>{mdInlineText(line.slice(3))}</h3>);return}if(line.startsWith('# ')){flushList();out.push(<h2 key={i}>{mdInlineText(line.slice(2))}</h2>);return}if(/^[-*] /.test(line)){list.push(line.slice(2));return}if(/^\d+\. /.test(line)){list.push(line.replace(/^\d+\. /,''));return}out.push(<p key={i}>{mdInlineText(line)}</p>)});flushList();flushCode();return <div className="theory-render">{out}</div>
+ lines.forEach((raw,i)=>{const line=raw.trimEnd();if(line.trim().startsWith('```')){if(inCode){flushCode();inCode=false} else if(strayFence){strayFence=false} else {flushList();inCode=true}return}if(inCode){if(/^#{2,6}\s/.test(line)){flushCode();inCode=false;strayFence=true}else{code.push(line);return}}if(!line.trim()){flushList();out.push(<div className="theory-spacer" key={'s'+i}/>);return}if(/^####\s+/.test(line)){flushList();out.push(<h5 key={i}>{mdInlineText(line.replace(/^####\s+/,''))}</h5>);return}if(/^###\s+/.test(line)){flushList();out.push(<h4 key={i}>{mdInlineText(line.replace(/^###\s+/,''))}</h4>);return}if(/^##\s+/.test(line)){flushList();out.push(<h3 key={i}>{mdInlineText(line.replace(/^##\s+/,''))}</h3>);return}if(/^#\s+/.test(line)){flushList();out.push(<h2 key={i}>{mdInlineText(line.replace(/^#\s+/,''))}</h2>);return}if(/^[-*] /.test(line)){list.push(line.slice(2));return}if(/^\d+\. /.test(line)){list.push(line.replace(/^\d+\. /,''));return}out.push(<p key={i}>{mdInlineText(line)}</p>)});flushList();flushCode();return <div className="theory-render">{out}</div>
 }
 
 function CourseDetail({detail,routeLessonId,onSelectLesson,progress,refresh,back}){
@@ -2185,48 +2195,61 @@ function TopNav({user,role,page,go,dark,setDark,navModel,activeGroup,mobile,setM
   return()=>{document.removeEventListener('pointerdown',close);document.removeEventListener('keydown',esc)};
  },[]);
  useEffect(()=>{if(firstPage.current===page)return;firstPage.current=page;setOpenMenu(null);setAccountOpen(false);setMobile(false)},[page]);
+ useEffect(()=>{
+  if(typeof document!=='undefined'){
+   document.body.classList.toggle('nav-drawer-open',Boolean(vp&&mobile));
+  }
+  return()=>{
+   if(typeof document!=='undefined'){
+    document.body.classList.remove('nav-drawer-open');
+   }
+  };
+ },[vp,mobile]);
  const navigate=id=>{setOpenMenu(null);setAccountOpen(false);setMobile(false);go(id)};
  const initial=user.name?.[0]?.toUpperCase()||'U';
- return <header className={'topnav'+(openMenu&&!vp?' subnav-open':'')} ref={rootRef}>
-  <div className="topnav-inner">
-   <button className="topnav-brand" onClick={()=>navigate('dashboard')} aria-label="NovaTutor home">
-    <BrandMark size={26}/><span>NovaTutor</span>
-   </button>
-   {!vp&&<nav className="topnav-menus" aria-label="Primary">
-    {navModel.map(g=>{
-     const isOpen=openMenu===g.id;
-     const groupActive=activeGroup===g.id;
-     return <div className="topnav-menu" key={g.id}>
-      <button
-       className={'topnav-menu-btn'+(isOpen?' open':'')+(groupActive?' current':'')}
-       aria-expanded={isOpen} aria-haspopup="true"
-       onClick={()=>setOpenMenu(isOpen?null:g.id)}>
-       {g.label}<ChevronRight size={13}/>
-      </button>
-      {isOpen&&<div className="topnav-panel" role="menu">
-       {g.items.map(([id,label,I])=>
-        <button role="menuitem" key={id} className={'topnav-item'+(page===id?' active':'')} onClick={()=>navigate(id)}>
-         <span className="topnav-item-icon"><I size={16}/></span>{label}{page===id&&<span className="topnav-here">•</span>}
-        </button>)}
+ return <>
+  <header className={'topnav'+(openMenu&&!vp?' subnav-open':'')} ref={rootRef}>
+   <div className="topnav-inner">
+    <button className="topnav-brand" onClick={()=>navigate('dashboard')} aria-label="NovaTutor home">
+     <BrandMark size={26}/><span>NovaTutor</span>
+    </button>
+    {!vp&&<nav className="topnav-menus" aria-label="Primary">
+     {navModel.map(g=>{
+      const isOpen=openMenu===g.id;
+      const groupActive=activeGroup===g.id;
+      return <div className="topnav-menu" key={g.id}>
+       <button
+        className={'topnav-menu-btn'+(isOpen?' open':'')+(groupActive?' current':'')}
+        aria-expanded={isOpen} aria-haspopup="true"
+        onClick={()=>setOpenMenu(isOpen?null:g.id)}>
+        {g.label}<ChevronRight size={13}/>
+       </button>
+       {isOpen&&<div className="topnav-panel" role="menu">
+        {g.items.map(([id,label,I])=>
+         <button role="menuitem" key={id} className={'topnav-item'+(page===id?' active':'')} onClick={()=>navigate(id)}>
+          <span className="topnav-item-icon"><I size={16}/></span>{label}{page===id&&<span className="topnav-here">•</span>}
+         </button>)}
+       </div>}
+      </div>;
+     })}
+    </nav>}
+    <div className="topnav-right">
+     {!vp&&<GlobalSearch courses={coursesSafe()} go={go}/>}
+     {!vp&&<button className={'topnav-icon-btn'+(page==='notifications'?' has-badge':'')} aria-label="Today's plan" title="Today's plan" onClick={()=>go('notifications')}><Bell size={17}/></button>}
+     <div className="topnav-account">
+      <button className={'topnav-avatar'+(accountOpen?' open':'')} aria-expanded={accountOpen} aria-haspopup="true" aria-label="Account menu" onClick={()=>setAccountOpen(x=>!x)}>{initial}</button>
+      {accountOpen&&<div className="topnav-panel account-panel" role="menu">
+       <div className="topnav-account-head"><b>{user.name}</b><small>{role==='ADMIN'?'Administrator':role==='GUEST'?'Guest session':'Student'}</small></div>
+       <button role="menuitem" className="topnav-item" onClick={()=>navigate('settings')}><span className="topnav-item-icon"><UserRound size={16}/></span>Settings</button>
+       <button role="menuitem" className="topnav-item danger" onClick={logout}><span className="topnav-item-icon"><LogOut size={16}/></span>Log out</button>
       </div>}
-     </div>;
-    })}
-   </nav>}
-   <div className="topnav-right">
-    {!vp&&<GlobalSearch courses={coursesSafe()} go={go}/>}
-    {!vp&&<button className={'topnav-icon-btn'+(page==='notifications'?' has-badge':'')} aria-label="Today's plan" title="Today's plan" onClick={()=>go('notifications')}><Bell size={17}/></button>}
-    <div className="topnav-account">
-     <button className={'topnav-avatar'+(accountOpen?' open':'')} aria-expanded={accountOpen} aria-haspopup="true" aria-label="Account menu" onClick={()=>setAccountOpen(x=>!x)}>{initial}</button>
-     {accountOpen&&<div className="topnav-panel account-panel" role="menu">
-      <div className="topnav-account-head"><b>{user.name}</b><small>{role==='ADMIN'?'Administrator':role==='GUEST'?'Guest session':'Student'}</small></div>
-      <button role="menuitem" className="topnav-item" onClick={()=>navigate('settings')}><span className="topnav-item-icon"><UserRound size={16}/></span>Settings</button>
-      <button role="menuitem" className="topnav-item danger" onClick={logout}><span className="topnav-item-icon"><LogOut size={16}/></span>Log out</button>
-     </div>}
+     </div>
+     {vp&&<button className="topnav-icon-btn topnav-menu-toggle" aria-label={mobile?'Close navigation':'Open navigation'} aria-expanded={mobile} onClick={()=>setMobile(x=>!x)}>{mobile?'✕':<Menu size={18}/>}</button>}
     </div>
-    {vp&&<button className="topnav-icon-btn topnav-menu-toggle" aria-label={mobile?'Close navigation':'Open navigation'} aria-expanded={mobile} onClick={()=>setMobile(x=>!x)}>{mobile?'✕':<Menu size={18}/>}</button>}
    </div>
-  </div>
-  {vp&&mobile&&<div className="topnav-sheet" role="dialog" aria-label="Navigation">
+  </header>
+  {vp&&mobile&&<div className="nav-shade" onClick={()=>setMobile(false)} aria-hidden="true"/>}
+  {vp&&mobile&&<div className="topnav-sheet" role="dialog" aria-modal="true" aria-label="Navigation">
    {navModel.map(g=><div className="sheet-group" key={g.id}>
     <div className="sheet-group-label">{g.label}</div>
     {g.items.map(([id,label,I])=>
@@ -2241,7 +2264,7 @@ function TopNav({user,role,page,go,dark,setDark,navModel,activeGroup,mobile,setM
    </div>
    <div className="sheet-foot">NovaTutor · Learning workspace</div>
   </div>}
- </header>;
+ </>;
 }
 /* Minimal course list for the navbar search on pages where the App-level
    courses array is not needed by TopNav's light footprint. */

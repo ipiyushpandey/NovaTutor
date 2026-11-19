@@ -13,14 +13,16 @@ import {normalizeAiText} from './lib/aiText.js';
 export {normalizeAiText};
 
 const mdInline=(text)=>{
-  const src=String(text);
-  // Split on **bold**, `code`, and *italic* (only when flanked by boundaries,
-  // so "5*3" or "a * b" never triggers italics).
-  const parts=src.split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*\n]+\*)/g);
+  const src=String(text).replace(/^#{1,6}\s*/, '');
+  // Split on ***bold-italic***, **bold**, __bold__, `code`, *italic*, _italic_
+  const parts=src.split(/(\*\*\*[^*]+\*\*\*|\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_)/g);
   return parts.map((x,i)=>{
+    if(x.startsWith('***')&&x.endsWith('***')&&x.length>6)return <strong key={i}><em>{x.slice(3,-3)}</em></strong>;
     if(x.startsWith('**')&&x.endsWith('**')&&x.length>4)return <strong key={i}>{x.slice(2,-2)}</strong>;
+    if(x.startsWith('__')&&x.endsWith('__')&&x.length>4)return <strong key={i}>{x.slice(2,-2)}</strong>;
     if(x.startsWith('`')&&x.endsWith('`')&&x.length>2)return <code key={i}>{x.slice(1,-1)}</code>;
     if(/^\*[^*\n]+\*$/.test(x))return <em key={i}>{x.slice(1,-1)}</em>;
+    if(/^_[^_\n]+_$/.test(x))return <em key={i}>{x.slice(1,-1)}</em>;
     return x;
   });
 };
@@ -28,11 +30,15 @@ const mdInline=(text)=>{
 /* Non-React twin of mdInline for renderers that build plain strings/arrays
    (lesson TheoryContent). Preserves bold/italic/inline code as inline markup. */
 export function mdInlineText(text){
-  const parts=String(text).split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*\n]+\*)/g);
+  const src=String(text).replace(/^#{1,6}\s*/, '');
+  const parts=src.split(/(\*\*\*[^*]+\*\*\*|\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_)/g);
   return parts.map((x,i)=>{
+    if(x.startsWith('***')&&x.endsWith('***')&&x.length>6)return <strong key={i}><em>{x.slice(3,-3)}</em></strong>;
     if(x.startsWith('**')&&x.endsWith('**')&&x.length>4)return <strong key={i}>{x.slice(2,-2)}</strong>;
+    if(x.startsWith('__')&&x.endsWith('__')&&x.length>4)return <strong key={i}>{x.slice(2,-2)}</strong>;
     if(x.startsWith('`')&&x.endsWith('`')&&x.length>2)return <code key={i}>{x.slice(1,-1)}</code>;
     if(/^\*[^*\n]+\*$/.test(x))return <em key={i}>{x.slice(1,-1)}</em>;
+    if(/^_[^_\n]+_$/.test(x))return <em key={i}>{x.slice(1,-1)}</em>;
     return x;
   });
 };
@@ -55,7 +61,7 @@ function CodeBlock({code}){
    line becomes a heading ONLY when it is short and stands alone — never inside
    flowing prose. */
 const looksLikeHeading=(t)=>{
-  if(/^#{1,6}\s+/.test(t))return true;
+  if(/^#{1,6}\s*/.test(t))return true;
   if(/^\*\*[^*]{1,80}\*\*:?$/.test(t))return true;
   return false;
 };
@@ -87,10 +93,24 @@ const tableLines=(lines,start)=>{
 export default function AiMarkdown({content}){
   const src=normalizeAiText(content);
   const lines=src.split('\n');
-  const out=[];let buf=[];
+  const out=[];let buf=[];let quotes=[];
   let code=[];let inCode=false;let codeIdx=0;
 
-  const flush=()=>{if(buf.length){out.push(<p className="ai-md-p" key={'p'+out.length}>{mdInline(buf.join(' '))}</p>);buf=[]}};
+  const flushQuotes=()=>{
+    if(quotes.length){
+      out.push(
+        <blockquote className="ai-md-quote" key={'q'+out.length}>
+          {quotes.map((q,qi)=><p key={qi}>{mdInline(q)}</p>)}
+        </blockquote>
+      );
+      quotes=[];
+    }
+  };
+
+  const flush=()=>{
+    flushQuotes();
+    if(buf.length){out.push(<p className="ai-md-p" key={'p'+out.length}>{mdInline(buf.join(' '))}</p>);buf=[]}
+  };
 
   for(let i=0;i<lines.length;i++){
     const line=lines[i];
@@ -120,14 +140,23 @@ export default function AiMarkdown({content}){
       );
       i=tbl.next-1;continue;
     }
+
+    if(t.startsWith('>')){
+      if(buf.length) flush();
+      quotes.push(t.replace(/^>\s*/,''));
+      continue;
+    } else {
+      flushQuotes();
+    }
+
     // Flush accumulated paragraph lines before block-level elements; consecutive prose lines join.
     if(
       looksLikeHeading(t)||/^[-*•]\s+/.test(t)||/^\d+[.)]\s+/.test(t)||
-      /^[-—=_*]{3,}$/.test(t)||/^>/.test(t)
+      /^[-—=_*]{3,}$/.test(t)
     ){flush()}
 
     let m;
-    if((m=t.match(/^(#{1,6})\s+(.*)$/))){
+    if((m=t.match(/^(#{1,6})\s*(.*)$/))){
       const level=Math.min(m[1].length,3);
       out.push(<h4 className={'ai-md-heading h'+level} key={'h'+out.length}>{mdInline(m[2]||'')}</h4>);
       continue;
@@ -137,7 +166,6 @@ export default function AiMarkdown({content}){
       continue;
     }
     if(/^[-—=_*]{3,}$/.test(t)){out.push(<hr className="ai-md-hr" key={'hr'+out.length}/>);continue}
-    if(/^>/.test(t)){out.push(<blockquote className="ai-md-quote" key={'q'+out.length}>{mdInline(t.replace(/^>\s?/,''))}</blockquote>);continue}
     if((m=t.match(/^[-*•]\s+(.*)$/))){
       out.push(<div className="ai-md-bullet" key={'b'+out.length}><span className="ai-md-bullet-dot" aria-hidden="true"/><div>{mdInline(m[1])}</div></div>);
       continue;
@@ -149,6 +177,7 @@ export default function AiMarkdown({content}){
     buf.push(t);
   }
   flush();
+  flushQuotes();
   if(inCode&&code.length)out.push(<CodeBlock key={'c-tail'} code={code.join('\n')}/>);
   // Empty/null response: render nothing — never a giant blank container.
   if(!out.length)return null;

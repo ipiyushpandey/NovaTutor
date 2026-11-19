@@ -120,12 +120,12 @@
 
 /* ---- Dark mode: same structure, re-graded (never a blind inversion) ---- */
 :root.dark{
-  --bg:#171B22;            /* established dark background */
-  --surface:#1E232B;
-  --surface-2:#242B35;
-  --elevated:#212630;
-  --border:#2D3440;
-  --border-strong:#3F4858;
+  --bg:#0F1319;            /* refined deep obsidian background */
+  --surface:#161B23;       /* rich surface */
+  --surface-2:#1D2330;     /* recessed surface */
+  --elevated:#1F2532;      /* sheets, modals, dropdowns */
+  --border:#262D3B;        /* crisp borders */
+  --border-strong:#364052; /* structured dividers & input borders */
 
   --text:#EDEEF2;
   --text-2:#B9BFCA;
@@ -133,8 +133,8 @@
 
   --ink:#EDEEF2;
   --ink-2:#FFFFFF;
-  --ink-soft:#242A34;
-  --on-ink:#14161B;
+  --ink-soft:#1E2533;
+  --on-ink:#0F1319;
 
   --brand-evergreen:#1E7A5F;
   --brand-mint:#3FBF9A;
@@ -158,8 +158,8 @@
   --code-border:#262B38;
   --code-text:#E8EAF2;
 
-  --shadow-1:0 1px 2px rgba(0,0,0,.35);
-  --shadow-2:0 6px 24px rgba(0,0,0,.45);
+  --shadow-1:0 1px 2px rgba(0,0,0,.45);
+  --shadow-2:0 8px 28px rgba(0,0,0,.60);
 
   color-scheme:dark;
 }
