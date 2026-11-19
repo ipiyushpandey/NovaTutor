@@ -59,6 +59,11 @@ async function setupMockBackend(page, initialUser = null) {
       currentUser = MOCK_GUEST;
       return json(MOCK_GUEST);
     }
+    if (path === '/auth/login' && method === 'POST') {
+      const data = req.postDataJSON() || {};
+      currentUser = data.portal === 'admin' ? MOCK_ADMIN : MOCK_STUDENT;
+      return json(currentUser);
+    }
     if (path === '/auth/guest' && method === 'DELETE') {
       return json({ ok: true });
     }
@@ -252,7 +257,57 @@ test.describe('NovaTutor Master Stabilization Verification', () => {
     }
   });
 
-  test('Part B2: Courses module tabs all visible simultaneously on mobile without horizontal scroll', async ({ page }) => {
+  test('Part A2: Admin, Guest & Student browser Back navigation never traps into onboarding at app boundary', async ({ page }) => {
+    // 1. Admin session - start from /#/login (app boundary) unauthenticated
+    await setupMockBackend(page, MOCK_ADMIN);
+    await page.goto('/#/login');
+    await expect(page.locator('.auth-form')).toBeVisible();
+
+    // 2. Sign in as Admin via UI form
+    await page.click('button:has-text("Admin")');
+    await page.fill('#auth-email', 'admin@novatutor.test');
+    await page.fill('#auth-pass', 'AdminPass123!');
+    await page.click('button.auth-submit');
+
+    await expect(page).toHaveURL(/#\/dashboard/);
+    await expect(page.locator('.main-topnav')).toBeVisible();
+
+    // 3. Navigate through multiple pages
+    await page.evaluate(() => { window.location.hash = '#/courses'; });
+    await expect(page).toHaveURL(/#\/courses/);
+
+    await page.evaluate(() => { window.location.hash = '#/practice'; });
+    await expect(page).toHaveURL(/#\/practice/);
+
+    await page.evaluate(() => { window.location.hash = '#/admin'; });
+    await expect(page).toHaveURL(/#\/admin/);
+
+    // 4. Press browser Back repeatedly
+    await page.goBack();
+    await expect(page).toHaveURL(/#\/practice/);
+
+    await page.goBack();
+    await expect(page).toHaveURL(/#\/courses/);
+
+    await page.goBack();
+    await expect(page).toHaveURL(/#\/dashboard/);
+
+    // 5. Press Back once more to return to app boundary
+    await page.goBack();
+    await page.waitForTimeout(300);
+
+    // Must NEVER trap into onboarding at boundary
+    await expect(page.locator('.onboarding-page')).toHaveCount(0);
+
+    // 6. Direct manual attempt or stale bookmark to #/onboarding from dashboard MUST replace to dashboard
+    await page.goto('/#/dashboard');
+    await page.evaluate(() => { window.location.hash = '#/onboarding'; });
+    await page.waitForTimeout(200);
+    await expect(page).toHaveURL(/#\/dashboard/);
+    await expect(page.locator('.onboarding-page')).toHaveCount(0);
+  });
+
+  test('Part B2: Courses module tabs remain readable and usable at 320px with zero truncation', async ({ page }) => {
     await setupMockBackend(page, MOCK_STUDENT);
     await page.addInitScript((user) => {
       localStorage.setItem('ai_user', JSON.stringify(user));
@@ -268,54 +323,75 @@ test.describe('NovaTutor Master Stabilization Verification', () => {
       const tabs = page.locator('.courses-tabs button');
       await expect(tabs).toHaveCount(3);
 
-      const tab1 = await tabs.nth(0).boundingBox();
-      const tab2 = await tabs.nth(1).boundingBox();
-      const tab3 = await tabs.nth(2).boundingBox();
+      // Verify all 3 tab texts are readable
+      const tab1Text = await tabs.nth(0).innerText();
+      const tab2Text = await tabs.nth(1).innerText();
+      const tab3Text = await tabs.nth(2).innerText();
 
-      // All 3 bounding boxes must be within viewport width simultaneously
-      expect(tab1.x).toBeGreaterThanOrEqual(0);
-      expect(tab3.x + tab3.width).toBeLessThanOrEqual(w + 2);
+      expect(tab1Text).toContain('Courses');
+      expect(tab2Text).toContain('Learning');
+      expect(tab2Text).toContain('Profile');
+      expect(tab3Text).toContain('Milestones');
 
-      // Container must not have horizontal scroll offset
-      const hasOverflow = await page.evaluate(() => {
-        const el = document.querySelector('.courses-tabs');
-        return el ? el.scrollWidth > el.clientWidth + 2 : false;
-      });
-      expect(hasOverflow).toBe(false);
+      // Verify each button has comfortable touch target height (>= 38px)
+      const tab1Box = await tabs.nth(0).boundingBox();
+      const tab2Box = await tabs.nth(1).boundingBox();
+      const tab3Box = await tabs.nth(2).boundingBox();
+
+      expect(tab1Box.height).toBeGreaterThanOrEqual(38);
+      expect(tab2Box.height).toBeGreaterThanOrEqual(38);
+      expect(tab3Box.height).toBeGreaterThanOrEqual(38);
+
+      // All 3 bounding boxes must fit within viewport simultaneously
+      expect(tab1Box.x).toBeGreaterThanOrEqual(0);
+      expect(tab3Box.x + tab3Box.width).toBeLessThanOrEqual(w + 2);
+
+      // Verify no horizontal document scroll
+      const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+      expect(scrollWidth).toBeLessThanOrEqual(w + 1);
     }
   });
 
-  test('Part B3: Community tabs container has hidden scrollbar and zero page overflow', async ({ page }) => {
+  test('Part B3: Community navigation controls are fully contained and accessible on mobile', async ({ page }) => {
     await setupMockBackend(page, MOCK_STUDENT);
     await page.addInitScript((user) => {
       localStorage.setItem('ai_user', JSON.stringify(user));
       localStorage.setItem('nova_page', 'community');
     }, MOCK_STUDENT);
 
-    await page.setViewportSize({ width: 360, height: 750 });
-    await page.goto('/#/community');
-    await page.waitForSelector('.community-tabs');
+    const widths = [320, 360, 390, 430];
+    for (const w of widths) {
+      await page.setViewportSize({ width: w, height: 750 });
+      await page.goto('/#/community');
+      await page.waitForSelector('.community-tabs');
 
-    // Page must not have horizontal overflow
-    const pageScrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
-    expect(pageScrollWidth).toBeLessThanOrEqual(361);
+      const tabs = page.locator('.community-tabs button');
+      await expect(tabs).toHaveCount(4);
 
-    // Community tabs container must have scrollbar-width: none or hidden overflow-y
-    const styles = await page.evaluate(() => {
-      const el = document.querySelector('.community-tabs');
-      const cs = window.getComputedStyle(el);
-      return {
-        overflowY: cs.overflowY,
-        scrollbarWidth: cs.scrollbarWidth,
-      };
-    });
-    expect(styles.overflowY).toBe('hidden');
-    expect(['none', 'auto', '']).toContain(styles.scrollbarWidth);
+      // All 4 tabs must be visible on screen simultaneously
+      for (let i = 0; i < 4; i++) {
+        await expect(tabs.nth(i)).toBeVisible();
+        const box = await tabs.nth(i).boundingBox();
+        expect(box.x).toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width).toBeLessThanOrEqual(w + 2);
+        expect(box.height).toBeGreaterThanOrEqual(40); // 40px touch target
+      }
+
+      // Verify no horizontal document scroll
+      const pageScrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+      expect(pageScrollWidth).toBeLessThanOrEqual(w + 1);
+
+      // Click each tab to verify accessibility and active state
+      await tabs.nth(1).click();
+      await expect(tabs.nth(1)).toHaveClass(/active/);
+
+      await tabs.nth(0).click();
+      await expect(tabs.nth(0)).toHaveClass(/active/);
+    }
   });
 
-  test('Part C: Motion system respects prefers-reduced-motion', async ({ page }) => {
+  test('Part C: Motion system applies scroll reveals, moving icons, and respects reduced motion on real page content', async ({ page }) => {
     await setupMockBackend(page, MOCK_STUDENT);
-    await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.addInitScript((user) => {
       localStorage.setItem('ai_user', JSON.stringify(user));
       localStorage.setItem('nova_page', 'dashboard');
@@ -324,15 +400,35 @@ test.describe('NovaTutor Master Stabilization Verification', () => {
     await page.goto('/#/dashboard');
     await page.waitForSelector('.main-topnav');
 
-    // Verify hover-lift has transition: none or 0s when reduced motion is preferred
+    // 1. Verify scroll reveal classes exist on real Dashboard content
+    const morning = page.locator('.dash-morning.reveal');
+    const continueSection = page.locator('.dash-continue.reveal');
+    const courseGrid = page.locator('.course-grid.stagger-reveal');
+
+    await expect(morning).toBeVisible();
+    await expect(continueSection).toBeVisible();
+    await expect(courseGrid).toBeVisible();
+
+    // 2. Verify in-view is applied by IntersectionObserver
+    await expect(morning).toHaveClass(/in-view/);
+    await expect(continueSection).toHaveClass(/in-view/);
+
+    // 3. Verify moving icons (.icon-rotate-subtle) and hover-lift on real content
+    const icon = page.locator('.dash-continue-icon.icon-rotate-subtle');
+    await expect(icon).toBeVisible();
+    const hoverCard = page.locator('.dash-continue.hover-lift');
+    await expect(hoverCard).toBeVisible();
+
+    // 4. Verify reduced motion
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.reload();
+    await page.waitForSelector('.main-topnav');
+
+    // In reduced motion, in-view must be present immediately and transition duration must be 0s/none
+    await expect(page.locator('.dash-morning.reveal')).toHaveClass(/in-view/);
     const transition = await page.evaluate(() => {
-      const div = document.createElement('div');
-      div.className = 'reveal';
-      document.body.appendChild(div);
-      const cs = window.getComputedStyle(div);
-      const t = cs.transitionDuration;
-      document.body.removeChild(div);
-      return t;
+      const el = document.querySelector('.dash-morning.reveal');
+      return window.getComputedStyle(el).transitionDuration;
     });
     expect(['0s', '0.001s', '0.00001s', 'none']).toContain(transition);
   });

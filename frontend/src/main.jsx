@@ -34,22 +34,32 @@ function useScrollReveal(containerRef, deps = []) {
   if (typeof window === 'undefined') return;
   const isReduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const root = containerRef?.current || document;
-  const elements = root.querySelectorAll('.reveal:not(.in-view), .stagger-reveal:not(.in-view)');
-  if (!elements.length) return;
+  const observeAll = (obs) => {
+   const elements = root.querySelectorAll('.reveal:not(.in-view), .stagger-reveal:not(.in-view)');
+   elements.forEach(el => {
+    if (isReduced || typeof IntersectionObserver === 'undefined') {
+     el.classList.add('in-view');
+    } else if (obs) {
+     obs.observe(el);
+    }
+   });
+  };
   if (isReduced || typeof IntersectionObserver === 'undefined') {
-   elements.forEach(el => el.classList.add('in-view'));
+   observeAll(null);
    return;
   }
-  const observer = new IntersectionObserver((entries, obs) => {
+  const io = new IntersectionObserver((entries, obs) => {
    entries.forEach(entry => {
     if (entry.isIntersecting) {
      entry.target.classList.add('in-view');
      obs.unobserve(entry.target);
     }
    });
-  }, { threshold: 0.08, rootMargin: '0px 0px -20px 0px' });
-  elements.forEach(el => observer.observe(el));
-  return () => observer.disconnect();
+  }, { threshold: 0.05, rootMargin: '0px 0px 40px 0px' });
+  observeAll(io);
+  const mo = new MutationObserver(() => observeAll(io));
+  mo.observe(root.body || root, { childList: true, subtree: true });
+  return () => { io.disconnect(); mo.disconnect(); };
  }, deps);
 }
 
@@ -1499,7 +1509,7 @@ function NovaLearningBrain({user,go,courses,sharedIntel,sharedLoading}){
  const target=primary?.target|| (weakName?'tutor':'notifications');
  const title=primary?.title|| (weakName?`Strengthen ${weakName} before moving on.`:'Build your next learning session.');
  const desc=primary?.description||`Nova is using your recent activity and profile goal — ${goal} — to choose a focused next step.`;
- return <section className="panel nova-brain"><div className="nova-brain-main"><div className="nova-brain-badge"><Brain size={17}/><span>NOVA BRAIN • PERSONALIZED</span></div><h2>{title}</h2><p>{desc}</p><div className="nova-brain-actions"><button className="primary" onClick={()=>go(target)}>{primary?.action||'Start next step'} <ChevronRight size={14}/></button>{weakName&&<button className="secondary" onClick={()=>go('revision')}>Review {weakName} <RotateCcw size={14}/></button>}</div></div><div className="nova-brain-side"><div><span className="eyebrow">LEARNING SIGNAL</span><b>{weakName||'Building profile'}</b><small>{weak?`${weak.accuracy}% recent accuracy • ${weak.reason||'needs focused practice'}`:'Keep learning so Nova can detect patterns.'}</small></div><div className="brain-steps"><span><CheckCircle2 size={13}/> Assess</span><span><Lightbulb size={13}/> Learn</span><span><Target size={13}/> Practice</span><span><RotateCcw size={13}/> Revisit</span></div></div>{recs.length>1&&<div className="nova-recommendations"><span className="eyebrow">MORE FOR YOU</span>{recs.slice(1).map((r,i)=><button key={r.type||r.title||i} onClick={()=>go(r.target||'analytics')}><span>{i+2}</span><div><b>{r.title}</b><small>{r.description}</small></div><ChevronRight size={14}/></button>)}</div>}</section>
+ return <section className="panel nova-brain reveal hover-lift"><div className="nova-brain-main"><div className="nova-brain-badge"><Brain size={17}/><span>NOVA BRAIN • PERSONALIZED</span></div><h2>{title}</h2><p>{desc}</p><div className="nova-brain-actions"><button className="primary" onClick={()=>go(target)}>{primary?.action||'Start next step'} <ChevronRight size={14}/></button>{weakName&&<button className="secondary" onClick={()=>go('revision')}>Review {weakName} <RotateCcw size={14}/></button>}</div></div><div className="nova-brain-side"><div><span className="eyebrow">LEARNING SIGNAL</span><b>{weakName||'Building profile'}</b><small>{weak?`${weak.accuracy}% recent accuracy • ${weak.reason||'needs focused practice'}`:'Keep learning so Nova can detect patterns.'}</small></div><div className="brain-steps"><span><CheckCircle2 size={13}/> Assess</span><span><Lightbulb size={13}/> Learn</span><span><Target size={13}/> Practice</span><span><RotateCcw size={13}/> Revisit</span></div></div>{recs.length>1&&<div className="nova-recommendations"><span className="eyebrow">MORE FOR YOU</span>{recs.slice(1).map((r,i)=><button key={r.type||r.title||i} onClick={()=>go(r.target||'analytics')}><span>{i+2}</span><div><b>{r.title}</b><small>{r.description}</small></div><ChevronRight size={14}/></button>)}</div>}</section>
 }
 
 function GlobalSearch({courses,go}){
@@ -1543,7 +1553,7 @@ function Dashboard({courses,progress,go,openCourse,user}){const [live,setLive]=u
  const [nextLesson,setNextLesson]=useState(null);
  useEffect(()=>{const courseId=featured?.c?.id;if(!courseId){setNextLesson(null);return}let alive=true;api('/courses/'+courseId).then(d=>{if(!alive)return;const lessons=d?.lessons||[];const idx=Math.min(Number(featured?.p?.completedLessons)||0,Math.max(0,lessons.length-1));setNextLesson(lessons[idx]||null)}).catch(()=>{});return()=>{alive=false}},[featured?.c?.id,featured?.p?.completedLessons]);
  return <>
-  <section className="dash-morning">
+  <section className="dash-morning reveal">
    <div className="dash-morning-copy"><span className="eyebrow">{dateStr}</span><h1>{dayPhase}, {user.name?.split(' ')[0]||'learner'}</h1></div>
    <div className="dash-morning-meta">
     {/* Unknown ≠ zero: until the analytics/progress payload arrives the chip
@@ -1553,10 +1563,10 @@ function Dashboard({courses,progress,go,openCourse,user}){const [live,setLive]=u
     <span className="dash-chip" title="Lessons completed"><BookOpen size={13}/>{total?`${done}/${total} lessons`:'—'}</span>
    </div>
   </section>
-  {featured?.c&&<section className="dash-continue">
+  {featured?.c&&<section className="dash-continue reveal hover-lift">
    <div className="dash-continue-main">
     <span className="eyebrow">{inProgress?'CONTINUE WHERE YOU LEFT OFF':'START LEARNING'}</span>
-    <h2><span className="dash-continue-icon" aria-hidden="true">{featured.c.icon}</span>{featured.c.title}</h2>
+    <h2><span className="dash-continue-icon icon-rotate-subtle" aria-hidden="true">{featured.c.icon}</span>{featured.c.title}</h2>
     <p className="dash-next">{nextLesson?<>Next up · Lesson <b>{(Number(featured?.p?.completedLessons)||0)+1}</b> — {String(nextLesson.title||'').replace(/^Lesson\s*\d+\s*[—–-]\s*/i,'')}</>:'Pick up from your first lesson whenever you are ready.'}</p>
     <div className="dash-continue-progress"><div className="progress slim"><span style={{width:(featured.p?.percent||0)+'%'}}/></div><small>{Math.round(featured.p?.percent||0)}% complete{featured.c.totalLessons?` · ${featured.c.totalLessons} lessons`:''}</small></div>
    </div>
@@ -1565,8 +1575,8 @@ function Dashboard({courses,progress,go,openCourse,user}){const [live,setLive]=u
   <NovaLearningBrain user={user} go={go} courses={courses} sharedIntel={intel} sharedLoading={intelLoading}/>
   <IntelligenceSnapshot user={user} go={go} sharedIntel={intel} sharedUpdatedAt={intelUpdatedAt}/>
   <MasterySnapshot user={user} go={go} sharedIntel={intel}/>
-  <div className="section-head"><div><span className="eyebrow">YOUR PATH</span><h3>Continue learning</h3></div><button className="text-btn" onClick={()=>go('courses')}>View all</button></div>
-  <div className="course-grid">{visible.map((c,i)=><CourseCard key={c.id} c={c} p={currentProgress.find(x=>x.courseId===c.id)} openCourse={openCourse} i={i}/>)}{!visible.length&&<div className="empty course-grid-empty"><BookOpen size={28}/><b>No courses to show yet.</b><span>Your library appears here as soon as the catalog is available. The full catalog stays reachable from My Learning.</span><button className="secondary" onClick={()=>go('courses')}>Open My Learning</button></div>}</div>
+  <div className="section-head reveal"><div><span className="eyebrow">YOUR PATH</span><h3>Continue learning</h3></div><button className="text-btn" onClick={()=>go('courses')}>View all</button></div>
+  <div className="course-grid stagger-reveal">{visible.map((c,i)=><CourseCard key={c.id} c={c} p={currentProgress.find(x=>x.courseId===c.id)} openCourse={openCourse} i={i}/>)}{!visible.length&&<div className="empty course-grid-empty"><BookOpen size={28}/><b>No courses to show yet.</b><span>Your library appears here as soon as the catalog is available. The full catalog stays reachable from My Learning.</span><button className="secondary" onClick={()=>go('courses')}>Open My Learning</button></div>}</div>
  </>}
 function IntelligenceSnapshot({user,go,sharedIntel,sharedUpdatedAt}){
  const usesShared=sharedIntel!==undefined;
@@ -1586,18 +1596,18 @@ function IntelligenceSnapshot({user,go,sharedIntel,sharedUpdatedAt}){
  const updatedAt=usesShared?sharedUpdatedAt:ownUpdatedAt;
  if(!data)return <section className="intelligence-snapshot loading"><div><span className="eyebrow">NOVA INTELLIGENCE</span><h3>Building your learning memory…</h3><p>NovaTutor is learning from your course, quiz and coding activity.</p></div><Brain size={28}/></section>;
  const weak=data.weakAreas?.[0];const rec=data.recommendations?.[0];
- return <section className="intelligence-snapshot"><div className="intel-main"><span className="eyebrow">NOVA INTELLIGENCE • LIVE</span><h3>Here’s what you should do next.</h3><p>{rec?.description||'Keep learning and NovaTutor will personalize your next steps.'}</p><div className="intel-actions">{rec&&<button className="primary" onClick={()=>go(rec.target||'analytics')}>{rec.action}<ChevronRight size={14}/></button>}<button className="secondary" onClick={()=>go('analytics')}>View learning memory</button></div><small className="intel-updated">{updatedAt?`Updated ${updatedAt.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`:'Updating…'}</small></div><div className="intel-mini"><div><b>{data.streak}</b><span>day streak</span></div><div><b>{data.quizzes}</b><span>quiz attempts</span></div><div><b>{data.studyMinutes}</b><span>study minutes</span></div>{weak&&<div className="intel-weak"><span>Weakest area</span><b>{weak.subject}</b><small>{weak.accuracy}% accuracy</small></div>}</div></section>}
+ return <section className="intelligence-snapshot reveal"><div className="intel-main"><span className="eyebrow">NOVA INTELLIGENCE • LIVE</span><h3>Here’s what you should do next.</h3><p>{rec?.description||'Keep learning and NovaTutor will personalize your next steps.'}</p><div className="intel-actions">{rec&&<button className="primary" onClick={()=>go(rec.target||'analytics')}>{rec.action}<ChevronRight size={14}/></button>}<button className="secondary" onClick={()=>go('analytics')}>View learning memory</button></div><small className="intel-updated">{updatedAt?`Updated ${updatedAt.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`:'Updating…'}</small></div><div className="intel-mini"><div><b>{data.streak}</b><span>day streak</span></div><div><b>{data.quizzes}</b><span>quiz attempts</span></div><div><b>{data.studyMinutes}</b><span>study minutes</span></div>{weak&&<div className="intel-weak"><span>Weakest area</span><b>{weak.subject}</b><small>{weak.accuracy}% accuracy</small></div>}</div></section>}
 function MasterySnapshot({user,go,sharedIntel}){
  const usesShared=sharedIntel!==undefined;
  const [ownData,setOwnData]=useState(null);
  useEffect(()=>{if(usesShared||!user?.id)return;const load=()=>api('/intelligence/'+user.id).then(setOwnData).catch(()=>{});load();window.addEventListener('nova:learning-updated',load);return()=>window.removeEventListener('nova:learning-updated',load)},[user?.id,usesShared]);
  const data=usesShared?sharedIntel:ownData;
  const items=(data?.mastery||[]).slice(0,5);
- return <section className="mastery-snapshot panel"><div className="panel-head"><div><span className="eyebrow">NOVA BRAIN • MASTERY</span><h3>Know what to improve next</h3><small>Mastery is based on your recent quiz performance and changes as you practice.</small></div><Brain size={20}/></div>{items.length?<div className="mastery-list">{items.map((x,i)=><div className="mastery-row" key={x.subject+i}><div className="mastery-label"><b>{x.subject}</b><small>{x.state} • {x.trend}</small></div><div className="mastery-track"><span style={{width:Math.max(2,Math.min(100,Number(x.accuracy)||0))+'%'}}/></div><strong>{x.accuracy}%</strong></div>)}</div>:<div className="mastery-empty"><Brain size={25}/><div><b>Nova is still learning your pattern.</b><span>Complete a quiz or practice session and your mastery map will appear here.</span></div><button className="secondary" onClick={()=>go('quiz')}>Start a quiz <ChevronRight size={13}/></button></div>}<div className="mastery-footer"><span><CheckCircle2 size={13}/> <b>85%+</b> mastered</span><span><Lightbulb size={13}/> <b>65–84%</b> learning</span><span><Target size={13}/> <b>&lt;65%</b> needs work</span><button className="text-btn" onClick={()=>go('mentor')}>Open adaptive mentor <ChevronRight size={13}/></button></div></section>}
+ return <section className="mastery-snapshot panel reveal"><div className="panel-head"><div><span className="eyebrow">NOVA BRAIN • MASTERY</span><h3>Know what to improve next</h3><small>Mastery is based on your recent quiz performance and changes as you practice.</small></div><Brain size={20}/></div>{items.length?<div className="mastery-list">{items.map((x,i)=><div className="mastery-row" key={x.subject+i}><div className="mastery-label"><b>{x.subject}</b><small>{x.state} • {x.trend}</small></div><div className="mastery-track"><span style={{width:Math.max(2,Math.min(100,Number(x.accuracy)||0))+'%'}}/></div><strong>{x.accuracy}%</strong></div>)}</div>:<div className="mastery-empty"><Brain size={25}/><div><b>Nova is still learning your pattern.</b><span>Complete a quiz or practice session and your mastery map will appear here.</span></div><button className="secondary" onClick={()=>go('quiz')}>Start a quiz <ChevronRight size={13}/></button></div>}<div className="mastery-footer"><span><CheckCircle2 size={13}/> <b>85%+</b> mastered</span><span><Lightbulb size={13}/> <b>65–84%</b> learning</span><span><Target size={13}/> <b>&lt;65%</b> needs work</span><button className="text-btn" onClick={()=>go('mentor')}>Open adaptive mentor <ChevronRight size={13}/></button></div></section>}
 
 
 function Stat({n,t}){return <div className="stat"><b>{n}</b><span>{t}</span></div>}
-function CourseCard({c,p,openCourse,i}){const percent=Math.round(p?.percent||0);const open=()=>openCourse(c.id);return <div className="course-card" onClick={open} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open()}}} role="button" tabIndex={0}><div className={'course-icon i'+i}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:percent+'%'}}/></div><div className="course-foot"><small>{percent}% complete • {c.totalLessons} lessons</small><button onClick={e=>{e.stopPropagation();open()}}>Open <ChevronRight size={13}/></button></div></div>}
+function CourseCard({c,p,openCourse,i}){const percent=Math.round(p?.percent||0);const open=()=>openCourse(c.id);return <div className="course-card hover-lift" onClick={open} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open()}}} role="button" tabIndex={0}><div className={'course-icon i'+i+' icon-rotate-subtle'}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:percent+'%'}}/></div><div className="course-foot"><small>{percent}% complete • {c.totalLessons} lessons</small><button onClick={e=>{e.stopPropagation();open()}}>Open <ChevronRight size={13}/></button></div></div>}
 function CoursePage({courseId,lessonId,onSelectLesson,courses,progress,refresh,onBack}){
  const [detail,setDetail]=useState(null),[error,setError]=useState('');
  const summary=courses.find(c=>String(c.id)===String(courseId));
@@ -1618,7 +1628,7 @@ function Courses({courses,progress,refresh,user,openCourse}){
  if(error)return <div className="page-crash"><RefreshCw size={40}/><h2>Course could not load</h2><p>{error}</p><button className="secondary" onClick={()=>{setError('');setSelected(null)}}>Back</button></div>;
  if(detail)return <CourseDetail detail={detail} progress={progress.find(x=>x.courseId===detail.course.id)} refresh={refresh} back={()=>{setSelected(null);setDetail(null)}}/>;
  return <><div className="page-title"><span className="eyebrow">CURRICULUM</span><h1>My <span>Learning.</span></h1><p>Detailed theory, examples and AI help — no videos required.</p></div><div className="course-filters"><input placeholder="Search courses…" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="Level" value={level} onChange={e=>setLevel(e.target.value)}><option>All</option><option>Beginner</option><option>Intermediate</option><option>Advanced</option></select></div>
-  {courses.length===0?<div className="empty-page"><BookOpen size={48}/><h3>No courses available yet</h3><p>Courses could not be loaded from the server right now. Check your connection and try reloading.</p><button className="primary" onClick={refresh}>Reload courses</button></div>:<div className="course-grid">{visible.map((c,i)=><div className="course-card big" key={c.id}><div className={'course-icon i'+i}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:(progress.find(x=>x.courseId===c.id)?.percent||0)+'%'}}/></div><div className="course-foot"><small>{progress.find(x=>x.courseId===c.id)?.completedLessons||0}/{c.totalLessons} lessons done</small><button onClick={()=>handleOpen(c.id)}>Open course <ChevronRight size={13}/></button></div></div>)}</div>}
+  {courses.length===0?<div className="empty-page"><BookOpen size={48}/><h3>No courses available yet</h3><p>Courses could not be loaded from the server right now. Check your connection and try reloading.</p><button className="primary" onClick={refresh}>Reload courses</button></div>:<div className="course-grid stagger-reveal">{visible.map((c,i)=><div className="course-card big hover-lift" key={c.id}><div className={'course-icon i'+i+' icon-rotate-subtle'}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:(progress.find(x=>x.courseId===c.id)?.percent||0)+'%'}}/></div><div className="course-foot"><small>{progress.find(x=>x.courseId===c.id)?.completedLessons||0}/{c.totalLessons} lessons done</small><button onClick={()=>handleOpen(c.id)}>Open course <ChevronRight size={13}/></button></div></div>)}</div>}
  </>;
 }
 function TheoryContent({content}){
