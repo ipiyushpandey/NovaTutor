@@ -17,33 +17,33 @@
 
 :root{
   /* ---- Color · neutrals (editorial off-white, light mode) ---- */
-  --bg:#FCFCFA;            /* app background */
+  --bg:#FAFAF7;            /* editorial paper background */
   --surface:#FFFFFF;       /* resting surface */
-  --surface-2:#F5F5F2;     /* recessed surface (wells, code chips, hover fill) */
+  --surface-2:#F2F2ED;     /* recessed surface (wells, code chips, hover fill) */
   --elevated:#FFFFFF;      /* sheets, modals, drawers */
-  --border:#E7E7E4;        /* hairline borders */
-  --border-strong:#D9D9D5; /* input borders, dividers needing weight */
+  --border:#E6E6E1;        /* hairline borders */
+  --border-strong:#D4D4CE; /* input borders, dividers needing weight */
 
   /* ---- Color · text ---- */
   --text:#14161B;
   --text-2:#4B4F58;        /* secondary */
   --muted:#71757E;         /* captions, metadata — contrast-checked >= 4.5:1 on --bg */
 
-  /* ---- Color · emphasis (ink replaces "accent everywhere") ----
-     Selection, active nav, primary actions. Black in light mode,
-     white in dark mode — emphasis by contrast, not hue. */
+  /* ---- Color · emphasis (ink for typography/monochrome) ---- */
   --ink:#14161B;
   --ink-2:#3C3F46;         /* hovered ink */
-  --ink-soft:#F0F0ED;      /* tinted neutral fill (selected rows, wells) */
-  --on-ink:#FCFCFA;        /* text on ink fills */
+  --ink-soft:#EFEFEA;      /* tinted neutral fill (selected rows, wells) */
+  --on-ink:#FAFAF7;        /* text on ink fills */
 
-  /* ---- Color · accent (restrained, meaningful uses only) ----
-     Primary CTAs and the AI identity. NOT for every active state. */
-  --accent:#14161B;        /* primary action = ink button */
-  --accent-rgb:20,22,28;   /* rgb twin of --ink for alpha tints (rgba(var(--accent-rgb),.08)) */
-  --accent-strong:#000000; /* pressed */
-  --accent-soft:#F0F0ED;   /* neutral tinted fill */
-  --accent-ring:rgba(20,22,27,.28); /* focus rings */
+  /* ---- Color · brand & accent (Evergreen #1E7A5F + Mint #3FBF9A) ---- */
+  --brand-evergreen:#1E7A5F;
+  --brand-mint:#3FBF9A;
+  --accent:#1E7A5F;        /* Evergreen primary action */
+  --accent-rgb:30,122,95;
+  --accent-strong:#16624C; /* pressed/hover */
+  --accent-soft:rgba(30,122,95,.09); /* subtle tint fill */
+  --accent-ring:rgba(30,122,95,.28); /* focus rings */
+  --on-accent:#FFFFFF;
 
   /* ---- Color · energy (learning signals ONLY: streaks, XP, milestones) ---- */
   --energy:#B45309;
@@ -120,27 +120,30 @@
 
 /* ---- Dark mode: same structure, re-graded (never a blind inversion) ---- */
 :root.dark{
-  --bg:#0E1013;
-  --surface:#15181D;
-  --surface-2:#1B1F26;
-  --elevated:#1B1F26;
-  --border:#262B33;
-  --border-strong:#3A4150;
+  --bg:#171B22;            /* established dark background */
+  --surface:#1E232B;
+  --surface-2:#242B35;
+  --elevated:#212630;
+  --border:#2D3440;
+  --border-strong:#3F4858;
 
   --text:#EDEEF2;
-  --text-2:#B9BFca;
+  --text-2:#B9BFCA;
   --muted:#9AA1AD;
 
   --ink:#EDEEF2;
   --ink-2:#FFFFFF;
-  --ink-soft:#1E232B;
+  --ink-soft:#242A34;
   --on-ink:#14161B;
 
-  --accent:#EDEEF2;        /* primary action = white button in dark mode */
-  --accent-rgb:237,238,242;
-  --accent-strong:#FFFFFF;
-  --accent-soft:#1E232B;
-  --accent-ring:rgba(237,238,242,.32);
+  --brand-evergreen:#1E7A5F;
+  --brand-mint:#3FBF9A;
+  --accent:#3FBF9A;        /* Mint primary action in dark mode */
+  --accent-rgb:63,191,154;
+  --accent-strong:#4ED2AC;
+  --accent-soft:rgba(63,191,154,.14);
+  --accent-ring:rgba(63,191,154,.32);
+  --on-accent:#0C1A14;
 
   --energy:#E8B45A;
   --energy-soft:#332812;

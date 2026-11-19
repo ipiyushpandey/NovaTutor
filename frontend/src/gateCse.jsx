@@ -88,12 +88,12 @@ export default function GateCse({routeTab=null,onRouteTab=null}){
  },[]);
  const openTab=t=>{if(onRouteTab)onRouteTab(t);else setLocalTab(t)};
  return <div className="gate-page">
-   <section className="gate-hero">
+   <section className="gate-hero reveal">
     <div className="gate-hero-copy"><span className="pill"><GraduationCap size={13}/> GATE CSE PREPARATION</span><h1>GATE CSE <span>Command Center.</span></h1><p>Complete syllabus, subject-wise exam notes, highlighted PDFs, official previous-year papers and a focused timed practice library — all in one place.</p><div className="gate-hero-actions"><button className="primary" onClick={()=>openTab('notes')}><BookOpen size={16}/> Open Notes</button><button className={'secondary '+(tab==='pyq'?'gate-practice-active':'')} onClick={()=>openTab('pyq')} aria-current={tab==='pyq'?'page':undefined}><Target size={16}/> Practice PYQ</button></div></div>
     <div className="gate-hero-orb"><GraduationCap size={52}/><b>CS</b><small>100 MARKS • 180 MIN</small></div>
    </section>
-   <div className="gate-stat-grid"><div><b>10</b><span>Core CS subjects</span></div><div><b>11</b><span>PDF study packs</span></div><div><b>50</b><span>Timed practice papers</span></div><div><b>15</b><span>GA marks</span></div></div>
-   <div className="gate-tabs">{[['overview','Overview'],['syllabus','Syllabus'],['notes','Notes & PDFs'],['pyq','PYQ & Test Series']].map(([id,label])=><button key={id} className={tab===id?'active':''} onClick={()=>openTab(id)}>{label}</button>)}</div>
+   <div className="gate-stat-grid stagger-reveal"><div><b>10</b><span>Core CS subjects</span></div><div><b>11</b><span>PDF study packs</span></div><div><b>50</b><span>Timed practice papers</span></div><div><b>15</b><span>GA marks</span></div></div>
+   <div className="gate-tabs reveal">{[['overview','Overview'],['syllabus','Syllabus'],['notes','Notes & PDFs'],['pyq','PYQ & Test Series']].map(([id,label])=><button key={id} className={tab===id?'active':''} onClick={()=>openTab(id)}>{label}</button>)}</div>
    {tab==='overview'&&<Overview setTab={openTab} quiz={quiz}/>} 
    {tab==='syllabus'&&<Syllabus/>}
    {tab==='notes'&&<Notes/>}

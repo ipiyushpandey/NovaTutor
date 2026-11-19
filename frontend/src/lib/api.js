@@ -132,6 +132,10 @@ async function api(path,opt={},_retry=false){
      if(refreshStatus==='ok'){clearTimeout(timeout);if(externalSignal)externalSignal.removeEventListener('abort',onExternalAbort);return api(path,opt,true);}
     }
     const err=new Error(message); err.status=r.status; err.code=code;
+    if(r.status===502||r.status===504||(r.status===503&&/waking up|starting/i.test(message))||/waking up/i.test(message)){
+     err.isWakeUp=true;
+     err.code=err.code||'SERVER_WAKING_UP';
+    }
     // 403 means authenticated but not permitted; credential checks (e.g. wrong current password),
     // transient /auth/me network errors, and stale responses after logout/switch must not destroy a valid session.
     if(r.status===401&&!isCredentialCheckPath(path)&&refreshStatus==='unauthorized'&&isSameSession(session)){
@@ -157,7 +161,11 @@ async function api(path,opt={},_retry=false){
    }
    if(e.name==='AbortError'){
     if(externalSignal?.aborted) throw e;
-    throw new Error('The request timed out. The server may still be waking up — please try again.');
+    const timeoutErr=new Error('The request timed out. The server may still be waking up — please try again.');
+    timeoutErr.code='SERVER_WAKING_UP';
+    timeoutErr.isWakeUp=true;
+    timeoutErr.timedOut=true;
+    throw timeoutErr;
    }
    if(isNetErr) throw new Error('Cannot reach NovaTutor right now. Check your connection and try again.');
    throw e;

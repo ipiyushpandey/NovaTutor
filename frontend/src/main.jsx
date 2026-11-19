@@ -636,7 +636,8 @@ function App(){
  const [gateTab,setGateTab]=useState(()=>initialParsed.gateTab||'overview');
  const [studioTab,setStudioTab]=useState(()=>initialParsed.studioTab||null);
  const inAppNavCountRef=useRef(0);
- const [aiStatus,setAiStatus]=useState({configured:false,model:'—'}),[courses,setCourses]=useState([]),[progress,setProgress]=useState([]),[mobile,setMobile]=useState(false),[user,setUser]=useState(readUser);
+ const [aiStatus,setAiStatus]=useState({configured:false,model:'—'}),[courses,setCourses]=useState(()=>{try{const c=localStorage.getItem('nova_courses_cache');return c?JSON.parse(c):[]}catch{return[]}}),[progress,setProgress]=useState([]),[mobile,setMobile]=useState(false),[user,setUser]=useState(readUser);
+ const [restorationMinHeight,setRestorationMinHeight]=useState(null);
  const [wakingServer,setWakingServer]=useState(false);
  const [vp,setVp]=useState(()=>typeof window!=='undefined'&&window.matchMedia('(max-width:960px)').matches);
  useEffect(()=>{const mq=window.matchMedia('(max-width:960px)');const on=e=>{setVp(e.matches);if(!e.matches)setMobile(false)};mq.addEventListener('change',on);return()=>mq.removeEventListener('change',on)},[]);
@@ -858,30 +859,35 @@ function App(){
  },[routeKey]);
 
  // Deterministic scroll restoration: forward pushes start at 0; Back/Forward restores
- // the saved scrollY using ResizeObserver until async content reaches target height.
- useEffect(()=>{
+ // the saved scrollY before paint, reserving needed layout height to eliminate jumps from the top.
+ useLayoutEffect(()=>{
   const mode=navModeRef.current;
   navModeRef.current='pop';
   if(mode==='push'){
    restoringScrollRef.current=false;
-   window.scrollTo({top:0,left:0,behavior:'auto'});
+   setRestorationMinHeight(null);
+   window.scrollTo({top:0,left:0,behavior:'instant'});
    return;
   }
   const raw=sessionStorage.getItem(scrollStoreKey(routeKey));
   const target=Number(raw);
   if(!Number.isFinite(target)||target<=0){
    restoringScrollRef.current=false;
-   window.scrollTo({top:0,left:0,behavior:'auto'});
+   setRestorationMinHeight(null);
+   window.scrollTo({top:0,left:0,behavior:'instant'});
    return;
   }
   restoringScrollRef.current=true;
+  const neededHeight=target+(window.innerHeight||800)+120;
+  setRestorationMinHeight(neededHeight);
+  window.scrollTo({top:target,left:0,behavior:'instant'});
   let cancelled=false,userInteracted=false,raf=0;
   const startedAt=Date.now();
   const stopUser=()=>{userInteracted=true;cleanup();};
   const apply=()=>{
    if(cancelled||userInteracted)return;
-   window.scrollTo({top:target,left:0,behavior:'auto'});
-   if(Math.abs(window.scrollY-target)<=2||Date.now()-startedAt>2500){
+   window.scrollTo({top:target,left:0,behavior:'instant'});
+   if(Math.abs(window.scrollY-target)<=2||Date.now()-startedAt>2000){
     cleanup();
    }
   };
@@ -890,11 +896,12 @@ function App(){
    ro=new ResizeObserver(()=>{if(!cancelled&&!userInteracted){cancelAnimationFrame(raf);raf=requestAnimationFrame(apply)}});
    ro.observe(document.body);
   }
-  const timer=setInterval(()=>{if(!cancelled&&!userInteracted)apply()},60);
-  const maxTimer=setTimeout(()=>cleanup(),2600);
+  const timer=setInterval(()=>{if(!cancelled&&!userInteracted)apply()},50);
+  const maxTimer=setTimeout(()=>cleanup(),2100);
   const cleanup=()=>{
    cancelled=true;
    restoringScrollRef.current=false;
+   setRestorationMinHeight(null);
    cancelAnimationFrame(raf);
    clearInterval(timer);
    clearTimeout(maxTimer);
@@ -994,9 +1001,9 @@ function App(){
   logout={logout} aiConfigured={aiStatus.configured}
  />
  {mobile&&<div className="nav-shade" onClick={()=>setMobile(false)}/>}
- <main className="main-topnav">
+ <main className="main-topnav" style={restorationMinHeight?{minHeight:`${restorationMinHeight}px`}:undefined}>
  {wakingServer&&<div className="nv-toast" role="status">Waking up NovaTutor server… this can take a few seconds after idle.</div>}
- <div className="page-transition"><ErrorBoundary key={page}><React.Suspense fallback={<div className="skeleton" style={{minHeight:'240px',margin:'24px 0'}}/>}>{adminDenied&&<div className="nv-toast" role="status">Admin area is restricted to administrator accounts.</div>}{page==='dashboard'&&<Dashboard courses={courses} progress={progress} go={go} openCourse={openCourse} user={user}/>} {page==='course'&&<CoursePage courseId={courseId} lessonId={lessonId} onSelectLesson={lid=>openLesson(courseId,lid)} courses={courses} progress={progress} refresh={load} onBack={()=>inAppNavCountRef.current>0?window.history.back():go('courses')}/>} {page==='coach'&&<NovaCoach user={user} go={go} courses={courses}/>} {page==='study-room'&&<NovaCoach user={user} go={go} courses={courses} initialTab="community"/>} {page==='analytics'&&<Analytics user={user}/>} {page==='nova-os'&&<NovaBrain user={user} go={go}/>} {page==='nova-brain'&&<NovaBrain user={user} go={go}/>} {page==='practice'&&<PracticeHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='prepare'&&<PrepareHub user={user} go={go} gateTab={gateTab} onGateTab={onGateTab} dsaSlug={dsaSlug} onDsaSlug={onDsaSlug}/>} {page==='courses'&&<MyLearningHub courses={courses} progress={progress} refresh={load} user={user} go={go} openCourse={openCourse}/>} {page==='learning-studio'&&<LearningStudio user={user} routeTab={studioTab} onRouteTab={onStudioTab}/>} {page==='tutor'&&<LearningStudio user={user} initialTab="teacher" onRouteTab={onStudioTab}/>} {page==='code'&&<CodeLab user={user}/>} {page==='quiz'&&<Quiz courses={courses} progress={progress} refresh={load} user={user}/>} {page==='chat'&&<ChatWorkspace user={user}/>} {page==='knowledge'&&<KnowledgeHub user={user}/>}
+ <div className="page-transition page-in" key={page}><ErrorBoundary><React.Suspense fallback={<div className="skeleton" style={{minHeight:'240px',margin:'24px 0'}}/>}>{adminDenied&&<div className="nv-toast" role="status">Admin area is restricted to administrator accounts.</div>}{page==='dashboard'&&<Dashboard courses={courses} progress={progress} go={go} openCourse={openCourse} user={user}/>} {page==='course'&&<CoursePage courseId={courseId} lessonId={lessonId} onSelectLesson={lid=>openLesson(courseId,lid)} courses={courses} progress={progress} refresh={load} onBack={()=>inAppNavCountRef.current>0?window.history.back():go('courses')}/>} {page==='coach'&&<NovaCoach user={user} go={go} courses={courses}/>} {page==='study-room'&&<NovaCoach user={user} go={go} courses={courses} initialTab="community"/>} {page==='analytics'&&<Analytics user={user}/>} {page==='nova-os'&&<NovaBrain user={user} go={go}/>} {page==='nova-brain'&&<NovaBrain user={user} go={go}/>} {page==='practice'&&<PracticeHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='prepare'&&<PrepareHub user={user} go={go} gateTab={gateTab} onGateTab={onGateTab} dsaSlug={dsaSlug} onDsaSlug={onDsaSlug}/>} {page==='courses'&&<MyLearningHub courses={courses} progress={progress} refresh={load} user={user} go={go} openCourse={openCourse}/>} {page==='learning-studio'&&<LearningStudio user={user} routeTab={studioTab} onRouteTab={onStudioTab}/>} {page==='tutor'&&<LearningStudio user={user} initialTab="teacher" onRouteTab={onStudioTab}/>} {page==='code'&&<CodeLab user={user}/>} {page==='quiz'&&<Quiz courses={courses} progress={progress} refresh={load} user={user}/>} {page==='chat'&&<ChatWorkspace user={user}/>} {page==='knowledge'&&<KnowledgeHub user={user}/>}
  {page==='mentor'&&<AdaptiveMentor user={user} courses={courses}/>} {page==='planner'&&<StudyPlanner user={user}/>} {page==='flashcards'&&<Flashcards user={user}/>} {page==='achievements'&&<Achievements user={user} go={go}/>} {page==='profile'&&<AILearningProfile user={user} courses={courses} go={go}/>} {page==='interview'&&<Interviewer user={user}/>} {page==='voice'&&<LearningStudio user={user} initialTab="voice" onRouteTab={onStudioTab}/>} {page==='dpp'&&<CourseDppIde user={user} courses={courses}/>} {page==='exam'&&<ExamSimulator user={user}/>} {page==='gatecse'&&<GateCse routeTab={gateTab} onRouteTab={onGateTab}/>} {page==='dsa'&&<DsaPractice user={user} api={api} routeSlug={dsaSlug} onRouteSlug={onDsaSlug}/>} {page==='career'&&<CareerHub user={user} go={go}/>} {page==='community'&&<CommunityHub user={user} go={go}/>} {page==='notifications'&&<TodayHub user={user} go={go}/>} {page==='revision'&&<RevisionHub user={user} go={go}/>} {page==='settings'&&<SettingsPage user={user} dark={dark} setDark={setDark} logout={logout} switchAccount={switchAccount} onUserUpdate={updateUser} aiStatus={aiStatus}/>} {page==='about'&&<PublicPage page="about" signedIn onBack={()=>go('dashboard')}/>} {page==='privacy'&&<PublicPage page="privacy" signedIn onBack={()=>go('settings')}/>} {page==='terms'&&<PublicPage page="terms" signedIn onBack={()=>go('settings')}/>} {page==='contact'&&<PublicPage page="contact" signedIn onBack={()=>go('dashboard')}/>} {page==='admin'&&(role==='ADMIN'?<Admin user={user} courses={courses} refreshCourses={load} onBack={()=>go('dashboard')}/>:<AdminLocked go={go}/>)}</React.Suspense></ErrorBoundary></div></main></div>
 }
 function readHashRoute(){
@@ -1132,6 +1139,50 @@ function PublicPage({page,onBack,signedIn=false}){
  </div>;
 }
 
+function LoginWakeUp({onRetry,onCancel,mode='login'}){
+ const [seconds,setSeconds]=useState(0);
+ const [status,setStatus]=useState('checking');
+ useEffect(()=>{
+  let cancelled=false;
+  const timer=setInterval(()=>setSeconds(s=>s+1),1000);
+  let pollTimer=null;
+  async function poll(){
+   try{
+    const res=await api('/actuator/health/readiness',{timeoutMs:3500});
+    if(cancelled)return;
+    if(res?.status==='UP'){
+     setStatus('ready');
+     clearInterval(timer);
+     setTimeout(()=>{if(!cancelled)onRetry()},800);
+     return;
+    }
+   }catch{}
+   if(!cancelled)pollTimer=setTimeout(poll,4000);
+  }
+  pollTimer=setTimeout(poll,2500);
+  return()=>{cancelled=true;clearInterval(timer);if(pollTimer)clearTimeout(pollTimer)};
+ },[onRetry]);
+
+ return <div className="auth-wakeup-box" role="status" aria-live="polite">
+  <div className="auth-wakeup-beacon">
+   <span className="auth-wakeup-ring r1"/>
+   <span className="auth-wakeup-ring r2"/>
+   <span className="auth-wakeup-dot"/>
+  </div>
+  <div className="auth-wakeup-content">
+   <h4 className="auth-wakeup-title">{status==='ready'?'NovaTutor is ready!':'First time here? NovaTutor is waking up.'}</h4>
+   <p className="auth-wakeup-desc">{status==='ready'?'Backend connected. Completing your sign in…':'This cloud server sleeps when idle to conserve resources. Waking it up may take around a minute.'}</p>
+   <div className="auth-wakeup-meta">
+    <span className="auth-wakeup-badge"><span className={'status-indicator '+(status==='ready'?'ready':'waking')}/>{status==='ready'?'Server live':`Connecting… (${seconds}s)`}</span>
+    <div className="auth-wakeup-actions">
+     <button type="button" className="auth-wakeup-retry-btn" onClick={onRetry} disabled={status==='ready'}>Retry now</button>
+     <button type="button" className="auth-wakeup-dismiss-btn" onClick={onCancel}>Dismiss</button>
+    </div>
+   </div>
+  </div>
+ </div>;
+}
+
 function Auth({onLogin,dark,setDark}){
  const [mode,setMode]=useState('login');
  const [adminMode,setAdminMode]=useState(false);
@@ -1139,6 +1190,7 @@ function Auth({onLogin,dark,setDark}){
  const [err,setErr]=useState('');
  const [notice,setNotice]=useState('');
  const [loading,setLoading]=useState(false);
+ const [wakeUp,setWakeUp]=useState(null);
  const [showPass,setShowPass]=useState(false);
  const [providers,setProviders]=useState({googleEnabled:false,googleClientId:'',emailDeliveryConfigured:null});
  const [pending,setPending]=useState(null);
@@ -1177,10 +1229,17 @@ function Auth({onLogin,dark,setDark}){
 
  function navigatePublic(id){window.location.hash='/'+id}
 
+ function retryWakeUp(){
+  const w=wakeUp;
+  setWakeUp(null);
+  if(w?.type==='guest')startGuest();
+  else submit({preventDefault:()=>{}});
+ }
+
  async function submit(e){
   e.preventDefault();
   if(loading)return;
-  setErr('');setNotice('');
+  setErr('');setNotice('');setWakeUp(null);
   if(mode==='register'&&form.password!==form.confirm){setErr('Passwords do not match.');return}
   setLoading(true);
   try{
@@ -1199,6 +1258,11 @@ function Auth({onLogin,dark,setDark}){
     setMode('login');setForm(f=>({...f,password:'',confirm:''}));
    }
   }catch(x){
+   if(x.isWakeUp||x.code==='SERVER_WAKING_UP'||/waking up|timed out/i.test(x.message)){
+    setWakeUp({type:'submit'});
+    setErr('');
+    return;
+   }
    if(x.code==='EMAIL_UNVERIFIED'){
     setPending({email:form.email,verificationSent:false,
       emailDeliveryConfigured:typeof providers.emailDeliveryConfigured==='boolean'?providers.emailDeliveryConfigured:null,
@@ -1224,11 +1288,18 @@ function Auth({onLogin,dark,setDark}){
 
  async function startGuest(){
   if(loading)return;
-  setErr('');setNotice('');setLoading(true);
+  setErr('');setNotice('');setWakeUp(null);setLoading(true);
   try{
    const result=await api('/auth/guest',{method:'POST',timeoutMs:25000});
    onLogin({...result,profileComplete:false});
-  }catch(x){setErr(x.message||'Guest mode could not start. Please try again.')}
+  }catch(x){
+   if(x.isWakeUp||x.code==='SERVER_WAKING_UP'||/waking up|timed out/i.test(x.message)){
+    setWakeUp({type:'guest'});
+    setErr('');
+    return;
+   }
+   setErr(x.message||'Guest mode could not start. Please try again.');
+  }
   finally{setLoading(false)}
  }
 
@@ -1257,14 +1328,15 @@ function Auth({onLogin,dark,setDark}){
   <div className="auth-brand"><BrandMark size={32}/><div><b>NovaTutor</b><span>THE LEARNING WORKSPACE</span></div></div>
 
   {isAuthForm&&<div className="auth-mode" role="group" aria-label="Account type">
-   <button type="button" className={mode==='login'&&!adminMode?'selected':''} aria-pressed={mode==='login'&&!adminMode} onClick={()=>{setMode('login');setAdminMode(false);setErr('');setNotice('')}}>Student</button>
-   <button type="button" className={mode==='login'&&adminMode?'selected':''} aria-pressed={mode==='login'&&adminMode} onClick={()=>{setMode('login');setAdminMode(true);setErr('');setNotice('')}}>Admin</button>
-   <button type="button" className={mode==='register'?'selected':''} aria-pressed={mode==='register'} onClick={()=>{setMode('register');setAdminMode(false);setErr('');setNotice('')}}>Create account</button>
+   <button type="button" className={mode==='login'&&!adminMode?'selected':''} aria-pressed={mode==='login'&&!adminMode} onClick={()=>{setMode('login');setAdminMode(false);setErr('');setNotice('');setWakeUp(null)}}>Student</button>
+   <button type="button" className={mode==='login'&&adminMode?'selected':''} aria-pressed={mode==='login'&&adminMode} onClick={()=>{setMode('login');setAdminMode(true);setErr('');setNotice('');setWakeUp(null)}}>Admin</button>
+   <button type="button" className={mode==='register'?'selected':''} aria-pressed={mode==='register'} onClick={()=>{setMode('register');setAdminMode(false);setErr('');setNotice('');setWakeUp(null)}}>Create account</button>
   </div>}
 
   <h2>{heading}</h2>
   <p className="auth-sub">{sub}</p>
-     {err&&<div className="error" role="alert">{err}</div>}
+  {wakeUp&&<LoginWakeUp onRetry={retryWakeUp} onCancel={()=>setWakeUp(null)} mode={mode}/>}
+  {!wakeUp&&err&&<div className="error" role="alert">{err}</div>}
   {notice&&<div className="auth-notice" role="status">{notice}</div>}
   {mode==='forgot'&&deliveryUnavailable&&<div className="auth-warning" role="status">
     <b>Password reset by email is unavailable.</b>
@@ -1519,7 +1591,17 @@ function GlobalSearch({courses,go}){
  return <div className="global-search"><div className="global-search-input"><FileSearch size={16}/><input value={q} onFocus={()=>setOpen(true)} onChange={e=>{setQ(e.target.value);setOpen(true)}} onKeyDown={e=>{if(e.key==='Escape'){setOpen(false);setQ('')}if(e.key==='Enter'&&results[0]){go(results[0].id);setOpen(false);setQ('')}}} placeholder="Search NovaTutor…" aria-label="Search NovaTutor"/>{q&&<button onClick={()=>{setQ('');setOpen(false)}} aria-label="Clear search">×</button>}</div>{open&&term&&<div className="global-search-results">{results.length?results.map(r=><button key={r.id+r.label} onClick={()=>{go(r.id);setOpen(false);setQ('')}}><span className="search-kind">{r.kind}</span><b>{r.label}</b><ChevronRight size={13}/></button>):<div className="search-empty">No matching NovaTutor module or course.</div>}</div>}</div>
 }
 
-function Dashboard({courses,progress,go,openCourse,user}){const [live,setLive]=useState(null),[liveProgress,setLiveProgress]=useState(progress||[]),[intel,setIntel]=useState(null),[intelLoading,setIntelLoading]=useState(true),[intelUpdatedAt,setIntelUpdatedAt]=useState(null);const currentProgress=liveProgress.length?liveProgress:progress;
+function Dashboard({courses,progress,go,openCourse,user}){
+ const cachedDash=useMemo(()=>{
+  if(!user?.id)return null;
+  return readRuntimeState(user.id,'dashboard',null);
+ },[user?.id]);
+ const [live,setLive]=useState(()=>cachedDash?.analytics||null);
+ const [liveProgress,setLiveProgress]=useState(()=>cachedDash?.progress||(progress?.length?progress:[]));
+ const [intel,setIntel]=useState(()=>cachedDash?.intel||null);
+ const [intelLoading,setIntelLoading]=useState(()=>!cachedDash?.intel);
+ const [intelUpdatedAt,setIntelUpdatedAt]=useState(()=>cachedDash?.intelUpdatedAt?new Date(cachedDash.intelUpdatedAt):null);
+ const currentProgress=liveProgress.length?liveProgress:progress;
  /* Dashboard composition (redesign): a calm morning strip, one Continue band
     for the course in progress, a Today block, then secondary sections on
     scroll. Single shared intelligence fetch prevents 3x duplicate /intelligence
@@ -1532,10 +1614,21 @@ function Dashboard({courses,progress,go,openCourse,user}){const [live,setLive]=u
   const pull=()=>{
    Promise.allSettled([api('/analytics/'+user.id),api('/progress/'+user.id),api('/intelligence/'+user.id)]).then(([aRes,pRes,iRes])=>{
     if(!alive)return;
+    const newLive=aRes.status==='fulfilled'?aRes.value:live;
+    const newProgress=pRes.status==='fulfilled'&&Array.isArray(pRes.value)?pRes.value:liveProgress;
+    const newIntel=iRes.status==='fulfilled'?iRes.value:intel;
     if(aRes.status==='fulfilled')setLive(aRes.value);
     if(pRes.status==='fulfilled'&&Array.isArray(pRes.value))setLiveProgress(pRes.value);
     if(iRes.status==='fulfilled'){setIntel(iRes.value);setIntelUpdatedAt(new Date());}
     setIntelLoading(false);
+    if(user?.id){
+     writeRuntimeState(user.id,'dashboard',{
+      analytics:newLive,
+      progress:newProgress,
+      intel:newIntel,
+      intelUpdatedAt:new Date().toISOString()
+     });
+    }
    });
   };
   pull();
@@ -1563,6 +1656,7 @@ function Dashboard({courses,progress,go,openCourse,user}){const [live,setLive]=u
     <span className="dash-chip" title="Lessons completed"><BookOpen size={13}/>{total?`${done}/${total} lessons`:'—'}</span>
    </div>
   </section>
+  {!featured?.c&&courses.length===0&&<section className="dash-continue reveal skeleton-card" style={{opacity:0.65}}><div className="dash-continue-main"><span className="eyebrow skeleton-line" style={{display:'inline-block',width:140,height:12,borderRadius:4,background:'var(--surface-2)'}}/><div className="skeleton-line" style={{width:240,height:24,margin:'10px 0',borderRadius:6,background:'var(--surface-2)'}}/><div className="skeleton-line" style={{width:320,height:14,borderRadius:4,background:'var(--surface-2)'}}/></div></section>}
   {featured?.c&&<section className="dash-continue reveal hover-lift">
    <div className="dash-continue-main">
     <span className="eyebrow">{inProgress?'CONTINUE WHERE YOU LEFT OFF':'START LEARNING'}</span>
@@ -2115,9 +2209,6 @@ function TopNav({user,role,page,go,dark,setDark,navModel,activeGroup,mobile,setM
      </div>;
     })}
    </nav>}
-   {vp&&<div className="topnav-mobile-center">
-    <button className="topnav-icon-btn topnav-menu-toggle" aria-label={mobile?'Close navigation':'Open navigation'} aria-expanded={mobile} onClick={()=>setMobile(x=>!x)}>{mobile?'✕':<Menu size={18}/>}</button>
-   </div>}
    <div className="topnav-right">
     {!vp&&<GlobalSearch courses={coursesSafe()} go={go}/>}
     {!vp&&<button className={'topnav-icon-btn'+(page==='notifications'?' has-badge':'')} aria-label="Today's plan" title="Today's plan" onClick={()=>go('notifications')}><Bell size={17}/></button>}
@@ -2129,6 +2220,7 @@ function TopNav({user,role,page,go,dark,setDark,navModel,activeGroup,mobile,setM
       <button role="menuitem" className="topnav-item danger" onClick={logout}><span className="topnav-item-icon"><LogOut size={16}/></span>Log out</button>
      </div>}
     </div>
+    {vp&&<button className="topnav-icon-btn topnav-menu-toggle" aria-label={mobile?'Close navigation':'Open navigation'} aria-expanded={mobile} onClick={()=>setMobile(x=>!x)}>{mobile?'✕':<Menu size={18}/>}</button>}
    </div>
   </div>
   {vp&&mobile&&<div className="topnav-sheet" role="dialog" aria-label="Navigation">

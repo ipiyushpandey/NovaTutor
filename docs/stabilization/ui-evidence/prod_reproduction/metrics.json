@@ -1,0 +1,378 @@
+[
+  {
+    "state": "01_closed",
+    "docScrollHeight": 1804,
+    "headerClass": "topnav subnav-open",
+    "headerBox": {
+      "top": 0,
+      "bottom": 60,
+      "left": 0,
+      "right": 1440,
+      "width": 1440,
+      "height": 60
+    },
+    "headerStyle": {
+      "paddingTop": "0px",
+      "paddingBottom": "0px",
+      "marginTop": "0px",
+      "marginBottom": "28px",
+      "position": "fixed",
+      "top": "0px",
+      "transform": "none",
+      "zIndex": "60"
+    },
+    "mainBox": {
+      "top": 0,
+      "bottom": 1803.84375,
+      "left": 80,
+      "right": 1360,
+      "width": 1280,
+      "height": 1803.84375
+    },
+    "mainStyle": {
+      "paddingTop": "270px",
+      "paddingBottom": "72px",
+      "marginTop": "0px",
+      "marginBottom": "0px",
+      "position": "static",
+      "top": "auto",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    "panelBox": {
+      "top": 55,
+      "bottom": 253,
+      "left": 465.84375,
+      "right": 695.84375,
+      "width": 230,
+      "height": 198
+    },
+    "panelStyle": {
+      "paddingTop": "6px",
+      "paddingBottom": "6px",
+      "marginTop": "0px",
+      "marginBottom": "0px",
+      "position": "absolute",
+      "top": "43px",
+      "transform": "matrix(1, 0, 0, 1, 0, 0)",
+      "zIndex": "60"
+    },
+    "heroBox": {
+      "top": 280,
+      "bottom": 1731.84375,
+      "left": 104,
+      "right": 1336,
+      "width": 1232,
+      "height": 1451.84375
+    },
+    "firstCardBox": null
+  },
+  {
+    "state": "02_learn_open",
+    "docScrollHeight": 1620,
+    "headerClass": "topnav",
+    "headerBox": {
+      "top": 0,
+      "bottom": 60,
+      "left": 0,
+      "right": 1440,
+      "width": 1440,
+      "height": 60
+    },
+    "headerStyle": {
+      "paddingTop": "0px",
+      "paddingBottom": "0px",
+      "marginTop": "0px",
+      "marginBottom": "28px",
+      "position": "fixed",
+      "top": "0px",
+      "transform": "none",
+      "zIndex": "60"
+    },
+    "mainBox": {
+      "top": 0,
+      "bottom": 1619.84375,
+      "left": 80,
+      "right": 1360,
+      "width": 1280,
+      "height": 1619.84375
+    },
+    "mainStyle": {
+      "paddingTop": "86px",
+      "paddingBottom": "72px",
+      "marginTop": "0px",
+      "marginBottom": "0px",
+      "position": "static",
+      "top": "auto",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    "panelBox": null,
+    "panelStyle": null,
+    "heroBox": {
+      "top": 96,
+      "bottom": 1547.84375,
+      "left": 104,
+      "right": 1336,
+      "width": 1232,
+      "height": 1451.84375
+    },
+    "firstCardBox": null
+  },
+  {
+    "state": "03_practice_open",
+    "docScrollHeight": 1804,
+    "headerClass": "topnav subnav-open",
+    "headerBox": {
+      "top": 0,
+      "bottom": 60,
+      "left": 0,
+      "right": 1440,
+      "width": 1440,
+      "height": 60
+    },
+    "headerStyle": {
+      "paddingTop": "0px",
+      "paddingBottom": "0px",
+      "marginTop": "0px",
+      "marginBottom": "28px",
+      "position": "fixed",
+      "top": "0px",
+      "transform": "none",
+      "zIndex": "60"
+    },
+    "mainBox": {
+      "top": 0,
+      "bottom": 1803.84375,
+      "left": 80,
+      "right": 1360,
+      "width": 1280,
+      "height": 1803.84375
+    },
+    "mainStyle": {
+      "paddingTop": "270px",
+      "paddingBottom": "72px",
+      "marginTop": "0px",
+      "marginBottom": "0px",
+      "position": "static",
+      "top": "auto",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    "panelBox": {
+      "top": 55,
+      "bottom": 299,
+      "left": 548.234375,
+      "right": 778.234375,
+      "width": 230,
+      "height": 244
+    },
+    "panelStyle": {
+      "paddingTop": "6px",
+      "paddingBottom": "6px",
+      "marginTop": "0px",
+      "marginBottom": "0px",
+      "position": "absolute",
+      "top": "43px",
+      "transform": "matrix(1, 0, 0, 1, 0, 0)",
+      "zIndex": "60"
+    },
+    "heroBox": {
+      "top": 280,
+      "bottom": 1731.84375,
+      "left": 104,
+      "right": 1336,
+      "width": 1232,
+      "height": 1451.84375
+    },
+    "firstCardBox": null
+  },
+  {
+    "state": "04_ai_open",
+    "docScrollHeight": 1804,
+    "headerClass": "topnav subnav-open",
+    "headerBox": {
+      "top": 0,
+      "bottom": 60,
+      "left": 0,
+      "right": 1440,
+      "width": 1440,
+      "height": 60
+    },
+    "headerStyle": {
+      "paddingTop": "0px",
+      "paddingBottom": "0px",
+      "marginTop": "0px",
+      "marginBottom": "28px",
+      "position": "fixed",
+      "top": "0px",
+      "transform": "none",
+      "zIndex": "60"
+    },
+    "mainBox": {
+      "top": 0,
+      "bottom": 1803.84375,
+      "left": 80,
+      "right": 1360,
+      "width": 1280,
+      "height": 1803.84375
+    },
+    "mainStyle": {
+      "paddingTop": "270px",
+      "paddingBottom": "72px",
+      "marginTop": "0px",
+      "marginBottom": "0px",
+      "position": "static",
+      "top": "auto",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    "panelBox": {
+      "top": 55,
+      "bottom": 253,
+      "left": 647.140625,
+      "right": 877.140625,
+      "width": 230,
+      "height": 198
+    },
+    "panelStyle": {
+      "paddingTop": "6px",
+      "paddingBottom": "6px",
+      "marginTop": "0px",
+      "marginBottom": "0px",
+      "position": "absolute",
+      "top": "43px",
+      "transform": "matrix(1, 0, 0, 1, 0, 0)",
+      "zIndex": "60"
+    },
+    "heroBox": {
+      "top": 280,
+      "bottom": 1731.84375,
+      "left": 104,
+      "right": 1336,
+      "width": 1232,
+      "height": 1451.84375
+    },
+    "firstCardBox": null
+  },
+  {
+    "state": "05_more_open",
+    "docScrollHeight": 1804,
+    "headerClass": "topnav subnav-open",
+    "headerBox": {
+      "top": 0,
+      "bottom": 60,
+      "left": 0,
+      "right": 1440,
+      "width": 1440,
+      "height": 60
+    },
+    "headerStyle": {
+      "paddingTop": "0px",
+      "paddingBottom": "0px",
+      "marginTop": "0px",
+      "marginBottom": "28px",
+      "position": "fixed",
+      "top": "0px",
+      "transform": "none",
+      "zIndex": "60"
+    },
+    "mainBox": {
+      "top": 0,
+      "bottom": 1803.84375,
+      "left": 80,
+      "right": 1360,
+      "width": 1280,
+      "height": 1803.84375
+    },
+    "mainStyle": {
+      "paddingTop": "270px",
+      "paddingBottom": "72px",
+      "marginTop": "0px",
+      "marginBottom": "0px",
+      "position": "static",
+      "top": "auto",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    "panelBox": {
+      "top": 55,
+      "bottom": 253,
+      "left": 705.625,
+      "right": 935.625,
+      "width": 230,
+      "height": 198
+    },
+    "panelStyle": {
+      "paddingTop": "6px",
+      "paddingBottom": "6px",
+      "marginTop": "0px",
+      "marginBottom": "0px",
+      "position": "absolute",
+      "top": "43px",
+      "transform": "matrix(1, 0, 0, 1, 0, 0)",
+      "zIndex": "60"
+    },
+    "heroBox": {
+      "top": 280,
+      "bottom": 1731.84375,
+      "left": 104,
+      "right": 1336,
+      "width": 1232,
+      "height": 1451.84375
+    },
+    "firstCardBox": null
+  },
+  {
+    "state": "06_after_closed",
+    "docScrollHeight": 1620,
+    "headerClass": "topnav",
+    "headerBox": {
+      "top": 0,
+      "bottom": 60,
+      "left": 0,
+      "right": 1440,
+      "width": 1440,
+      "height": 60
+    },
+    "headerStyle": {
+      "paddingTop": "0px",
+      "paddingBottom": "0px",
+      "marginTop": "0px",
+      "marginBottom": "28px",
+      "position": "fixed",
+      "top": "0px",
+      "transform": "none",
+      "zIndex": "60"
+    },
+    "mainBox": {
+      "top": 0,
+      "bottom": 1619.84375,
+      "left": 80,
+      "right": 1360,
+      "width": 1280,
+      "height": 1619.84375
+    },
+    "mainStyle": {
+      "paddingTop": "86px",
+      "paddingBottom": "72px",
+      "marginTop": "0px",
+      "marginBottom": "0px",
+      "position": "static",
+      "top": "auto",
+      "transform": "none",
+      "zIndex": "auto"
+    },
+    "panelBox": null,
+    "panelStyle": null,
+    "heroBox": {
+      "top": 96,
+      "bottom": 1547.84375,
+      "left": 104,
+      "right": 1336,
+      "width": 1232,
+      "height": 1451.84375
+    },
+    "firstCardBox": null
+  }
+]

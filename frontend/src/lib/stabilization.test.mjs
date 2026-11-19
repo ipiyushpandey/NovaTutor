@@ -401,7 +401,8 @@ test('security & stabilization source invariants hold across frontend files', ()
   assert.match(mainJsx, /React.lazy\(\(\) => import\('\.\/AdminControlCenter\.jsx'\)\)/);
 
   // 12. FINAL STABILIZATION: Mobile TopNav alignment, courses tabs visibility, and community tabs overflow
-  assert.match(stylesCss, /\.topnav-mobile-center\{display:flex;align-items:center;justify-content:center;flex:1 1 auto\}/);
+  assert.match(stylesCss, /\.topnav-menus\{display:flex;align-items:center;justify-content:center/);
+  assert.match(stylesCss, /\.topnav-icon-btn\.topnav-menu-toggle\{width:40px;height:40px/);
   assert.match(stylesCss, /\.hub-tabs\.courses-tabs\{display:flex;width:100%;box-sizing:border-box/);
   assert.match(stylesCss, /\.community-tabs\{display:flex;gap:6px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none/);
 });
@@ -422,6 +423,75 @@ test('isMeaningfulText rejects keystroke gibberish like bcsjcgs and accepts real
   assert.equal(fn('GATE CSE preparation 2026'), true);
   assert.equal(fn('Data Structures in C++'), true);
   assert.equal(fn('डेटा संरचना और कोडिंग'), true);
+});
+
+test('api.js tags timeout and 502/504 wake-up errors with isWakeUp and SERVER_WAKING_UP code', async () => {
+  const { api } = await import('./api.js');
+  const originalFetch = globalThis.fetch;
+  try {
+    // 502 Bad Gateway
+    globalThis.fetch = async () => new Response('Bad Gateway', { status: 502, statusText: 'Bad Gateway' });
+    let err502 = null;
+    try { await api('/test-wake-502', { method: 'POST', body: '{}' }); } catch (e) { err502 = e; }
+    assert(err502, 'Should throw on 502');
+    assert.equal(err502.isWakeUp, true);
+    assert.equal(err502.code, 'SERVER_WAKING_UP');
+
+    // 503 waking up
+    globalThis.fetch = async () => new Response(JSON.stringify({ message: 'Server is waking up from idle' }), {
+      status: 503,
+      headers: { 'content-type': 'application/json' }
+    });
+    let err503 = null;
+    try { await api('/test-wake-503', { method: 'POST', body: '{}' }); } catch (e) { err503 = e; }
+    assert(err503, 'Should throw on 503');
+    assert.equal(err503.isWakeUp, true);
+    assert.equal(err503.code, 'SERVER_WAKING_UP');
+
+    // Abort timeout
+    globalThis.fetch = async (_url, opt) => {
+      return new Promise((_, reject) => {
+        const timer = setTimeout(() => {
+          const e = new Error('The operation was aborted');
+          e.name = 'AbortError';
+          reject(e);
+        }, 50);
+        opt?.signal?.addEventListener('abort', () => {
+          clearTimeout(timer);
+          const e = new Error('The operation was aborted');
+          e.name = 'AbortError';
+          reject(e);
+        });
+      });
+    };
+    let errTimeout = null;
+    try { await api('/test-timeout', { timeoutMs: 20 }); } catch (e) { errTimeout = e; }
+    assert(errTimeout, 'Should throw on timeout');
+    assert.equal(errTimeout.isWakeUp, true);
+    assert.equal(errTimeout.code, 'SERVER_WAKING_UP');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('UI and motion invariants: LoginWakeUp, useLayoutEffect, and admin mobile drawer exist', () => {
+  const mainJsx = fs.readFileSync(path.join(SRC_DIR, 'main.jsx'), 'utf8');
+  const stylesCss = fs.readFileSync(path.join(SRC_DIR, 'styles.css'), 'utf8');
+  const tokensCss = fs.readFileSync(path.join(SRC_DIR, 'ui/tokens.css'), 'utf8');
+
+  // LoginWakeUp & scroll restoration
+  assert.match(mainJsx, /function LoginWakeUp\(\{onRetry,onCancel/);
+  assert.match(mainJsx, /useLayoutEffect\(\(\)=>\{/);
+  assert.match(mainJsx, /setRestorationMinHeight\(neededHeight\)/);
+  assert.match(mainJsx, /style=\{restorationMinHeight\?\{minHeight:`\$\{restorationMinHeight\}px`\}:undefined\}/);
+  assert.match(mainJsx, /className="page-transition page-in" key=\{page\}/);
+
+  // Styling & tokens
+  assert.match(stylesCss, /\.auth-wakeup-box\{/);
+  assert.match(stylesCss, /\.auth-wakeup-ring\{/);
+  assert.match(stylesCss, /\.ac-nav-mobile-head\{/);
+  assert.match(tokensCss, /--brand-evergreen:#1E7A5F;/);
+  assert.match(tokensCss, /--brand-mint:#3FBF9A;/);
 });
 
 
