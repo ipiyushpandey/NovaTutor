@@ -98,9 +98,9 @@
 
   /* ---- Motion ---- */
   --t-fast:120ms;   /* hover, press, toggles */
-  --t-med:200ms;    /* reveals, transitions, progress */
-  --t-slow:300ms;   /* drawers, sheets, modals */
-  --ease-out:cubic-bezier(.2,.7,.3,1);
+  --t-med:360ms;    /* reveals, transitions, progress */
+  --t-slow:480ms;   /* smooth luxury reveals, sheets, modals */
+  --ease-out:cubic-bezier(0.16,1,0.3,1);
   --ease-in-out:cubic-bezier(.5,0,.3,1);
 
   /* ---- Breakpoints (reference values for media queries) ---- */

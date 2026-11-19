@@ -1140,11 +1140,9 @@ function PublicPage({page,onBack,signedIn=false}){
 }
 
 function LoginWakeUp({onRetry,onCancel,mode='login'}){
- const [seconds,setSeconds]=useState(0);
  const [status,setStatus]=useState('checking');
  useEffect(()=>{
   let cancelled=false;
-  const timer=setInterval(()=>setSeconds(s=>s+1),1000);
   let pollTimer=null;
   async function poll(){
    try{
@@ -1152,7 +1150,6 @@ function LoginWakeUp({onRetry,onCancel,mode='login'}){
     if(cancelled)return;
     if(res?.status==='UP'){
      setStatus('ready');
-     clearInterval(timer);
      setTimeout(()=>{if(!cancelled)onRetry()},800);
      return;
     }
@@ -1160,20 +1157,26 @@ function LoginWakeUp({onRetry,onCancel,mode='login'}){
    if(!cancelled)pollTimer=setTimeout(poll,4000);
   }
   pollTimer=setTimeout(poll,2500);
-  return()=>{cancelled=true;clearInterval(timer);if(pollTimer)clearTimeout(pollTimer)};
+  return()=>{cancelled=true;if(pollTimer)clearTimeout(pollTimer)};
  },[onRetry]);
 
  return <div className="auth-wakeup-box" role="status" aria-live="polite">
   <div className="auth-wakeup-beacon">
-   <span className="auth-wakeup-ring r1"/>
-   <span className="auth-wakeup-ring r2"/>
-   <span className="auth-wakeup-dot"/>
+   <div className="auth-wakeup-n-mark" aria-hidden="true">
+    <svg width="34" height="34" viewBox="0 0 32 32" fill="none">
+     <rect x="1" y="1" width="30" height="30" rx="9" className="auth-wakeup-n-bg"/>
+     <path d="M9.4 23.2V10.6a1 1 0 0 1 1.72-.7L21.3 21.6" className="auth-wakeup-n-stroke" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"/>
+     <path d="M22.6 8.8v12.7" className="auth-wakeup-n-stroke" strokeWidth="2.6" strokeLinecap="round"/>
+     <circle cx="24.7" cy="6.9" r="2.2" className="auth-wakeup-n-dot"/>
+    </svg>
+    <div className="auth-wakeup-halo"/>
+   </div>
   </div>
   <div className="auth-wakeup-content">
-   <h4 className="auth-wakeup-title">{status==='ready'?'NovaTutor is ready!':'First time here? NovaTutor is waking up.'}</h4>
+   <h4 className="auth-wakeup-title">{status==='ready'?'NovaTutor is ready!':'First visit? NovaTutor is waking up.'}</h4>
    <p className="auth-wakeup-desc">{status==='ready'?'Backend connected. Completing your sign in…':'This cloud server sleeps when idle to conserve resources. Waking it up may take around a minute.'}</p>
    <div className="auth-wakeup-meta">
-    <span className="auth-wakeup-badge"><span className={'status-indicator '+(status==='ready'?'ready':'waking')}/>{status==='ready'?'Server live':`Connecting… (${seconds}s)`}</span>
+    <span className="auth-wakeup-badge"><span className={'status-indicator '+(status==='ready'?'ready':'waking')}/>{status==='ready'?'Server live':'Connecting to backend…'}</span>
     <div className="auth-wakeup-actions">
      <button type="button" className="auth-wakeup-retry-btn" onClick={onRetry} disabled={status==='ready'}>Retry now</button>
      <button type="button" className="auth-wakeup-dismiss-btn" onClick={onCancel}>Dismiss</button>
@@ -1657,14 +1660,14 @@ function Dashboard({courses,progress,go,openCourse,user}){
    </div>
   </section>
   {!featured?.c&&courses.length===0&&<section className="dash-continue reveal skeleton-card" style={{opacity:0.65}}><div className="dash-continue-main"><span className="eyebrow skeleton-line" style={{display:'inline-block',width:140,height:12,borderRadius:4,background:'var(--surface-2)'}}/><div className="skeleton-line" style={{width:240,height:24,margin:'10px 0',borderRadius:6,background:'var(--surface-2)'}}/><div className="skeleton-line" style={{width:320,height:14,borderRadius:4,background:'var(--surface-2)'}}/></div></section>}
-  {featured?.c&&<section className="dash-continue reveal hover-lift">
+  {featured?.c&&<section className="dash-continue reveal hover-lift clickable-card" role="button" tabIndex={0} onClick={()=>openCourse?openCourse(featured.c.id):go('courses')} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();if(openCourse)openCourse(featured.c.id);else go('courses')}}}>
    <div className="dash-continue-main">
     <span className="eyebrow">{inProgress?'CONTINUE WHERE YOU LEFT OFF':'START LEARNING'}</span>
     <h2><span className="dash-continue-icon icon-rotate-subtle" aria-hidden="true">{featured.c.icon}</span>{featured.c.title}</h2>
     <p className="dash-next">{nextLesson?<>Next up · Lesson <b>{(Number(featured?.p?.completedLessons)||0)+1}</b> — {String(nextLesson.title||'').replace(/^Lesson\s*\d+\s*[—–-]\s*/i,'')}</>:'Pick up from your first lesson whenever you are ready.'}</p>
     <div className="dash-continue-progress"><div className="progress slim"><span style={{width:(featured.p?.percent||0)+'%'}}/></div><small>{Math.round(featured.p?.percent||0)}% complete{featured.c.totalLessons?` · ${featured.c.totalLessons} lessons`:''}</small></div>
    </div>
-   <div className="dash-continue-action"><button className="primary" onClick={()=>openCourse?openCourse(featured.c.id):go('courses')}>Continue <ChevronRight size={15}/></button><button className="text-btn" onClick={()=>go('courses')}>All courses</button></div>
+   <div className="dash-continue-action"><button className="primary" onClick={e=>{e.stopPropagation();if(openCourse)openCourse(featured.c.id);else go('courses')}}>Continue <ChevronRight size={15}/></button><button className="text-btn" onClick={e=>{e.stopPropagation();go('courses')}}>All courses</button></div>
   </section>}
   <NovaLearningBrain user={user} go={go} courses={courses} sharedIntel={intel} sharedLoading={intelLoading}/>
   <IntelligenceSnapshot user={user} go={go} sharedIntel={intel} sharedUpdatedAt={intelUpdatedAt}/>
@@ -1722,7 +1725,7 @@ function Courses({courses,progress,refresh,user,openCourse}){
  if(error)return <div className="page-crash"><RefreshCw size={40}/><h2>Course could not load</h2><p>{error}</p><button className="secondary" onClick={()=>{setError('');setSelected(null)}}>Back</button></div>;
  if(detail)return <CourseDetail detail={detail} progress={progress.find(x=>x.courseId===detail.course.id)} refresh={refresh} back={()=>{setSelected(null);setDetail(null)}}/>;
  return <><div className="page-title"><span className="eyebrow">CURRICULUM</span><h1>My <span>Learning.</span></h1><p>Detailed theory, examples and AI help — no videos required.</p></div><div className="course-filters"><input placeholder="Search courses…" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="Level" value={level} onChange={e=>setLevel(e.target.value)}><option>All</option><option>Beginner</option><option>Intermediate</option><option>Advanced</option></select></div>
-  {courses.length===0?<div className="empty-page"><BookOpen size={48}/><h3>No courses available yet</h3><p>Courses could not be loaded from the server right now. Check your connection and try reloading.</p><button className="primary" onClick={refresh}>Reload courses</button></div>:<div className="course-grid stagger-reveal">{visible.map((c,i)=><div className="course-card big hover-lift" key={c.id}><div className={'course-icon i'+i+' icon-rotate-subtle'}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:(progress.find(x=>x.courseId===c.id)?.percent||0)+'%'}}/></div><div className="course-foot"><small>{progress.find(x=>x.courseId===c.id)?.completedLessons||0}/{c.totalLessons} lessons done</small><button onClick={()=>handleOpen(c.id)}>Open course <ChevronRight size={13}/></button></div></div>)}</div>}
+  {courses.length===0?<div className="empty-page"><BookOpen size={48}/><h3>No courses available yet</h3><p>Courses could not be loaded from the server right now. Check your connection and try reloading.</p><button className="primary" onClick={refresh}>Reload courses</button></div>:<div className="course-grid stagger-reveal">{visible.map((c,i)=><div className="course-card big hover-lift clickable-card" key={c.id} role="button" tabIndex={0} onClick={()=>handleOpen(c.id)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();handleOpen(c.id)}}}><div className={'course-icon i'+i+' icon-rotate-subtle'}>{c.icon}</div><span className="level">{c.level}</span><h4>{c.title}</h4><p>{c.description}</p><div className="progress"><span style={{width:(progress.find(x=>x.courseId===c.id)?.percent||0)+'%'}}/></div><div className="course-foot"><small>{progress.find(x=>x.courseId===c.id)?.completedLessons||0}/{c.totalLessons} lessons done</small><button onClick={e=>{e.stopPropagation();handleOpen(c.id)}}>Open course <ChevronRight size={13}/></button></div></div>)}</div>}
  </>;
 }
 function TheoryContent({content}){

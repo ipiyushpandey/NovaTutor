@@ -175,24 +175,32 @@
   100%{transform:translate3d(0,-10px,0) scale(1.015)}
 }
 
-/* ---------------- mobile: scene collapses to a brand band ---------------- */
+/* ---------------- mobile: scene collapses to a brand band (lightweight, zero-jank) ---------------- */
 @media(max-width:900px){
-  .books-scene{min-height:0;border-right:0;border-bottom:1px solid var(--border)}
+  .books-scene{
+    min-height:0;border-right:0;border-bottom:1px solid var(--border);
+    contain:paint content;
+    will-change:auto;
+  }
+  .books-scene:before{
+    background:radial-gradient(100% 100% at 50% 50%,#171C25 0%,#0B0D11 100%);
+  }
+  .books-scene:after{
+    display:none; /* eliminate repeating-linear-gradient and mask repaints on mobile scroll */
+  }
   .books-scene .auth-scene-inner{
     position:relative;inset:auto;flex-direction:row;align-items:center;
-    justify-content:space-between;gap:16px;padding:20px 22px 26px;
+    justify-content:space-between;gap:16px;padding:18px 20px 22px;
   }
-  .books-scene .scene-quote{font-size:15.5px;line-height:1.45;max-width:24ch}
-  .bk-shelf{height:64px;padding-bottom:0;gap:0;opacity:.6}
-  .bk-spine{transform:rotate(var(--tilt)) scale(.5);transform-origin:bottom center}
+  .books-scene .scene-quote{font-size:15px;line-height:1.45;max-width:24ch}
+  .bk-shelf{height:60px;padding-bottom:0;gap:0;opacity:.6;animation:none!important}
+  .bk-spine{transform:rotate(var(--tilt)) scale(.5);transform-origin:bottom center;animation:none!important}
   .bk-spine:after{display:none}
   .bk-pile{margin-left:6px;transform:scale(.55);transform-origin:bottom left}
   .bk-board{bottom:0}
-  /* the band is short: keep one clean idea — a low shelf silhouette behind
-     the brand mark and the quote, and drop the floating objects entirely. */
+  /* the band is short: drop floating objects and open book to keep main-thread 100% free */
   .bk-page,.bk-book,.bk-open{display:none}
-  .bk-shelf{justify-content:flex-start;padding-left:20px}
-  .books-scene .scene-quote{font-size:15px;max-width:22ch}
+  .bk-shelf{justify-content:flex-start;padding-left:18px}
   .scene-wordmark{display:none}
 }
 
