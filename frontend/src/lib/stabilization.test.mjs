@@ -390,5 +390,38 @@ test('security & stabilization source invariants hold across frontend files', ()
   assert.match(mainJsx, /u\.pitch=1\.0/);
   assert.match(mainJsx, /playbackSessionRef\.current\+=1/);
   assert.match(mainJsx, /abortControllerRef\.current\.abort\(\)/);
+
+  // 11. FINAL STABILIZATION: Guest onboarding bypass, browser back history replace, & meaningful validation
+  assert.match(mainJsx, /const isStudent=String\(session\.role\|\|'STUDENT'\)\.toUpperCase\(\)==='STUDENT';/);
+  assert.match(mainJsx, /const needsProfile=isStudent&&session\.profileComplete===false;/);
+  assert.match(mainJsx, /if\(parsed\.page==='onboarding'\)\{\s*if\(!needsProfile\)\{\s*setPage\('dashboard'\);window\.location\.replace\('#\/dashboard'\);return;/);
+  assert.match(mainJsx, /import \{isMeaningfulText\} from '\.\/lib\/validation\.js'/);
+  assert.match(mainJsx, /React.lazy\(\(\) => import\('\.\/gateCse\.jsx'\)\)/);
+  assert.match(mainJsx, /React.lazy\(\(\) => import\('\.\/dsa\.jsx'\)\)/);
+  assert.match(mainJsx, /React.lazy\(\(\) => import\('\.\/AdminControlCenter\.jsx'\)\)/);
+
+  // 12. FINAL STABILIZATION: Mobile TopNav alignment, courses tabs visibility, and community tabs overflow
+  assert.match(stylesCss, /\.topnav-mobile-center\{display:flex;align-items:center;justify-content:center;flex:1 1 auto\}/);
+  assert.match(stylesCss, /\.hub-tabs\.courses-tabs\{display:flex;width:100%;box-sizing:border-box/);
+  assert.match(stylesCss, /\.community-tabs\{display:flex;gap:6px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none/);
 });
+
+test('isMeaningfulText rejects keystroke gibberish like bcsjcgs and accepts realistic goals and non-latin scripts', async () => {
+  const valMod = await import('./validation.js');
+  const fn = valMod.isMeaningfulText;
+  assert.equal(typeof fn, 'function');
+  assert.equal(fn('bcsjcgs'), false);
+  assert.equal(fn('asdf'), false);
+  assert.equal(fn('bbbbbb'), false);
+  assert.equal(fn('123456'), false);
+  assert.equal(fn('!@#$%^'), false);
+  assert.equal(fn(''), false);
+  assert.equal(fn(null), false);
+
+  assert.equal(fn('Learn Java & algorithms'), true);
+  assert.equal(fn('GATE CSE preparation 2026'), true);
+  assert.equal(fn('Data Structures in C++'), true);
+  assert.equal(fn('डेटा संरचना और कोडिंग'), true);
+});
+
 

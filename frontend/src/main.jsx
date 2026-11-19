@@ -9,9 +9,9 @@ import './styles.css';
 import './ui/tokens.css';
 import './ui/motion.css';
 import './ui/primitives.css';
-import GateCse from './gateCse.jsx';
-import DsaPractice from './dsa.jsx';
-import AdminControlCenter from './AdminControlCenter.jsx';
+const GateCse = React.lazy(() => import('./gateCse.jsx'));
+const DsaPractice = React.lazy(() => import('./dsa.jsx'));
+const AdminControlCenter = React.lazy(() => import('./AdminControlCenter.jsx'));
 import LottiePlayer from './ui/LottiePlayer.jsx';
 import lottieLogoUrl from './assets/lottie-logo.json?url';
 import BooksScene from './ui/BooksScene.jsx';
@@ -22,11 +22,36 @@ import AiMarkdown, {normalizeAiText, mdInlineText} from './AiMarkdown.jsx';
 import {registerWorkspaceFlusher,beginNavigationPersistence} from './persistence/appWorkspace.js';
 import {readRuntimeState,writeRuntimeState,subscribeRuntimeState,getRuntimeModuleSnapshot,updateRuntimeState,removeRuntimeState,clearRuntimeUser} from './persistence/runtimeStore.js';
 import {api,apiStream,readUser,refreshSessionToken,invalidatePendingSessionRefresh} from './lib/api.js';
+import {isMeaningfulText} from './lib/validation.js';
 /* V69 FOUNDATION REPAIR — production curriculum + stable learning foundation */
 /* V51 VOICE SPEED + CHAT CONTROLS */
 /* V34 FINAL EVENTS */
 const novaProfileUpdated=()=>{try{window.dispatchEvent(new Event('nova:profile-updated'));}catch(e){}};
 const novaChallengesUpdated=()=>{try{window.dispatchEvent(new Event('nova:challenges-updated'));}catch(e){}};
+
+function useScrollReveal(containerRef, deps = []) {
+ useEffect(() => {
+  if (typeof window === 'undefined') return;
+  const isReduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const root = containerRef?.current || document;
+  const elements = root.querySelectorAll('.reveal:not(.in-view), .stagger-reveal:not(.in-view)');
+  if (!elements.length) return;
+  if (isReduced || typeof IntersectionObserver === 'undefined') {
+   elements.forEach(el => el.classList.add('in-view'));
+   return;
+  }
+  const observer = new IntersectionObserver((entries, obs) => {
+   entries.forEach(entry => {
+    if (entry.isIntersecting) {
+     entry.target.classList.add('in-view');
+     obs.unobserve(entry.target);
+    }
+   });
+  }, { threshold: 0.08, rootMargin: '0px 0px -20px 0px' });
+  elements.forEach(el => observer.observe(el));
+  return () => observer.disconnect();
+ }, deps);
+}
 
 const Settings=props=><NovaIcon name="Settings" {...props}/>;
 
@@ -499,7 +524,7 @@ function TodayNotifications({user,go}){
 
 
 function HubTabs({tabs,active,setActive}){
- return <div className="hub-tabs" role="tablist" aria-label="Section navigation">{tabs.map(([id,label,icon])=>{const Icon=icon;return <button key={id} role="tab" aria-selected={active===id} className={active===id?'active':''} onClick={()=>setActive(id)}>{Icon&&<Icon size={15}/>}<span>{label}</span></button>})}</div>
+ return <div className={'hub-tabs'+(tabs.length===3?' courses-tabs':'')} role="tablist" aria-label="Section navigation">{tabs.map(([id,label,icon])=>{const Icon=icon;return <button key={id} role="tab" aria-selected={active===id} className={active===id?'active':''} onClick={()=>setActive(id)}>{Icon&&<Icon size={15}/>}<span>{label}</span></button>})}</div>
 }
 function MyLearningHub({courses,progress,refresh,user,go,openCourse}){
  const [tab,setTab]=useState('courses');
@@ -583,7 +608,8 @@ function App(){
  const [adminDenied,setAdminDenied]=useState(initialNonAdminBlocked);
  const [page,setPage]=useState(()=>{
   const session=readUser();if(!session)return 'login';
-  const needsProfile=String(session.role||'STUDENT').toUpperCase()!=='ADMIN'&&session.profileComplete===false;
+  const isStudent=String(session.role||'STUDENT').toUpperCase()==='STUDENT';
+  const needsProfile=isStudent&&session.profileComplete===false;
   if(needsProfile)return 'onboarding';
   const h=initialParsed.page;
   if(h==='admin'&&String(session.role||'STUDENT').toUpperCase()!=='ADMIN')return 'dashboard';
@@ -694,11 +720,12 @@ function App(){
    const fresh=readUser();
    if(!fresh||String(fresh.id)!==activeId)return;
    setUser(prev=>{if(!prev||String(prev.id)!==activeId)return prev;return prev.token===fresh.token&&prev.role===fresh.role&&prev.profileComplete===fresh.profileComplete&&prev.name===fresh.name?prev:fresh});
-   if(String(fresh.role||'STUDENT').toUpperCase()!=='ADMIN'&&fresh.profileComplete===false){
-    setPage(p=>{if(p!=='onboarding'){localStorage.setItem('nova_page','onboarding');window.location.hash='#/onboarding';return 'onboarding'}return p});
+   const isStudent=String(fresh.role||'STUDENT').toUpperCase()==='STUDENT';
+   if(isStudent&&fresh.profileComplete===false){
+    setPage(p=>{if(p!=='onboarding'){localStorage.setItem('nova_page','onboarding');window.location.replace('#/onboarding');return 'onboarding'}return p});
     return;
    }
-   setPage(p=>{if(p==='onboarding'||p==='login'){localStorage.setItem('nova_page','dashboard');window.location.hash='#/dashboard';return 'dashboard'}return p});
+   setPage(p=>{if(p==='onboarding'||p==='login'){localStorage.setItem('nova_page','dashboard');window.location.replace('#/dashboard');return 'dashboard'}return p});
   }).catch(()=>{if(alive)setWakingServer(false)}).finally(()=>clearTimeout(wakeTimer));
   return()=>{alive=false;clearTimeout(wakeTimer)};
  },[user?.id,user?.token]);
@@ -712,7 +739,7 @@ function App(){
  useEffect(()=>{
   if(user?.role!=='ADMIN' && page==='admin'){setPage('dashboard');localStorage.setItem('nova_page','dashboard');window.location.hash='#/dashboard'}
  },[user?.role,page]);
- useEffect(()=>{if(user?.id && user?.role!=='ADMIN' && user.profileComplete===false && page!=='onboarding'){setPage('onboarding');localStorage.setItem('nova_page','onboarding');window.location.hash='#/onboarding'}},[user?.id,user?.role,user?.profileComplete,page]);
+ useEffect(()=>{const isStudent=String(user?.role||'STUDENT').toUpperCase()==='STUDENT';if(user?.id && isStudent && user.profileComplete===false && page!=='onboarding'){setPage('onboarding');localStorage.setItem('nova_page','onboarding');window.location.replace('#/onboarding')}},[user?.id,user?.role,user?.profileComplete,page]);
  useEffect(()=>{
   if(!user?.id)return;
   const activeId=String(user.id);
@@ -883,8 +910,21 @@ function App(){
    const session=readUser();
    if(!session){setPage('login');return}
    const parsed=parseAppHash(window.location.hash);
-   const h=parsed.page==='login'?'dashboard':(ALLOWED_PAGES.includes(parsed.page)?parsed.page:'dashboard');
-   if(h==='admin'&&String(session.role||'STUDENT').toUpperCase()!=='ADMIN'){
+   const role=String(session.role||'STUDENT').toUpperCase();
+   const isStudent=role==='STUDENT';
+   const needsProfile=isStudent&&session.profileComplete===false;
+
+   if(parsed.page==='onboarding'){
+    if(!needsProfile){
+     setPage('dashboard');window.location.replace('#/dashboard');return;
+    }
+   }
+   if(parsed.page==='login'){
+    const target=needsProfile?'onboarding':'dashboard';
+    setPage(target);window.location.replace('#/'+target);return;
+   }
+   const h=ALLOWED_PAGES.includes(parsed.page)?parsed.page:'dashboard';
+   if(h==='admin'&&role!=='ADMIN'){
     setPage('dashboard');window.location.replace('#/dashboard');setAdminDenied(true);return;
    }
    if(h==='course'&&!parsed.courseId){
@@ -910,13 +950,22 @@ function App(){
    localStorage.setItem('nova_page',h);
   };
   window.addEventListener('hashchange',onHash);
-  if(!window.location.hash)window.location.hash='#/'+routeKeyRef.current;
+  if(!window.location.hash)window.location.replace('#/'+routeKeyRef.current);
   return()=>window.removeEventListener('hashchange',onHash);
  },[user?.role]);
 
- useEffect(()=>{if(user&&page==='login'){const r=String(user.role||'STUDENT').toUpperCase();const target=r!=='ADMIN'&&user.profileComplete===false?'onboarding':'dashboard';setPage(target);localStorage.setItem('nova_page',target);window.location.hash='#/'+target}},[user,page]);
+ useEffect(()=>{
+  if(!user)return;
+  const isStudent=String(user.role||'STUDENT').toUpperCase()==='STUDENT';
+  const needsProfile=isStudent&&user.profileComplete===false;
+  if(page==='login'||(!needsProfile&&page==='onboarding')){
+   const target=needsProfile?'onboarding':'dashboard';
+   setPage(target);localStorage.setItem('nova_page',target);window.location.replace('#/'+target);
+  }
+ },[user,page]);
+ useScrollReveal(null,[page]);
  const role=String(user?.role||'STUDENT').toUpperCase();
- if(page==='onboarding') return <Onboarding user={user} onComplete={next=>{localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page','dashboard');setUser(next);setPage('dashboard');window.location.hash='#/dashboard'}}/>;
+ if(page==='onboarding') return <Onboarding user={user} onComplete={next=>{localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page','dashboard');setUser(next);setPage('dashboard');window.location.replace('#/dashboard')}}/>;
  const navModel=[
   {id:'learn',label:'Learn',items:[['dashboard','Home',LayoutDashboard],['notifications','Today',Bell],['courses','Courses',BookOpen],['knowledge','Knowledge Hub',FileSearch]]},
   {id:'practice',label:'Practice',items:[['practice','Practice hub',Target],['dsa','DSA Practice',Code2],['exam','Exam Simulator',Trophy],['gatecse','GATE CSE',GraduationCap],['revision','Revision',RotateCcw]]},
@@ -927,7 +976,7 @@ function App(){
  const logout=()=>{if(role!=='GUEST'){persistBeforeNavigation('logout')}else{api('/auth/guest',{method:'DELETE'}).catch(()=>{})}clearUserClientState(user)};
  const switchAccount=()=>{if(role!=='GUEST'){persistBeforeNavigation('switch-account')}else{api('/auth/guest',{method:'DELETE'}).catch(()=>{})}clearUserClientState(user)};
  const updateUser=next=>{const normalized={...(user||{}),...(next||{}),role:String(next?.role||user?.role||'STUDENT').toUpperCase()};localStorage.setItem('ai_user',JSON.stringify(normalized));setUser(normalized)};
- if(!user)return <Auth onLogin={u=>{invalidatePendingSessionRefresh();bootstrappedUserRef.current=null;inAppNavCountRef.current=0;const next={...u,role:String(u.role||'STUDENT').toUpperCase()};resetTransientLearningState(next.id);localStorage.removeItem('nova_nav_stack');const needsProfile=next.role!=='ADMIN'&&next.profileComplete===false;const target=needsProfile?'onboarding':'dashboard';localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page',target);setUser(next);setPage(target);window.location.hash='#/'+target}} dark={dark} setDark={setDark}/>;
+ if(!user)return <Auth onLogin={u=>{invalidatePendingSessionRefresh();bootstrappedUserRef.current=null;inAppNavCountRef.current=0;const next={...u,role:String(u.role||'STUDENT').toUpperCase()};resetTransientLearningState(next.id);localStorage.removeItem('nova_nav_stack');const needsProfile=next.role==='STUDENT'&&next.profileComplete===false;const target=needsProfile?'onboarding':'dashboard';localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page',target);setUser(next);setPage(target);window.location.replace('#/'+target)}} dark={dark} setDark={setDark}/>;
  return <div className="app app-topnav">
  <TopNav
   user={user} role={role} page={page} go={go} dark={dark} setDark={setDark}
@@ -937,8 +986,8 @@ function App(){
  {mobile&&<div className="nav-shade" onClick={()=>setMobile(false)}/>}
  <main className="main-topnav">
  {wakingServer&&<div className="nv-toast" role="status">Waking up NovaTutor server… this can take a few seconds after idle.</div>}
- <div className="page-transition"><ErrorBoundary key={page}>{adminDenied&&<div className="nv-toast" role="status">Admin area is restricted to administrator accounts.</div>}{page==='dashboard'&&<Dashboard courses={courses} progress={progress} go={go} openCourse={openCourse} user={user}/>} {page==='course'&&<CoursePage courseId={courseId} lessonId={lessonId} onSelectLesson={lid=>openLesson(courseId,lid)} courses={courses} progress={progress} refresh={load} onBack={()=>inAppNavCountRef.current>0?window.history.back():go('courses')}/>} {page==='coach'&&<NovaCoach user={user} go={go} courses={courses}/>} {page==='study-room'&&<NovaCoach user={user} go={go} courses={courses} initialTab="community"/>} {page==='analytics'&&<Analytics user={user}/>} {page==='nova-os'&&<NovaBrain user={user} go={go}/>} {page==='nova-brain'&&<NovaBrain user={user} go={go}/>} {page==='practice'&&<PracticeHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='prepare'&&<PrepareHub user={user} go={go} gateTab={gateTab} onGateTab={onGateTab} dsaSlug={dsaSlug} onDsaSlug={onDsaSlug}/>} {page==='courses'&&<MyLearningHub courses={courses} progress={progress} refresh={load} user={user} go={go} openCourse={openCourse}/>} {page==='learning-studio'&&<LearningStudio user={user} routeTab={studioTab} onRouteTab={onStudioTab}/>} {page==='tutor'&&<LearningStudio user={user} initialTab="teacher" onRouteTab={onStudioTab}/>} {page==='code'&&<CodeLab user={user}/>} {page==='quiz'&&<Quiz courses={courses} progress={progress} refresh={load} user={user}/>} {page==='chat'&&<ChatWorkspace user={user}/>} {page==='knowledge'&&<KnowledgeHub user={user}/>}
- {page==='mentor'&&<AdaptiveMentor user={user} courses={courses}/>} {page==='planner'&&<StudyPlanner user={user}/>} {page==='flashcards'&&<Flashcards user={user}/>} {page==='achievements'&&<Achievements user={user} go={go}/>} {page==='profile'&&<AILearningProfile user={user} courses={courses} go={go}/>} {page==='interview'&&<Interviewer user={user}/>} {page==='voice'&&<LearningStudio user={user} initialTab="voice" onRouteTab={onStudioTab}/>} {page==='dpp'&&<CourseDppIde user={user} courses={courses}/>} {page==='exam'&&<ExamSimulator user={user}/>} {page==='gatecse'&&<GateCse routeTab={gateTab} onRouteTab={onGateTab}/>} {page==='dsa'&&<DsaPractice user={user} api={api} routeSlug={dsaSlug} onRouteSlug={onDsaSlug}/>} {page==='career'&&<CareerHub user={user} go={go}/>} {page==='community'&&<CommunityHub user={user} go={go}/>} {page==='notifications'&&<TodayHub user={user} go={go}/>} {page==='revision'&&<RevisionHub user={user} go={go}/>} {page==='settings'&&<SettingsPage user={user} dark={dark} setDark={setDark} logout={logout} switchAccount={switchAccount} onUserUpdate={updateUser} aiStatus={aiStatus}/>} {page==='about'&&<PublicPage page="about" signedIn onBack={()=>go('dashboard')}/>} {page==='privacy'&&<PublicPage page="privacy" signedIn onBack={()=>go('settings')}/>} {page==='terms'&&<PublicPage page="terms" signedIn onBack={()=>go('settings')}/>} {page==='contact'&&<PublicPage page="contact" signedIn onBack={()=>go('dashboard')}/>} {page==='admin'&&(role==='ADMIN'?<Admin user={user} courses={courses} refreshCourses={load} onBack={()=>go('dashboard')}/>:<AdminLocked go={go}/>)}</ErrorBoundary></div></main></div>
+ <div className="page-transition"><ErrorBoundary key={page}><React.Suspense fallback={<div className="skeleton" style={{minHeight:'240px',margin:'24px 0'}}/>}>{adminDenied&&<div className="nv-toast" role="status">Admin area is restricted to administrator accounts.</div>}{page==='dashboard'&&<Dashboard courses={courses} progress={progress} go={go} openCourse={openCourse} user={user}/>} {page==='course'&&<CoursePage courseId={courseId} lessonId={lessonId} onSelectLesson={lid=>openLesson(courseId,lid)} courses={courses} progress={progress} refresh={load} onBack={()=>inAppNavCountRef.current>0?window.history.back():go('courses')}/>} {page==='coach'&&<NovaCoach user={user} go={go} courses={courses}/>} {page==='study-room'&&<NovaCoach user={user} go={go} courses={courses} initialTab="community"/>} {page==='analytics'&&<Analytics user={user}/>} {page==='nova-os'&&<NovaBrain user={user} go={go}/>} {page==='nova-brain'&&<NovaBrain user={user} go={go}/>} {page==='practice'&&<PracticeHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='prepare'&&<PrepareHub user={user} go={go} gateTab={gateTab} onGateTab={onGateTab} dsaSlug={dsaSlug} onDsaSlug={onDsaSlug}/>} {page==='courses'&&<MyLearningHub courses={courses} progress={progress} refresh={load} user={user} go={go} openCourse={openCourse}/>} {page==='learning-studio'&&<LearningStudio user={user} routeTab={studioTab} onRouteTab={onStudioTab}/>} {page==='tutor'&&<LearningStudio user={user} initialTab="teacher" onRouteTab={onStudioTab}/>} {page==='code'&&<CodeLab user={user}/>} {page==='quiz'&&<Quiz courses={courses} progress={progress} refresh={load} user={user}/>} {page==='chat'&&<ChatWorkspace user={user}/>} {page==='knowledge'&&<KnowledgeHub user={user}/>}
+ {page==='mentor'&&<AdaptiveMentor user={user} courses={courses}/>} {page==='planner'&&<StudyPlanner user={user}/>} {page==='flashcards'&&<Flashcards user={user}/>} {page==='achievements'&&<Achievements user={user} go={go}/>} {page==='profile'&&<AILearningProfile user={user} courses={courses} go={go}/>} {page==='interview'&&<Interviewer user={user}/>} {page==='voice'&&<LearningStudio user={user} initialTab="voice" onRouteTab={onStudioTab}/>} {page==='dpp'&&<CourseDppIde user={user} courses={courses}/>} {page==='exam'&&<ExamSimulator user={user}/>} {page==='gatecse'&&<GateCse routeTab={gateTab} onRouteTab={onGateTab}/>} {page==='dsa'&&<DsaPractice user={user} api={api} routeSlug={dsaSlug} onRouteSlug={onDsaSlug}/>} {page==='career'&&<CareerHub user={user} go={go}/>} {page==='community'&&<CommunityHub user={user} go={go}/>} {page==='notifications'&&<TodayHub user={user} go={go}/>} {page==='revision'&&<RevisionHub user={user} go={go}/>} {page==='settings'&&<SettingsPage user={user} dark={dark} setDark={setDark} logout={logout} switchAccount={switchAccount} onUserUpdate={updateUser} aiStatus={aiStatus}/>} {page==='about'&&<PublicPage page="about" signedIn onBack={()=>go('dashboard')}/>} {page==='privacy'&&<PublicPage page="privacy" signedIn onBack={()=>go('settings')}/>} {page==='terms'&&<PublicPage page="terms" signedIn onBack={()=>go('settings')}/>} {page==='contact'&&<PublicPage page="contact" signedIn onBack={()=>go('dashboard')}/>} {page==='admin'&&(role==='ADMIN'?<Admin user={user} courses={courses} refreshCourses={load} onBack={()=>go('dashboard')}/>:<AdminLocked go={go}/>)}</React.Suspense></ErrorBoundary></div></main></div>
 }
 function readHashRoute(){
  const raw=String(window.location.hash||'').replace(/^#\/?/,'');
@@ -1278,8 +1327,49 @@ function Onboarding({user,onComplete}){
  const [form,setForm]=useState({name:user.name||'',educationLevel:'B.Tech / College',learningGoal:'',targetExam:'',interests:'',strengths:'',weaknesses:'',learningStyle:'Visual + practical',dailyStudyMinutes:60,preferredAiLanguage:getAiLanguage()});
  const [step,setStep]=useState(1),[loading,setLoading]=useState(false),[error,setError]=useState('');
  const styles=['Visual + practical','Step-by-step','Practice first','Theory first'];
- async function save(){if(!form.learningGoal.trim()||!form.interests.trim()||!form.weaknesses.trim()||!form.learningStyle){setError('Please complete your goal, interests, weaknesses and learning style.');return}setLoading(true);setError('');try{const r=await api('/users/'+user.id,{method:'PUT',body:JSON.stringify({...form,dailyStudyMinutes:Number(form.dailyStudyMinutes)})});localStorage.setItem(AI_LANGUAGE_KEY,form.preferredAiLanguage);onComplete({...user,...r,profileComplete:true})}catch(e){setError(e.message||'Could not save your learning profile.')}finally{setLoading(false)}}
- return <div className="onboarding-page"><div className="onboarding-card"><div className="onboarding-head"><div className="onboarding-orb"><Sparkles size={22}/></div><div><span className="eyebrow">NOVA PERSONALIZATION</span><h1>Let Nova <span>know you.</span></h1><p>Answer a few questions once. Your AI teacher, practice and study recommendations will use this profile.</p></div></div><div className="onboarding-progress"><span className={step>=1?'on':''}/><span className={step>=2?'on':''}/><span className={step>=3?'on':''}/></div>{step===1&&<div className="onboarding-grid"><label>EDUCATION LEVEL<select value={form.educationLevel} onChange={e=>setForm({...form,educationLevel:e.target.value})}><option>B.Tech / College</option><option>School</option><option>Graduate</option><option>Working professional</option><option>Other</option></select></label><label>MAIN GOAL<input value={form.learningGoal} onChange={e=>setForm({...form,learningGoal:e.target.value})} placeholder="e.g. GATE CSE + Java placement preparation"/></label><label>TARGET EXAM <span>optional</span><input value={form.targetExam} onChange={e=>setForm({...form,targetExam:e.target.value})} placeholder="GATE, placement, university exams…"/></label><label>DAILY STUDY TIME<select value={form.dailyStudyMinutes} onChange={e=>setForm({...form,dailyStudyMinutes:e.target.value})}><option value="30">30 minutes</option><option value="60">1 hour</option><option value="90">1.5 hours</option><option value="120">2 hours</option><option value="180">3+ hours</option></select></label></div>}{step===2&&<div className="onboarding-grid"><label>INTERESTS<textarea value={form.interests} onChange={e=>setForm({...form,interests:e.target.value})} placeholder="Java, DSA, AI, web development, GATE…"/></label><label>STRENGTHS<textarea value={form.strengths} onChange={e=>setForm({...form,strengths:e.target.value})} placeholder="What are you already comfortable with?"/></label><label>WEAKNESSES<textarea value={form.weaknesses} onChange={e=>setForm({...form,weaknesses:e.target.value})} placeholder="What topics confuse you or need improvement?"/></label><label>LEARNING STYLE<div className="choice-grid">{styles.map(x=><button type="button" className={form.learningStyle===x?'choice active':'choice'} onClick={()=>setForm({...form,learningStyle:x})} key={x}><b>{x}</b><small>{x==='Visual + practical'?'Diagrams + examples':x==='Step-by-step'?'Slow guided teaching':x==='Practice first'?'Learn by solving':'Concept before practice'}</small></button>)}</div></label></div>}{step===3&&<div className="onboarding-final"><div className="profile-preview"><div className="profile-preview-icon"><BrainCircuit size={24}/></div><div><b>Your Nova profile</b><p><strong>Goal:</strong> {form.learningGoal||'—'}</p><p><strong>Interests:</strong> {form.interests||'—'}</p><p><strong>Weaknesses:</strong> {form.weaknesses||'—'}</p><p><strong>Style:</strong> {form.learningStyle} • <strong>Study:</strong> {form.dailyStudyMinutes} min/day</p></div></div><label>AI TEACHING LANGUAGE<select value={form.preferredAiLanguage} onChange={e=>setForm({...form,preferredAiLanguage:e.target.value})}>{AI_LANGUAGES.map(x=><option key={x}>{x}</option>)}</select></label><div className="visual-teaching-note"><Sparkles size={18}/><div><b>Visual teaching is on</b><small>Nova will prefer diagrams, examples, flowcharts and visual explanations when they make a concept easier to understand.</small></div></div></div>}{error&&<div className="error">{error}</div>}<div className="onboarding-actions">{step>1?<button className="secondary" onClick={()=>setStep(step-1)}>Back</button>:<span/>}{step<3?<button className="primary" onClick={()=>{setError('');setStep(step+1)}}>Continue <ChevronRight size={15}/></button>:<button className="primary" onClick={save} disabled={loading}>{loading?'Saving your profile…':'Start my personalized NovaTutor'} <Sparkles size={15}/></button>}</div></div></div>
+
+ function validateStep(s){
+  if(s===1){
+   if(!isMeaningfulText(form.learningGoal,5,500)){
+    return 'Please enter a meaningful learning goal (at least 5 characters, e.g. "GATE CSE & algorithms").';
+   }
+  }
+  if(s===2){
+   if(!isMeaningfulText(form.interests,5,500)){
+    return 'Please enter your learning interests (at least 5 characters, e.g. "Java, DSA, Cloud").';
+   }
+   if(!isMeaningfulText(form.weaknesses,5,500)){
+    return 'Please describe topics you want to improve (at least 5 characters, e.g. "Dynamic programming").';
+   }
+   if(!form.learningStyle){
+    return 'Please select a learning style.';
+   }
+  }
+  return '';
+ }
+
+ function nextStep(){
+  const err=validateStep(step);
+  if(err){setError(err);return}
+  setError('');
+  setStep(step+1);
+ }
+
+ async function save(){
+  const err1=validateStep(1);if(err1){setError(err1);setStep(1);return}
+  const err2=validateStep(2);if(err2){setError(err2);setStep(2);return}
+  setLoading(true);setError('');
+  try{
+   const r=await api('/users/'+user.id,{method:'PUT',body:JSON.stringify({...form,dailyStudyMinutes:Number(form.dailyStudyMinutes)})});
+   localStorage.setItem(AI_LANGUAGE_KEY,form.preferredAiLanguage);
+   onComplete({...user,...r,profileComplete:true});
+  }catch(e){
+   setError(e.message||'Could not save your learning profile.');
+  }finally{
+   setLoading(false);
+  }
+ }
+ return <div className="onboarding-page"><div className="onboarding-card"><div className="onboarding-head"><div className="onboarding-orb"><Sparkles size={22}/></div><div><span className="eyebrow">NOVA PERSONALIZATION</span><h1>Let Nova <span>know you.</span></h1><p>Answer a few questions once. Your AI teacher, practice and study recommendations will use this profile.</p></div></div><div className="onboarding-progress"><span className={step>=1?'on':''}/><span className={step>=2?'on':''}/><span className={step>=3?'on':''}/></div>{step===1&&<div className="onboarding-grid"><label>EDUCATION LEVEL<select value={form.educationLevel} onChange={e=>setForm({...form,educationLevel:e.target.value})}><option>B.Tech / College</option><option>School</option><option>Graduate</option><option>Working professional</option><option>Other</option></select></label><label>MAIN GOAL<input value={form.learningGoal} onChange={e=>setForm({...form,learningGoal:e.target.value})} placeholder="e.g. GATE CSE + Java placement preparation"/></label><label>TARGET EXAM <span>optional</span><input value={form.targetExam} onChange={e=>setForm({...form,targetExam:e.target.value})} placeholder="GATE, placement, university exams…"/></label><label>DAILY STUDY TIME<select value={form.dailyStudyMinutes} onChange={e=>setForm({...form,dailyStudyMinutes:e.target.value})}><option value="30">30 minutes</option><option value="60">1 hour</option><option value="90">1.5 hours</option><option value="120">2 hours</option><option value="180">3+ hours</option></select></label></div>}{step===2&&<div className="onboarding-grid"><label>INTERESTS<textarea value={form.interests} onChange={e=>setForm({...form,interests:e.target.value})} placeholder="Java, DSA, AI, web development, GATE…"/></label><label>STRENGTHS<textarea value={form.strengths} onChange={e=>setForm({...form,strengths:e.target.value})} placeholder="What are you already comfortable with?"/></label><label>WEAKNESSES<textarea value={form.weaknesses} onChange={e=>setForm({...form,weaknesses:e.target.value})} placeholder="What topics confuse you or need improvement?"/></label><label>LEARNING STYLE<div className="choice-grid">{styles.map(x=><button type="button" className={form.learningStyle===x?'choice active':'choice'} onClick={()=>setForm({...form,learningStyle:x})} key={x}><b>{x}</b><small>{x==='Visual + practical'?'Diagrams + examples':x==='Step-by-step'?'Slow guided teaching':x==='Practice first'?'Learn by solving':'Concept before practice'}</small></button>)}</div></label></div>}{step===3&&<div className="onboarding-final"><div className="profile-preview"><div className="profile-preview-icon"><BrainCircuit size={24}/></div><div><b>Your Nova profile</b><p><strong>Goal:</strong> {form.learningGoal||'—'}</p><p><strong>Interests:</strong> {form.interests||'—'}</p><p><strong>Weaknesses:</strong> {form.weaknesses||'—'}</p><p><strong>Style:</strong> {form.learningStyle} • <strong>Study:</strong> {form.dailyStudyMinutes} min/day</p></div></div><label>AI TEACHING LANGUAGE<select value={form.preferredAiLanguage} onChange={e=>setForm({...form,preferredAiLanguage:e.target.value})}>{AI_LANGUAGES.map(x=><option key={x}>{x}</option>)}</select></label><div className="visual-teaching-note"><Sparkles size={18}/><div><b>Visual teaching is on</b><small>Nova will prefer diagrams, examples, flowcharts and visual explanations when they make a concept easier to understand.</small></div></div></div>}{error&&<div className="error">{error}</div>}<div className="onboarding-actions">{step>1?<button className="secondary" onClick={()=>setStep(step-1)}>Back</button>:<span/>}{step<3?<button className="primary" onClick={nextStep}>Continue <ChevronRight size={15}/></button>:<button className="primary" onClick={save} disabled={loading}>{loading?'Saving your profile…':'Start my personalized NovaTutor'} <Sparkles size={15}/></button>}</div></div></div>
 }
 function CourseDppIde({user,courses}){
  const dppInitial=React.useMemo(()=>({courseId:courses[0]?.id||'',dpp:null,answers:{},skipped:{},submitted:false,language:'Java',code:'public class Main {\n    public static void main(String[] args) {\n        System.out.println("Hello NovaTutor");\n    }\n}',analysis:'',ideTask:null}),[courses[0]?.id]);
@@ -2015,6 +2105,9 @@ function TopNav({user,role,page,go,dark,setDark,navModel,activeGroup,mobile,setM
      </div>;
     })}
    </nav>}
+   {vp&&<div className="topnav-mobile-center">
+    <button className="topnav-icon-btn topnav-menu-toggle" aria-label={mobile?'Close navigation':'Open navigation'} aria-expanded={mobile} onClick={()=>setMobile(x=>!x)}>{mobile?'✕':<Menu size={18}/>}</button>
+   </div>}
    <div className="topnav-right">
     {!vp&&<GlobalSearch courses={coursesSafe()} go={go}/>}
     {!vp&&<button className={'topnav-icon-btn'+(page==='notifications'?' has-badge':'')} aria-label="Today's plan" title="Today's plan" onClick={()=>go('notifications')}><Bell size={17}/></button>}
@@ -2026,7 +2119,6 @@ function TopNav({user,role,page,go,dark,setDark,navModel,activeGroup,mobile,setM
       <button role="menuitem" className="topnav-item danger" onClick={logout}><span className="topnav-item-icon"><LogOut size={16}/></span>Log out</button>
      </div>}
     </div>
-    {vp&&<button className="topnav-icon-btn" aria-label={mobile?'Close navigation':'Open navigation'} aria-expanded={mobile} onClick={()=>setMobile(x=>!x)}>{mobile?'✕':<Menu size={18}/>}</button>}
    </div>
   </div>
   {vp&&mobile&&<div className="topnav-sheet" role="dialog" aria-label="Navigation">

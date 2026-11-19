@@ -241,6 +241,11 @@ public class AuthController {
     }
 
     private boolean profileComplete(User u) {
+        if (u == null) return false;
+        String role = u.getRole() != null ? u.getRole().toUpperCase() : "STUDENT";
+        if ("GUEST".equals(role) || "ADMIN".equals(role)) {
+            return true;
+        }
         return u.getLearningGoal() != null && !u.getLearningGoal().isBlank()
                 && u.getInterests() != null && !u.getInterests().isBlank()
                 && u.getWeaknesses() != null && !u.getWeaknesses().isBlank()

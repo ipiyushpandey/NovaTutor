@@ -48,14 +48,36 @@
 @keyframes nova-press{50%{transform:scale(.985)}}
 .press:active{animation:nova-press var(--t-fast) var(--ease-out)}
 
+/* ---- Micro-interactions: lift on hover & subtle icon feedback ---- */
+.hover-lift{transition:transform var(--t-fast) var(--ease-out),box-shadow var(--t-fast) var(--ease-out)}
+.hover-lift:hover{transform:translateY(-2px)}
+.hover-lift:active{transform:translateY(0)}
+
+.icon-rotate-subtle{transition:transform var(--t-fast) var(--ease-out)}
+.icon-rotate-subtle:hover{transform:rotate(12deg)}
+
+@keyframes nova-shimmer{0%,100%{transform:scale(1)}50%{transform:scale(1.08) rotate(3deg)}}
+.icon-pulse-gentle:hover{animation:nova-shimmer 400ms var(--ease-out)}
+
+/* ---- Staggered reveal for collections & card grids ---- */
+.stagger-reveal>*{opacity:0;transform:translateY(12px);transition:opacity var(--t-med) var(--ease-out),transform var(--t-med) var(--ease-out)}
+.stagger-reveal.in-view>*:nth-child(1){transition-delay:0ms;opacity:1;transform:none}
+.stagger-reveal.in-view>*:nth-child(2){transition-delay:40ms;opacity:1;transform:none}
+.stagger-reveal.in-view>*:nth-child(3){transition-delay:80ms;opacity:1;transform:none}
+.stagger-reveal.in-view>*:nth-child(4){transition-delay:120ms;opacity:1;transform:none}
+.stagger-reveal.in-view>*:nth-child(5){transition-delay:160ms;opacity:1;transform:none}
+.stagger-reveal.in-view>*:nth-child(6){transition-delay:200ms;opacity:1;transform:none}
+.stagger-reveal.in-view>*:nth-child(n+7){transition-delay:240ms;opacity:1;transform:none}
+
 /* ---- Streaming caret for AI output ---- */
 @keyframes nova-caret{50%{opacity:0}}
 .stream-caret::after{content:'▍';color:var(--accent);animation:nova-caret 1s steps(1) infinite}
 
 /* ---- Reduced motion: neutralize everything opted in above ---- */
 @media (prefers-reduced-motion:reduce){
-  .page-in,.stagger>*,.reveal,.skeleton,.live-dot,.press:active{animation:none!important}
-  .reveal{opacity:1;transform:none}
+  .page-in,.stagger>*,.reveal,.skeleton,.live-dot,.press:active,.stagger-reveal>*{animation:none!important;transition:none!important}
+  .reveal,.stagger-reveal>*{opacity:1!important;transform:none!important}
+  .hover-lift:hover,.icon-rotate-subtle:hover,.icon-pulse-gentle:hover{transform:none!important;animation:none!important}
   .nova-check path{stroke-dashoffset:0;animation:none}
   .stream-caret::after{animation:none}
 }
