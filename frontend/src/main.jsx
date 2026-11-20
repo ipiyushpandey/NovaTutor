@@ -1,6 +1,6 @@
 import React,{useEffect,useLayoutEffect,useState,useRef,useMemo,useCallback,useSyncExternalStore} from 'react';
 import {createRoot} from 'react-dom/client';
-import {Icon as NovaIcon,BookOpen,BrainCircuit,Code2,FileText,LayoutDashboard,MessageCircle,Target,Sparkles,ChevronRight,Send,Menu,LogOut,Plus,Trash2,CheckCircle2,PlayCircle,BarChart3,RotateCcw,UploadCloud,FileSearch,CalendarDays,Layers3,WandSparkles,Clock3,GraduationCap,Lightbulb,Brain,RefreshCw,Mic,MicOff,Volume2,VolumeX,UserRound,Trophy,StopCircle,Bell,Sun,Moon,Users,Briefcase} from './icons.jsx';
+import {Icon as NovaIcon,BookOpen,BrainCircuit,Code2,FileText,LayoutDashboard,MessageCircle,Target,Sparkles,ChevronRight,Send,Menu,LogOut,Plus,Trash2,CheckCircle2,PlayCircle,BarChart3,RotateCcw,UploadCloud,FileSearch,CalendarDays,Layers3,WandSparkles,Clock3,History,GraduationCap,Lightbulb,Brain,RefreshCw,Mic,MicOff,Volume2,VolumeX,UserRound,Trophy,StopCircle,Bell,Sun,Moon,Users,Briefcase} from './icons.jsx';
 /* Load order matters: the LEGACY stylesheet first (it still defines its own
    variables and component styles), then the redesign system so its tokens win
    the cascade for shared custom-property names (--accent, --surface, ...).
@@ -15,13 +15,14 @@ const AdminControlCenter = React.lazy(() => import('./AdminControlCenter.jsx'));
 import LottiePlayer from './ui/LottiePlayer.jsx';
 import lottieLogoUrl from './assets/lottie-logo.json?url';
 import BooksScene from './ui/BooksScene.jsx';
+import LearningHistoryView from './ui/LearningHistoryView.jsx';
 import './ui/books-scene.css';
 import './ui/premium.css';
 import {readWorkspace,writeWorkspace,workspaceKey,subscribeWorkspace,migrateWorkspaceIfNeeded,removeWorkspace} from './persistence/workspaceStore.js';
 import AiMarkdown, {normalizeAiText, mdInlineText} from './AiMarkdown.jsx';
 import {registerWorkspaceFlusher,beginNavigationPersistence} from './persistence/appWorkspace.js';
 import {readRuntimeState,writeRuntimeState,subscribeRuntimeState,getRuntimeModuleSnapshot,updateRuntimeState,removeRuntimeState,clearRuntimeUser} from './persistence/runtimeStore.js';
-import {api,apiStream,readUser,refreshSessionToken,refreshSessionTokenWithStatus,invalidatePendingSessionRefresh} from './lib/api.js';
+import {api,apiStream,readUser,refreshSessionToken,refreshSessionTokenWithStatus,invalidatePendingSessionRefresh,recordLearningHistory} from './lib/api.js';
 import {isMeaningfulText} from './lib/validation.js';
 /* V69 FOUNDATION REPAIR — production curriculum + stable learning foundation */
 /* V51 VOICE SPEED + CHAT CONTROLS */
@@ -34,19 +35,9 @@ function useScrollReveal(containerRef, deps = []) {
   if (typeof window === 'undefined') return;
   const isReduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const root = containerRef?.current || document;
-  const targetRoot = root.querySelector?.('main') || root.body || root;
-  const observeAll = (obs) => {
-   const elements = root.querySelectorAll('.reveal:not(.in-view), .stagger-reveal:not(.in-view)');
-   elements.forEach(el => {
-    if (isReduced || typeof IntersectionObserver === 'undefined') {
-     el.classList.add('in-view');
-    } else if (obs) {
-     obs.observe(el);
-    }
-   });
-  };
+  const elements = root.querySelectorAll('.reveal:not(.in-view), .stagger-reveal:not(.in-view)');
   if (isReduced || typeof IntersectionObserver === 'undefined') {
-   observeAll(null);
+   elements.forEach(el => el.classList.add('in-view'));
    return;
   }
   const io = new IntersectionObserver((entries, obs) => {
@@ -57,32 +48,9 @@ function useScrollReveal(containerRef, deps = []) {
     }
    });
   }, { threshold: 0.05, rootMargin: '0px 0px 40px 0px' });
-  observeAll(io);
-  let rafId = null;
-  const mo = new MutationObserver((mutations) => {
-   let hasPotentialReveal = false;
-   for (let i = 0; i < mutations.length; i++) {
-    const nodes = mutations[i].addedNodes;
-    for (let j = 0; j < nodes.length; j++) {
-     const n = nodes[j];
-     if (n.nodeType === 1) {
-      if (n.classList?.contains('reveal') || n.classList?.contains('stagger-reveal') || n.querySelector?.('.reveal, .stagger-reveal')) {
-       hasPotentialReveal = true;
-       break;
-      }
-     }
-    }
-    if (hasPotentialReveal) break;
-   }
-   if (!hasPotentialReveal) return;
-   if (rafId) cancelAnimationFrame(rafId);
-   rafId = requestAnimationFrame(() => observeAll(io));
-  });
-  mo.observe(targetRoot, { childList: true, subtree: true });
+  elements.forEach(el => io.observe(el));
   return () => {
-   if (rafId) cancelAnimationFrame(rafId);
    io.disconnect();
-   mo.disconnect();
   };
  }, deps);
 }
@@ -811,7 +779,7 @@ function NovaBrain({user,go}){
  </>;
 }
 
-const ALLOWED_PAGES=['login','about','privacy','terms','contact','dashboard','coach','study-room','analytics','courses','course','mentor','learning-studio','tutor','code','quiz','practice','prepare','chat','knowledge','planner','flashcards','interview','voice','settings','gatecse','career','community','notifications','revision','achievements','dpp','profile','exam','nova-os','nova-brain','onboarding','admin','dsa'];
+const ALLOWED_PAGES=['login','about','privacy','terms','contact','dashboard','coach','study-room','analytics','courses','course','mentor','learning-studio','tutor','code','quiz','practice','prepare','chat','knowledge','planner','flashcards','interview','voice','settings','gatecse','career','community','notifications','revision','achievements','dpp','profile','exam','nova-os','nova-brain','onboarding','admin','dsa','history'];
 
 function parseAppHash(rawHash=window.location.hash){
  const clean=String(rawHash||'').replace(/^#\/?/,'').split('?')[0].replace(/\/+$/,'');
@@ -867,7 +835,17 @@ function App(){
   const publicPages=['login','about','privacy','terms','contact','verify-email','reset-password'];
   if(!session){
    const h=initialParsed.page;
-   return publicPages.includes(h)?h:'login';
+   if(!publicPages.includes(h)){
+    if(ALLOWED_PAGES.includes(h)&&h!=='login'&&h!=='onboarding'){
+     try{
+      const rawTarget=String(window.location.hash||'').replace(/^#\/?/,'');
+      if(rawTarget)sessionStorage.setItem('nova_redirect_target',rawTarget);
+     }catch{}
+    }
+    try{window.history.replaceState({novaIndex:0,novaAuth:false,page:'login'},'','#/login');}catch{}
+    return 'login';
+   }
+   return h;
   }
   const isStudent=String(session.role||'STUDENT').toUpperCase()==='STUDENT';
   const needsProfile=isStudent&&session.profileComplete===false;
@@ -886,6 +864,13 @@ function App(){
   if(!session){
    const h=initialParsed.page;
    if(!publicPages.includes(h)&&window.location.hash!=='#/login'&&window.location.hash!=='#login'&&window.location.hash!==''){
+    if(ALLOWED_PAGES.includes(h)&&h!=='login'&&h!=='onboarding'){
+     try{
+      const rawTarget=String(window.location.hash||'').replace(/^#\/?/,'');
+      if(rawTarget)sessionStorage.setItem('nova_redirect_target',rawTarget);
+     }catch{}
+    }
+    try{window.history.replaceState({novaIndex:0,novaAuth:false,page:'login'},'','#/login');}catch{}
     window.location.replace('#/login');
    }
   }
@@ -1139,6 +1124,21 @@ function App(){
  const go=id=>{
   if(!user)return;
   if(id==='admin'&&role!=='ADMIN')return;
+  if(typeof id==='string'&&id.startsWith('course/')){
+   const parts=id.split('/');
+   openCourse(parts[1],parts[3]||null);
+   return;
+  }
+  if(typeof id==='string'&&id.startsWith('dsa/')){
+   const slug=id.split('/')[1];
+   onDsaSlug(slug);
+   return;
+  }
+  if(typeof id==='string'&&id.startsWith('gatecse/')){
+   const tab=id.split('/')[1];
+   onGateTab(tab);
+   return;
+  }
   saveCurrentScroll();
   const legacyStudio={tutor:'teacher',notes:'teacher',voice:'voice'};
   const target=legacyStudio[id]?'learning-studio':id;
@@ -1199,42 +1199,20 @@ function App(){
   const neededHeight=target+(window.innerHeight||800)+120;
   setRestorationMinHeight(neededHeight);
   window.scrollTo({top:target,left:0,behavior:'instant'});
-  let cancelled=false,userInteracted=false,raf=0;
-  const startedAt=Date.now();
-  const stopUser=()=>{userInteracted=true;cleanup();};
-  const apply=()=>{
-   if(cancelled||userInteracted)return;
-   window.scrollTo({top:target,left:0,behavior:'instant'});
-   if(Math.abs(window.scrollY-target)<=2||Date.now()-startedAt>2000){
-    cleanup();
+  let cancelled=false;
+  const raf=requestAnimationFrame(()=>{
+   if(!cancelled){
+    window.scrollTo({top:target,left:0,behavior:'instant'});
+    restoringScrollRef.current=false;
+    setRestorationMinHeight(null);
    }
-  };
-  let ro=null;
-  if(typeof ResizeObserver!=='undefined'){
-   ro=new ResizeObserver(()=>{if(!cancelled&&!userInteracted){cancelAnimationFrame(raf);raf=requestAnimationFrame(apply)}});
-   ro.observe(document.body);
-  }
-  const timer=setInterval(()=>{if(!cancelled&&!userInteracted)apply()},50);
-  const maxTimer=setTimeout(()=>cleanup(),2100);
-  const cleanup=()=>{
+  });
+  return ()=>{
    cancelled=true;
+   cancelAnimationFrame(raf);
    restoringScrollRef.current=false;
    setRestorationMinHeight(null);
-   cancelAnimationFrame(raf);
-   clearInterval(timer);
-   clearTimeout(maxTimer);
-   ro?.disconnect();
-   window.removeEventListener('wheel',stopUser);
-   window.removeEventListener('touchstart',stopUser);
-   window.removeEventListener('keydown',stopUser);
-   window.removeEventListener('pointerdown',stopUser);
   };
-  window.addEventListener('wheel',stopUser,{passive:true});
-  window.addEventListener('touchstart',stopUser,{passive:true});
-  window.addEventListener('keydown',stopUser,{passive:true});
-  window.addEventListener('pointerdown',stopUser,{passive:true});
-  raf=requestAnimationFrame(apply);
-  return cleanup;
  },[routeKey]);
 
  useEffect(()=>{const f=()=>go('tutor');window.addEventListener('nova-go-tutor',f);return()=>window.removeEventListener('nova-go-tutor',f)},[page,user?.id]);
@@ -1257,14 +1235,14 @@ function App(){
      setPage(parsed.page);
      return;
     }
-    setPage('login');
-    if(window.history.state?.novaAuth===true){
-     const curIndex=typeof window.history.state?.novaIndex==='number'?window.history.state.novaIndex:0;
-     if(curIndex>0){
-      window.history.back();
-      return;
-     }
+    if(ALLOWED_PAGES.includes(parsed.page)&&parsed.page!=='login'&&parsed.page!=='onboarding'){
+     try{
+      const rawTarget=String(window.location.hash||'').replace(/^#\/?/,'');
+      if(rawTarget)sessionStorage.setItem('nova_redirect_target',rawTarget);
+     }catch{}
     }
+    setPage('login');
+    try{window.history.replaceState({novaIndex:0,novaAuth:false,page:'login'},'','#/login');}catch{}
     if(window.location.hash!=='#/login'&&window.location.hash!=='#login'&&window.location.hash!==''){
      window.location.replace('#/login');
     }
@@ -1334,7 +1312,7 @@ function App(){
  const role=String(user?.role||'STUDENT').toUpperCase();
  if(page==='onboarding') return <Onboarding user={user} onComplete={next=>{localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page','dashboard');setUser(next);setPage('dashboard');window.location.replace('#/dashboard')}}/>;
  const navModel=[
-  {id:'learn',label:'Learn',items:[['dashboard','Home',LayoutDashboard],['notifications','Today',Bell],['courses','Courses',BookOpen],['knowledge','Knowledge Hub',FileSearch]]},
+  {id:'learn',label:'Learn',items:[['dashboard','Home',LayoutDashboard],['notifications','Today',Bell],['courses','Courses',BookOpen],['history','History',History],['knowledge','Knowledge Hub',FileSearch]]},
   {id:'practice',label:'Practice',items:[['practice','Practice hub',Target],['dsa','DSA Practice',Code2],['exam','Exam Simulator',Trophy],['gatecse','GATE CSE',GraduationCap],['revision','Revision',RotateCcw]]},
   {id:'ai',label:'AI',items:[['learning-studio','AI Teacher',BrainCircuit],['chat','AI Chat',MessageCircle],['nova-brain','Nova Brain',Brain],['mentor','AI Mentor',Sparkles]]},
   {id:'community',label:'More',items:[['community','Community',Users],['achievements','Achievements',Trophy],['career','Career',Briefcase],['about','About NovaTutor',Lightbulb],...(role==='ADMIN'?[['admin','Admin Panel',WandSparkles]]:[])]},
@@ -1343,12 +1321,31 @@ function App(){
  const logout=()=>{if(role!=='GUEST'){persistBeforeNavigation('logout')}else{api('/auth/guest',{method:'DELETE'}).catch(()=>{})}clearUserClientState(user)};
  const switchAccount=()=>{if(role!=='GUEST'){persistBeforeNavigation('switch-account')}else{api('/auth/guest',{method:'DELETE'}).catch(()=>{})}clearUserClientState(user)};
  const updateUser=next=>{const normalized={...(user||{}),...(next||{}),role:String(next?.role||user?.role||'STUDENT').toUpperCase()};localStorage.setItem('ai_user',JSON.stringify(normalized));setUser(normalized)};
+ const handleReopenHistoryTopic=useCallback(item=>{
+  if(!item)return;
+  if(item.itemType==='AI_TEACHER'&&item.contentSnapshot){
+   try{
+    const snap=JSON.parse(item.contentSnapshot);
+    saveTutorMemory(user?.id,{
+     topic:snap.topic||item.title||'',
+     message:snap.message||'',
+     answer:snap.answer||'',
+     feedback:snap.feedback||'',
+     studentAnswer:snap.studentAnswer||'',
+     answerSubmitted:Boolean(snap.answerSubmitted),
+     contextKey:snap.contextKey||`history_${item.id||Date.now()}`
+    });
+    window.dispatchEvent(new Event('nova:tutor-memory-updated'));
+   }catch(e){}
+  }
+  go(item.targetRoute||'dashboard');
+ },[go,user?.id]);
  if(!authResolved){
   return <div className="app-bootstrap-shell" style={{minHeight:'100vh',display:'grid',placeItems:'center',background:dark?'#0E1013':'#FCFCFA'}}>
    <div className="auth-spinner" aria-label="Loading NovaTutor" />
   </div>;
  }
- if(!user)return <Auth onLogin={u=>{invalidatePendingSessionRefresh();bootstrappedUserRef.current=null;const next={...u,role:String(u.role||'STUDENT').toUpperCase()};resetTransientLearningState(next.id);localStorage.removeItem('nova_nav_stack');const needsProfile=next.role==='STUDENT'&&next.profileComplete===false;const target=needsProfile?'onboarding':'dashboard';localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page',target);setUser(next);setPage(target);try{window.history.replaceState({novaIndex:0,novaAuth:true,page:target},'','#/'+target);}catch{}window.location.replace('#/'+target)}} dark={dark} setDark={setDark}/>;
+ if(!user)return <Auth onLogin={u=>{invalidatePendingSessionRefresh();bootstrappedUserRef.current=null;const next={...u,role:String(u.role||'STUDENT').toUpperCase()};resetTransientLearningState(next.id);localStorage.removeItem('nova_nav_stack');const needsProfile=next.role==='STUDENT'&&next.profileComplete===false;const savedTarget=sessionStorage.getItem('nova_redirect_target');sessionStorage.removeItem('nova_redirect_target');const basePage=savedTarget?savedTarget.split('/')[0]:null;const target=(savedTarget&&ALLOWED_PAGES.includes(basePage))?savedTarget:(needsProfile?'onboarding':'dashboard');localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page',target.split('/')[0]);setUser(next);setPage(target.split('/')[0]);try{window.history.replaceState({novaIndex:0,novaAuth:true,page:target},'','#/'+target);}catch{}window.location.replace('#/'+target)}} dark={dark} setDark={setDark}/>;
  return <div className="app app-topnav">
  <TopNav
   user={user} role={role} page={page} go={go} dark={dark} setDark={setDark}
@@ -1357,7 +1354,7 @@ function App(){
  />
  <main className="main-topnav" style={restorationMinHeight?{minHeight:`${restorationMinHeight}px`}:undefined}>
  {wakingServer&&<div className="nv-toast" role="status">Waking up NovaTutor server… this can take a few seconds after idle.</div>}
- <div className="page-transition page-in" key={page}><ErrorBoundary><React.Suspense fallback={<div className="skeleton" style={{minHeight:'240px',margin:'24px 0'}}/>}>{adminDenied&&<div className="nv-toast" role="status">Admin area is restricted to administrator accounts.</div>}{page==='dashboard'&&<Dashboard courses={courses} progress={progress} go={go} openCourse={openCourse} user={user}/>} {page==='course'&&<CoursePage courseId={courseId} lessonId={lessonId} onSelectLesson={lid=>openLesson(courseId,lid)} courses={courses} progress={progress} refresh={load} onBack={()=>lessonId?openCourse(courseId,null):go('courses')}/>} {page==='coach'&&<NovaCoach user={user} go={go} courses={courses}/>} {page==='study-room'&&<NovaCoach user={user} go={go} courses={courses} initialTab="community"/>} {page==='analytics'&&<Analytics user={user}/>} {page==='nova-os'&&<NovaBrain user={user} go={go}/>} {page==='nova-brain'&&<NovaBrain user={user} go={go}/>} {page==='practice'&&<PracticeHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='prepare'&&<PrepareHub user={user} go={go} gateTab={gateTab} onGateTab={onGateTab} dsaSlug={dsaSlug} onDsaSlug={onDsaSlug}/>} {page==='courses'&&<MyLearningHub courses={courses} progress={progress} refresh={load} user={user} go={go} openCourse={openCourse}/>} {page==='learning-studio'&&<LearningStudio user={user} routeTab={studioTab} onRouteTab={onStudioTab}/>} {page==='tutor'&&<LearningStudio user={user} initialTab="teacher" onRouteTab={onStudioTab}/>} {page==='code'&&<CodeLab user={user}/>} {page==='quiz'&&<Quiz courses={courses} progress={progress} refresh={load} user={user}/>} {page==='chat'&&<ChatWorkspace user={user}/>} {page==='knowledge'&&<KnowledgeHub user={user}/>}
+ <div className="page-transition page-in" key={page}><ErrorBoundary><React.Suspense fallback={<div className="skeleton" style={{minHeight:'240px',margin:'24px 0'}}/>}>{adminDenied&&<div className="nv-toast" role="status">Admin area is restricted to administrator accounts.</div>}{page==='dashboard'&&<Dashboard courses={courses} progress={progress} go={go} openCourse={openCourse} user={user}/>} {page==='course'&&<CoursePage courseId={courseId} lessonId={lessonId} onSelectLesson={lid=>openLesson(courseId,lid)} courses={courses} progress={progress} refresh={load} onBack={()=>lessonId?openCourse(courseId,null):go('courses')}/>} {page==='coach'&&<NovaCoach user={user} go={go} courses={courses}/>} {page==='study-room'&&<NovaCoach user={user} go={go} courses={courses} initialTab="community"/>} {page==='analytics'&&<Analytics user={user}/>} {page==='nova-os'&&<NovaBrain user={user} go={go}/>} {page==='nova-brain'&&<NovaBrain user={user} go={go}/>} {page==='practice'&&<PracticeHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='prepare'&&<PrepareHub user={user} go={go} gateTab={gateTab} onGateTab={onGateTab} dsaSlug={dsaSlug} onDsaSlug={onDsaSlug}/>} {page==='courses'&&<MyLearningHub courses={courses} progress={progress} refresh={load} user={user} go={go} openCourse={openCourse}/>} {page==='history'&&<LearningHistoryView user={user} go={go} onReopenTopic={handleReopenHistoryTopic}/>} {page==='learning-studio'&&<LearningStudio user={user} routeTab={studioTab} onRouteTab={onStudioTab}/>} {page==='tutor'&&<LearningStudio user={user} initialTab="teacher" onRouteTab={onStudioTab}/>} {page==='code'&&<CodeLab user={user}/>} {page==='quiz'&&<Quiz courses={courses} progress={progress} refresh={load} user={user}/>} {page==='chat'&&<ChatWorkspace user={user}/>} {page==='knowledge'&&<KnowledgeHub user={user}/>}
  {page==='mentor'&&<AdaptiveMentor user={user} courses={courses}/>} {page==='planner'&&<TodayHub user={user} go={go} initialTab="planner"/>} {page==='flashcards'&&<Flashcards user={user}/>} {page==='achievements'&&<Achievements user={user} go={go}/>} {page==='profile'&&<AILearningProfile user={user} courses={courses} go={go}/>} {page==='interview'&&<Interviewer user={user}/>} {page==='voice'&&<LearningStudio user={user} initialTab="voice" onRouteTab={onStudioTab}/>} {page==='dpp'&&<CourseDppIde user={user} courses={courses}/>} {page==='exam'&&<ExamSimulator user={user}/>} {page==='gatecse'&&<GateCse routeTab={gateTab} onRouteTab={onGateTab}/>} {page==='dsa'&&<DsaPractice user={user} api={api} routeSlug={dsaSlug} onRouteSlug={onDsaSlug}/>} {page==='career'&&<CareerHub user={user} go={go}/>} {page==='community'&&<CommunityHub user={user} go={go}/>} {page==='notifications'&&<TodayHub user={user} go={go} initialTab="today"/>} {page==='revision'&&<RevisionHub user={user} go={go}/>} {page==='settings'&&<SettingsPage user={user} dark={dark} setDark={setDark} logout={logout} switchAccount={switchAccount} onUserUpdate={updateUser} aiStatus={aiStatus}/>} {page==='about'&&<PublicPage page="about" signedIn onBack={()=>go('dashboard')}/>} {page==='privacy'&&<PublicPage page="privacy" signedIn onBack={()=>go('settings')}/>} {page==='terms'&&<PublicPage page="terms" signedIn onBack={()=>go('settings')}/>} {page==='contact'&&<PublicPage page="contact" signedIn onBack={()=>go('dashboard')}/>} {page==='admin'&&(role==='ADMIN'?<Admin user={user} courses={courses} refreshCourses={load} onBack={()=>go('dashboard')} dark={dark} setDark={setDark}/>:<AdminLocked go={go}/>)}</React.Suspense></ErrorBoundary></div></main></div>
 }
 function readHashRoute(){
@@ -2250,6 +2247,17 @@ function CourseDetail({detail,routeLessonId,onSelectLesson,progress,refresh,back
  const c=detail.course;
  useEffect(()=>{setLocalProgress(progress||null)},[progress]);
  useEffect(()=>{setBookmarked(readBookmarks().includes(selectedLesson?.id))},[selectedLesson]);
+ useEffect(()=>{
+  if(selectedLesson&&c){
+   recordLearningHistory({
+    itemType:'LESSON',
+    itemKey:`course_${c.id}_lesson_${selectedLesson.id}`,
+    title:lectureLabel(selectedLesson,Math.max(0,lectureNumberFor(selectedLesson)-1)),
+    category:c.title,
+    targetRoute:`course/${c.id}/lesson/${selectedLesson.id}`
+   }).catch(()=>{});
+  }
+ },[selectedLesson?.id,c?.id]);
  async function complete(id){if(working)return null;setWorking(true);setError('');try{const user=readUser();if(!user)throw new Error('Please sign in again.');const result=await api(`/progress/${user.id}/course/${c.id}/lesson/${id}/complete`,{method:'POST',body:'{}'});setLocalProgress(result);if(refresh)refresh();window.dispatchEvent(new Event('nova:learning-updated'));return result}catch(e){setError(e.message||'Could not save progress.');return null}finally{setWorking(false)}}
  function toggleBookmark(){if(!selectedLesson)return;const list=readBookmarks();const next=list.includes(selectedLesson.id)?list.filter(x=>x!==selectedLesson.id):[...list,selectedLesson.id];localStorage.setItem(bookmarkKey,JSON.stringify(next));setBookmarked(!bookmarked)}
  async function launchTeacher(lesson){
@@ -2374,7 +2382,15 @@ const lessonBg=internalContextRef.current?`\n\nLESSON CONTEXT:\n${internalContex
  setAnswer(nextAnswer||'No response returned.');setStudentAnswer('');setFeedback('');setAnswerSubmitted(false);
  saveTutorMemory(user?.id,{topic:effectiveTopic,message:effectiveMessage,answer:nextAnswer,feedback:'',studentAnswer:'',answerSubmitted:false,contextKey:effectiveContextKey});
  appendTutorTurn(user?.id,'USER',effectiveMessage,{topic:effectiveTopic,source:'ai-teacher',contextKey:effectiveContextKey});
- appendTutorTurn(user?.id,'ASSISTANT',nextAnswer,{topic:effectiveTopic,source:'ai-teacher',contextKey:effectiveContextKey});}catch(e){if(e?.name==='AbortError')return;if(requestId===requestSeqRef.current)setAskError(e.message||'Nova could not be reached right now. Please try again.')}finally{if(requestId===requestSeqRef.current)setLoading(false)}}
+ appendTutorTurn(user?.id,'ASSISTANT',nextAnswer,{topic:effectiveTopic,source:'ai-teacher',contextKey:effectiveContextKey});
+ recordLearningHistory({
+  itemType:'AI_TEACHER',
+  itemKey:'tutor_'+(effectiveTopic||'general').toLowerCase().replace(/\s+/g,'_'),
+  title:effectiveTopic||(effectiveMessage.slice(0,40)+'...'),
+  category:'AI Teacher Studio',
+  targetRoute:'learning-studio',
+  contentSnapshot:JSON.stringify({topic:effectiveTopic,message:effectiveMessage,answer:nextAnswer,contextKey:effectiveContextKey})
+ }).catch(()=>{});}catch(e){if(e?.name==='AbortError')return;if(requestId===requestSeqRef.current)setAskError(e.message||'Nova could not be reached right now. Please try again.')}finally{if(requestId===requestSeqRef.current)setLoading(false)}}
  askRef.current=ask;
  const previousTeachingModeRef=useRef(modeHint||'');
  useEffect(()=>{
@@ -2532,7 +2548,7 @@ function Quiz({courses,refresh,user}){
   if(!selected.length)setError('No new quiz questions are available for this course yet.');
  }
  setQuestions(selected);}catch(e){setQuestions([]);setError(e.message||'Quiz could not load.')}finally{setLoading(false)}};
- const submit=async()=>{if(!questions.length)return;const unanswered=questions.filter(q=>answers[q.id]===undefined);if(unanswered.length){setError(`Please answer all ${unanswered.length} remaining question${unanswered.length===1?'':'s'} before submitting.`);return}setLoading(true);setError('');try{const r=await api('/quizzes/course/'+courseId+'/submit',{method:'POST',body:JSON.stringify({userId:user.id,answers:Object.entries(answers).map(([questionId,selectedOption])=>({questionId:Number(questionId),selectedOption:Number(selectedOption)}))})});setResult(r);refresh?.();window.dispatchEvent(new Event('nova:learning-updated'));}catch(e){setError(e.message||'Quiz submission failed.')}finally{setLoading(false)}};
+ const submit=async()=>{if(!questions.length)return;const unanswered=questions.filter(q=>answers[q.id]===undefined);if(unanswered.length){setError(`Please answer all ${unanswered.length} remaining question${unanswered.length===1?'':'s'} before submitting.`);return}setLoading(true);setError('');try{const r=await api('/quizzes/course/'+courseId+'/submit',{method:'POST',body:JSON.stringify({userId:user.id,answers:Object.entries(answers).map(([questionId,selectedOption])=>({questionId:Number(questionId),selectedOption:Number(selectedOption)}))})});setResult(r);refresh?.();window.dispatchEvent(new Event('nova:learning-updated'));recordLearningHistory({itemType:'QUIZ',itemKey:'quiz_'+courseId+'_'+Date.now(),title:'Quiz: '+(courses.find(c=>String(c.id)===String(courseId))?.title||'Knowledge Check'),category:'Smart Quiz',targetRoute:'quiz',contentSnapshot:JSON.stringify({score:r.score,correct:r.correct,total:r.total})}).catch(()=>{});}catch(e){setError(e.message||'Quiz submission failed.')}finally{setLoading(false)}};
  const reset=()=>{setQuestions([]);setAnswers({});setResult(null);setError('')};
  return <><div className="page-title"><span className="eyebrow">ASSESSMENT</span><h1>Smart <span>Quiz.</span></h1><p>Test your understanding, get a score and use mistakes as your revision map.</p></div>
   <div className="quiz-toolbar"><select aria-label="Course" value={courseId} onChange={e=>{setCourseId(e.target.value);reset()}} disabled={!courses.length||loading}><option value="">Select a course</option>{courses.map(c=><option key={c.id} value={c.id}>{c.title}</option>)}</select><button className="primary" onClick={()=>start('fresh')} disabled={!courseId||loading}>{loading?'Loading…':questions.length?'Reload quiz':'Start quiz'} <PlayCircle size={15}/></button><button className="secondary" onClick={()=>start('revision')} disabled={!courseId||loading}>Revise mistakes</button></div>
@@ -2540,6 +2556,54 @@ function Quiz({courses,refresh,user}){
   {!questions.length&&!result&&!error&&<div className="empty quiz-empty"><Target size={55}/><b>Ready for a knowledge check?</b><span>Choose a course and start a quiz. Your answers stay on this page until you submit.</span></div>}
   {questions.length>0&&!result&&<div className="quiz-list">{questions.map((q,i)=><div className="quiz-q" key={q.id}><span>QUESTION {i+1} • {q.difficulty||'Mixed'}</span><h3>{q.question||'Question unavailable'}</h3>{(q.options||[]).map((o,j)=><label className={answers[q.id]===j?'chosen':''} key={j}><input type="radio" name={'q'+q.id} checked={answers[q.id]===j} onChange={()=>setAnswers(a=>({...a,[q.id]:j}))}/>{o}</label>)}</div>)}<button className="primary" onClick={submit} disabled={loading}>{loading?'Submitting…':'Submit quiz'} <CheckCircle2 size={15}/></button></div>}
   {result&&<div className="result-card"><div className="result-ring">{Number(result.score)||0}%</div><h2>{result.message||'Quiz complete!'}</h2><p>{result.correct??0} correct out of {result.total??questions.length}</p><div className="result-actions"><button className="primary" onClick={()=>start('revision')} disabled={loading}><Target size={14}/> Revise mistakes</button><button className="secondary" onClick={reset}><RotateCcw size={14}/> Fresh quiz</button></div></div>}
+  {result&&Array.isArray(result.reviews)&&result.reviews.length>0&&(
+   <div className="quiz-review-section">
+    <div className="section-head" style={{marginBottom:'18px'}}>
+     <div>
+      <span className="eyebrow">DETAILED BREAKDOWN</span>
+      <h3>Question-by-Question Review</h3>
+     </div>
+     <span className="doc-count">{result.correct??0}/{result.reviews.length} Correct</span>
+    </div>
+    <div className="quiz-review-cards">
+     {result.reviews.map((rev,idx)=>(
+      <div key={rev.id||idx} className={`quiz-review-card ${rev.correct?'correct-q':'incorrect-q'}`}>
+       <div className="quiz-review-card-head">
+        <span className="quiz-review-num">QUESTION {idx+1} {rev.difficulty?`• ${rev.difficulty}`:''}</span>
+        <span className={`quiz-review-badge ${rev.correct?'badge-correct':'badge-incorrect'}`}>
+         {rev.correct?'✓ Correct':'✗ Incorrect'}
+        </span>
+       </div>
+       <h4 className="quiz-review-question">{rev.question}</h4>
+       <div className="quiz-review-options">
+        {(rev.options||[]).map((opt,optIdx)=>{
+         const isSelected=rev.selectedOption===optIdx;
+         const isCorrect=rev.correctOption===optIdx;
+         let optClass='quiz-review-option';
+         if(isCorrect) optClass+=' option-correct';
+         else if(isSelected&&!isCorrect) optClass+=' option-wrong-choice';
+         return (
+          <div key={optIdx} className={optClass}>
+           <span className="quiz-review-opt-text">{opt}</span>
+           <div style={{display:'flex',gap:'6px',alignItems:'center'}}>
+            {isSelected&&<span className="quiz-review-option-tag tag-user">{isCorrect?'Your Choice ✓':'Your Choice'}</span>}
+            {isCorrect&&!isSelected&&<span className="quiz-review-option-tag tag-correct">Correct Answer</span>}
+           </div>
+          </div>
+         );
+        })}
+       </div>
+       {rev.explanation&&(
+        <div className="quiz-review-explanation">
+         <div className="quiz-review-explanation-title">Explanation:</div>
+         <div className="quiz-review-explanation-text">{rev.explanation}</div>
+        </div>
+       )}
+      </div>
+     ))}
+    </div>
+   </div>
+  )}
  </>;
 }
 

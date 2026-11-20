@@ -303,4 +303,56 @@ async function apiStream(path,opt={},onChunk,_retry=false){
  }
 }
 
-export {api,apiStream,readUser,isJwtExpired,refreshSessionToken,refreshSessionTokenWithStatus,invalidatePendingSessionRefresh,API};
+async function recordLearningHistory({ itemType, itemKey, title, category, targetRoute, contentSnapshot }) {
+ if (!itemType || !itemKey || !title) return;
+ const user = readUser() || readJSON('ai_user', null);
+ const isGuest = String(user?.role || '').toUpperCase() === 'GUEST';
+ if (isGuest || !user?.token) {
+  try {
+   const guestKey = `nova_guest_history_${user?.id || 'guest'}`;
+   const existing = JSON.parse(localStorage.getItem(guestKey) || '[]');
+   const filtered = existing.filter(x => !(x.itemType === itemType && x.itemKey === itemKey));
+   const updated = [{
+    id: Date.now(),
+    itemType,
+    itemKey,
+    title,
+    category: category || '',
+    targetRoute: targetRoute || '',
+    contentSnapshot: contentSnapshot || null,
+    updatedAt: new Date().toISOString()
+   }, ...filtered].slice(0, 50);
+   localStorage.setItem(guestKey, JSON.stringify(updated));
+   window.dispatchEvent(new CustomEvent('nova:history-updated'));
+  } catch {}
+  return;
+ }
+ try {
+  await api('/history/record', {
+   method: 'POST',
+   body: JSON.stringify({ itemType, itemKey, title, category, targetRoute, contentSnapshot }),
+   silentUpdate: true
+  });
+  window.dispatchEvent(new CustomEvent('nova:history-updated'));
+ } catch {
+  try {
+   const localKey = `nova_user_history_${user.id}`;
+   const existing = JSON.parse(localStorage.getItem(localKey) || '[]');
+   const filtered = existing.filter(x => !(x.itemType === itemType && x.itemKey === itemKey));
+   const updated = [{
+    id: Date.now(),
+    itemType,
+    itemKey,
+    title,
+    category: category || '',
+    targetRoute: targetRoute || '',
+    contentSnapshot: contentSnapshot || null,
+    updatedAt: new Date().toISOString()
+   }, ...filtered].slice(0, 50);
+   localStorage.setItem(localKey, JSON.stringify(updated));
+  } catch {}
+ }
+}
+
+export {api,apiStream,readUser,isJwtExpired,refreshSessionToken,refreshSessionTokenWithStatus,invalidatePendingSessionRefresh,recordLearningHistory,API};
+

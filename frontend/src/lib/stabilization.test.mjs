@@ -620,5 +620,51 @@ test('JWT expiration, bootstrap state & history rewind invariants', async () => 
   assert.match(mainJsx, /window\.addEventListener\('popstate',onHash\)/, 'popstate listener must be registered for back/forward synchronization');
 });
 
+test('Upgrade Invariants: Learning History, Quiz Review, and Composable Navigation', async () => {
+  setupBrowserGlobals();
+  const { recordLearningHistory, readUser } = await import('./api.js?t=' + Date.now());
+
+  // 1. Guest user recordLearningHistory stores in localStorage
+  localStorage.setItem('ai_user', JSON.stringify({ id: 'guest-123', role: 'GUEST' }));
+  await recordLearningHistory({
+    itemType: 'LESSON',
+    itemKey: 'course_1_lesson_5',
+    title: 'Lecture 5 — Pointers and Arrays',
+    category: 'C Programming',
+    targetRoute: 'course/1/lesson/5'
+  });
+  const guestHistory = JSON.parse(localStorage.getItem('nova_guest_history_guest-123') || '[]');
+  assert.equal(guestHistory.length, 1);
+  assert.equal(guestHistory[0].itemKey, 'course_1_lesson_5');
+  assert.equal(guestHistory[0].title, 'Lecture 5 — Pointers and Arrays');
+
+  // Upsert updates existing entry and brings it to the top
+  await recordLearningHistory({
+    itemType: 'LESSON',
+    itemKey: 'course_1_lesson_5',
+    title: 'Lecture 5 — Pointers and Arrays (Updated)',
+    category: 'C Programming',
+    targetRoute: 'course/1/lesson/5'
+  });
+  const updatedHistory = JSON.parse(localStorage.getItem('nova_guest_history_guest-123') || '[]');
+  assert.equal(updatedHistory.length, 1);
+  assert.equal(updatedHistory[0].title, 'Lecture 5 — Pointers and Arrays (Updated)');
+
+  // 2. main.jsx structure and invariants
+  const mainJsx = fs.readFileSync(path.join(SRC_DIR, 'main.jsx'), 'utf8');
+  assert.match(mainJsx, /\['history','History',History\]/, 'History nav item must be registered in navModel');
+  assert.match(mainJsx, /LearningHistoryView/, 'LearningHistoryView component must be mounted');
+  assert.match(mainJsx, /nova_redirect_target/, 'Direct protected URL redirect target must be captured and restored on login');
+  assert.match(mainJsx, /id\.startsWith\('course\/'\)/, 'go() handler must support composite course routes');
+  assert.match(mainJsx, /id\.startsWith\('dsa\/'\)/, 'go() handler must support composite dsa routes');
+  assert.match(mainJsx, /id\.startsWith\('gatecse\/'\)/, 'go() handler must support composite gatecse routes');
+  assert.match(mainJsx, /quiz-review-section/, 'Quiz result must render detailed question-by-question review section');
+
+  // 3. Scroll performance compositing invariant in styles.css
+  const stylesCss = fs.readFileSync(path.join(SRC_DIR, 'styles.css'), 'utf8');
+  assert.ok(!stylesCss.includes('.hero, .course-card, .panel, .stat, .quiz-q, .result-card, .chat-shell, .chat-sidebar, .chat-main, .module-card, .lesson-item, .gate-subject-card, .practice-card, .study-card, .notes-reader, .rag-card, .upload-card, .today-focus-card, .today-card, .today-task, .today-agenda-item, .today-challenge-card, .today-heatmap-shell, .profile-identity-card, .profile-metric-card, .profile-domain-card, .profile-action-card, .profile-history-card, .exam-subject-card, .exam-metric-card, .exam-review-card, .exam-q-palette, .dsa-row, .dsa-hero, .dsa-stat-grid, .dsa-editor-card, .dsa-result-card, .dsa-test-tab, .dsa-test-panel, .dsa-diff-card, .career-path-card, .career-market-card, .career-skill-chip, .career-step-card, .career-salary-card, .career-filter-chip, .career-job-card, .career-readiness-card, .career-salary-band, .interview-feedback-box, .interview-category-card, .interview-metric-card, .community-sidebar-card, .community-feed-item, .community-room-card, .community-message, .community-member-card, .community-thread-card, .stat-tile, .card, .dock-nav, .dock-card, .dock-menu, .dock-subpanel, .dock-glass, .dock-backdrop, .dock-sheet, .dock-drawer, .dock-popover, .dock-modal, .dock-toast, .dock-tooltip, .dock-badge, .dock-pill, .dock-chip, .dock-tag, .dock-indicator, .dock-status, .dock-avatar, .dock-icon-box, .dock-btn-glass, .dock-input-glass, .dock-select-glass, .dock-table-glass, .dock-list-glass, .dock-item-glass, .dock-header-glass, .dock-footer-glass, .dock-sidebar-glass, .dock-main-glass, .dock-card-header, .dock-card-body, .dock-card-footer, .dock-card-glass, .dock-card-border, .dock-card-shadow, .dock-card-glow, .dock-card-highlight, .dock-card-accent, .dock-card-primary, .dock-card-secondary, .dock-card-tertiary, .dock-card-quaternary, .dock-card-gradient, .dock-card-pattern, .dock-card-texture, .dock-card-image, .dock-card-video, .dock-card-canvas, .dock-card-svg, .dock-card-icon, .dock-card-title, .dock-card-subtitle, .dock-card-desc, .dock-card-meta, .dock-card-badge, .dock-card-pill, .dock-card-chip, .dock-card-tag, .dock-card-indicator, .dock-card-status, .dock-card-avatar, .dock-card-btn, .dock-card-link, .dock-card-input, .dock-card-select, .dock-card-textarea, .dock-card-checkbox, .dock-card-radio, .dock-card-switch, .dock-card-slider, .dock-card-range, .dock-card-progress, .dock-card-spinner, .dock-card-skeleton, .dock-card-divider, .dock-card-spacer, .dock-card-group, .dock-card-row, .dock-card-col, .dock-card-grid, .dock-card-flex, .dock-card-box, .dock-card-container, .dock-card-wrapper, .dock-card-content, .dock-card-inner, .dock-card-outer, .dock-card-pane, .dock-card-section, .dock-card-article, .dock-card-aside, .dock-card-header-inner, .dock-card-body-inner, .dock-card-footer-inner, .dock-card-glass-inner, .dock-card-border-inner, .dock-card-shadow-inner, .dock-card-glow-inner, .dock-card-highlight-inner, .dock-card-accent-inner, .dock-card-primary-inner, .dock-card-secondary-inner, .dock-card-tertiary-inner, .dock-card-quaternary-inner, .dock-card-gradient-inner, .dock-card-pattern-inner, .dock-card-texture-inner, .dock-card-image-inner, .dock-card-video-inner, .dock-card-canvas-inner, .dock-card-svg-inner, .dock-card-icon-inner, .dock-card-title-inner, .dock-card-subtitle-inner, .dock-card-desc-inner, .dock-card-meta-inner, .dock-card-badge-inner, .dock-card-pill-inner, .dock-card-chip-inner, .dock-card-tag-inner, .dock-card-indicator-inner, .dock-card-status-inner, .dock-card-avatar-inner, .dock-card-btn-inner, .dock-card-link-inner, .dock-card-input-inner, .dock-card-select-inner, .dock-card-textarea-inner, .dock-card-checkbox-inner, .dock-card-radio-inner, .dock-card-switch-inner, .dock-card-slider-inner, .dock-card-range-inner, .dock-card-progress-inner, .dock-card-spinner-inner, .dock-card-skeleton-inner, .dock-card-divider-inner, .dock-card-spacer-inner, .dock-card-group-inner, .dock-card-row-inner, .dock-card-col-inner, .dock-card-grid-inner, .dock-card-flex-inner, .dock-card-box-inner, .dock-card-container-inner, .dock-card-wrapper-inner, .dock-card-content-inner {\n  backdrop-filter: blur(14px);'), 'Heavy backdrop-filter on repeated scroll cards must remain removed');
+});
+
+
 
 

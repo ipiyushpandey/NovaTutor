@@ -367,6 +367,164 @@ async function runBrowserVerification() {
     await context.close();
   }
 
+  // -------------------------------------------------------------
+  // Test Suite 7: Learning History, Redirect Restoration & Quiz Review
+  // -------------------------------------------------------------
+  console.log('\n--- 7. Testing Learning History, Redirect Restoration & Quiz Review ---');
+  {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const page = await context.newPage();
+    const validJwt = makeDummyJwt(Math.floor(Date.now() / 1000) + 7200);
+
+    // Mock API endpoints for Suite 7
+    await page.route('**/api/**', route => {
+      const url = route.request().url();
+      if (url.includes('/auth/login') || url.includes('/auth/me')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ id: 42, name: 'Alex Rivera', email: 'alex@novatutor.local', role: 'STUDENT', profileComplete: true, token: validJwt }),
+        });
+      }
+      if (url.includes('/auth/providers')) {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ googleEnabled: false, googleClientId: '', emailDeliveryConfigured: true }) });
+      }
+      if (url.includes('/users/')) {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 42, name: 'Alex Rivera', role: 'STUDENT', profileComplete: true }) });
+      }
+      if (url.includes('/quizzes/course/1/submit')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            score: 100,
+            correct: 1,
+            total: 1,
+            message: 'Mastery achieved!',
+            reviews: [
+              {
+                id: 1,
+                question: 'What is the worst-case time complexity of linear search?',
+                options: ['O(1)', 'O(log n)', 'O(n)', 'O(n^2)'],
+                selectedOption: 2,
+                correctOption: 2,
+                correct: true,
+                difficulty: 'EASY',
+                explanation: 'Linear search must examine every element in the worst case, taking O(n) comparisons.'
+              }
+            ]
+          }),
+        });
+      }
+      if (url.includes('/quizzes/course/1')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify([
+            { id: 1, question: 'What is the worst-case time complexity of linear search?', options: ['O(1)', 'O(log n)', 'O(n)', 'O(n^2)'], difficulty: 'EASY' }
+          ]),
+        });
+      }
+      if (url.includes('/history')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify([
+            {
+              id: 101,
+              itemType: 'LESSON',
+              itemKey: 'course_1_lesson_1',
+              title: 'Lecture 1 — Introduction to Data Structures',
+              category: 'Data Structures & Algorithms',
+              targetRoute: 'course/1/lesson/1',
+              updatedAt: new Date().toISOString()
+            },
+            {
+              id: 102,
+              itemType: 'DSA',
+              itemKey: 'dsa_two-sum',
+              title: 'Two Sum',
+              category: 'Array',
+              targetRoute: 'dsa/two-sum',
+              updatedAt: new Date(Date.now() - 3600000).toISOString()
+            }
+          ]),
+        });
+      }
+      if (url.includes('/courses')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify([
+            { id: 1, title: 'Data Structures & Algorithms', level: 'Beginner', totalLessons: 12, lessons: [] }
+          ]),
+        });
+      }
+      if (url.includes('/progress/')) {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+      }
+      if (url.includes('/ai/status')) {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: true, model: 'gemini' }) });
+      }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    });
+
+    // 1. Unauthenticated direct deep link to #/courses -> captured in sessionStorage and canonicalized to #/login
+    await page.goto('http://localhost:5188/#/courses', { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(300);
+
+    assert.match(page.url(), /#\/login/, 'Direct protected link #/courses must canonicalize immediately to #/login');
+    const redirectTarget = await page.evaluate(() => sessionStorage.getItem('nova_redirect_target'));
+    assert.equal(redirectTarget, 'courses', 'Direct deep link target must be remembered in sessionStorage');
+
+    // 2. Perform login & verify auto-redirection to saved target (#/courses)
+    await page.fill('input[type="email"]', 'alex@novatutor.local');
+    await page.fill('input[type="password"]', 'Password123');
+    await page.click('button.auth-submit');
+    await page.waitForTimeout(800);
+
+    assert.match(page.url(), /#\/courses/, 'Login must restore intended redirect destination #/courses');
+    console.log('  ✓ Deep link target remembered and restored upon login');
+
+    // 3. Test Learning History view
+    await page.evaluate(() => { window.location.hash = '#/history'; });
+    await page.waitForTimeout(400);
+
+    const hasHistoryPage = await page.locator('.learning-history-page').count();
+    assert.equal(hasHistoryPage, 1, 'LearningHistoryView must render on #/history');
+    const historyCards = await page.locator('.history-card').count();
+    assert.equal(historyCards, 2, 'History cards should render correctly');
+    console.log('  ✓ Learning History page mounted with recorded items and filter pills');
+
+    // 4. Test Quiz question-by-question review rendering
+    await page.evaluate(() => { window.location.hash = '#/quiz'; });
+    await page.waitForTimeout(400);
+
+    // Start quiz
+    await page.click('.quiz-toolbar button.primary');
+    await page.waitForTimeout(400);
+
+    // Answer first question
+    await page.click('.quiz-q label:nth-child(5)'); // option index 2: O(n)
+    await page.waitForTimeout(200);
+
+    // Submit quiz
+    await page.click('.quiz-list button.primary');
+    await page.waitForTimeout(600);
+
+    // Verify Quiz Review Breakdown
+    const hasReviewSection = await page.locator('.quiz-review-section').count();
+    assert.equal(hasReviewSection, 1, 'Quiz review breakdown section must be rendered');
+    const hasCorrectBadge = await page.locator('.quiz-review-badge.badge-correct').count();
+    assert.equal(hasCorrectBadge, 1, 'Quiz review badge-correct must be visible');
+    const hasExplanation = await page.locator('.quiz-review-explanation').count();
+    assert.equal(hasExplanation, 1, 'Quiz explanation must be visible');
+    console.log('  ✓ Quiz result renders complete answer review, badges, and explanations');
+
+    passedChecks++;
+    await context.close();
+  }
+
   await browser.close();
   console.log(`\n🎉 All ${passedChecks} Playwright Real Browser Verification Test Suites PASSED!`);
 }

@@ -32,12 +32,14 @@ public class UserDataCleanupService {
     private final CommunityPostRepository communityPosts;
     private final KnowledgeDocumentRepository knowledgeDocs;
     private final KnowledgeChunkRepository knowledgeChunks;
+    private final com.aitutor.repository.LearningHistoryRepository learningHistory;
 
     public UserDataCleanupService(UserRepository users, ConversationRepository conversations,
                                   MessageRepository messages, ProgressRepository progress,
                                   LearningEventRepository learningEvents, QuizAttemptRepository attempts,
                                   DsaProblemStateRepository dsaStates, CommunityPostRepository communityPosts,
-                                  KnowledgeDocumentRepository knowledgeDocs, KnowledgeChunkRepository knowledgeChunks) {
+                                  KnowledgeDocumentRepository knowledgeDocs, KnowledgeChunkRepository knowledgeChunks,
+                                  com.aitutor.repository.LearningHistoryRepository learningHistory) {
         this.users = users;
         this.conversations = conversations;
         this.messages = messages;
@@ -48,6 +50,7 @@ public class UserDataCleanupService {
         this.communityPosts = communityPosts;
         this.knowledgeDocs = knowledgeDocs;
         this.knowledgeChunks = knowledgeChunks;
+        this.learningHistory = learningHistory;
     }
 
     /**
@@ -63,6 +66,7 @@ public class UserDataCleanupService {
         conversations.deleteByUserId(userId);
         progress.deleteByUserId(userId);
         learningEvents.deleteByUserId(userId);
+        learningHistory.deleteByUserId(userId);
         attempts.deleteByUserId(userId);
         dsaStates.deleteByUserId(userId);
         communityPosts.deleteByUserId(userId);

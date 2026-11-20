@@ -20,10 +20,10 @@ public class QuizController {
     private static final int QUIZ_SIZE = 20;
     private final QuizQuestionRepository repo; private final CourseRepository courses; private final UserRepository users; private final QuizAttemptRepository attempts; private final LearningEventRepository events; private final com.aitutor.intelligence.LearningEventService eventService; private final AuthenticatedUser authenticatedUser;
     public QuizController(QuizQuestionRepository repo, CourseRepository courses, UserRepository users, QuizAttemptRepository attempts, LearningEventRepository events, com.aitutor.intelligence.LearningEventService eventService, AuthenticatedUser authenticatedUser){this.repo=repo;this.courses=courses;this.users=users;this.attempts=attempts;this.events=events;this.eventService=eventService;this.authenticatedUser=authenticatedUser;}
-    record Question(Long id,String question,List<String> options,String difficulty){}
+    public record QuestionReview(Long id, String question, List<String> options, int selectedOption, int correctOption, boolean correct, String explanation, String difficulty, String topic){}
     record Answer(Long questionId,int selectedOption){}
     record Submit(Long userId,List<Answer> answers){}
-    record Result(int total,int correct,int score,String message,List<Long> wrongQuestionIds){}
+    public record Result(int total,int correct,int incorrect,int unanswered,int score,String message,List<Long> wrongQuestionIds,List<QuestionReview> reviews){}
 
     @GetMapping("/course/{courseId}")
     List<Question> questions(@PathVariable Long courseId, Authentication authentication){
@@ -131,12 +131,25 @@ public class QuizController {
         java.time.LocalDate todayIst = com.aitutor.intelligence.LearningEventAnalyticsService.todayIst();
         java.time.LocalDateTime startOfToday = com.aitutor.intelligence.LearningEventAnalyticsService.startOfTodayIst();
         int correct=0; List<Long> wrong=new ArrayList<>();
+        List<QuestionReview> reviews = new ArrayList<>();
         for(Long id:questionIds){
             QuizQuestion q=available.get(id);
-            boolean ok=selected.get(id)==q.getCorrectOption();
+            int selectedOpt = selected.get(id);
+            boolean ok=selectedOpt==q.getCorrectOption();
             if(ok) correct++; else wrong.add(id);
             String topic=q.getTopic();
             if(topic==null||topic.isBlank()){ topic=conceptFromQuestion(q.getQuestion(),course.getTitle()); }
+            reviews.add(new QuestionReview(
+                q.getId(),
+                q.getQuestion(),
+                List.of(q.getOptionA(), q.getOptionB(), q.getOptionC(), q.getOptionD()),
+                selectedOpt,
+                q.getCorrectOption(),
+                ok,
+                q.getExplanation() != null ? q.getExplanation() : "",
+                q.getDifficulty() != null ? q.getDifficulty() : "Mixed",
+                topic
+            ));
             // Deduplicate per (user, question, outcome, IST day) so retrying a wrong question and
             // getting it right still updates revision tracking while blocking per-minute XP replay.
             eventService.recordIfAbsent(lockedUser,"QUIZ_QUESTION",course.getTitle(),topic,ok?100:0,0,
@@ -144,6 +157,7 @@ public class QuizController {
                     "QUIZ_QUESTION:"+lockedUser.getId()+":"+id+":"+(ok?"1":"0")+":"+todayIst);
         }
         int total=questionIds.size();
+        int incorrect=total-correct;
         int score=(int)Math.round(correct*100.0/total);
         String msg=score>=80?"Excellent! You're ready for the next challenge.":score>=60?"Good work. Review the missed questions once.":"Let's revise the weak concepts and try again.";
         QuizAttempt attempt = attempts.save(new QuizAttempt(lockedUser,course,total,correct,score,wrong.stream().map(String::valueOf).collect(Collectors.joining(","))));
@@ -153,7 +167,7 @@ public class QuizController {
             eventService.recordIfAbsent(lockedUser,"QUIZ_COMPLETED",course.getTitle(),"Quiz mastery",score,0,
                     "Correct "+correct+" of "+total,"QUIZ_COMPLETED:"+lockedUser.getId()+":"+attempt.getId());
         }
-        return new Result(total,correct,score,msg,wrong);
+        return new Result(total,correct,incorrect,0,score,msg,wrong,reviews);
     }
     private static String conceptFromQuestion(String question,String course){
         String q=Objects.toString(question,"").toLowerCase(Locale.ROOT);

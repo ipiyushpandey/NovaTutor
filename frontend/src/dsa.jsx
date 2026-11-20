@@ -1,6 +1,7 @@
 import React,{useEffect,useMemo,useState,useCallback,useRef} from 'react';
 import {Code2,Target,CheckCircle2,ChevronLeft,BookOpen,Lightbulb,Brain,PlayCircle,Clock3,RotateCcw} from './icons.jsx';
 import AiMarkdown from './AiMarkdown.jsx';
+import {recordLearningHistory} from './lib/api.js';
 
 const LANGS=[['java','Java'],['python','Python'],['c++','C++'],['c','C'],['javascript','JavaScript'],['go','Go']];
 const DIFF_COLOR={EASY:'var(--success)',MEDIUM:'var(--warning)',HARD:'var(--danger)'};
@@ -253,6 +254,13 @@ function DsaProblemView({user,api,slug,saved,onBack,onProgress}){
         const p=await api(`/dsa/problems/${slug}`);
         if(dead)return;
         setProblem(p);
+        recordLearningHistory({
+          itemType: 'DSA',
+          itemKey: 'dsa_' + slug,
+          title: p?.title || slug,
+          category: p?.topic || 'DSA Arena',
+          targetRoute: 'dsa/' + slug
+        }).catch(()=>{});
         if(userEditedRef.current||codeSourceRef.current==='draft'||codeSourceRef.current==='saved'||langSeqRef.current!==seq)return;
         const startLang=normalizeSavedLang(saved?.lastLanguage)||lang;
         const draft=localStorage.getItem(`dsa_code_${userScope}_${slug}_${startLang}`);
