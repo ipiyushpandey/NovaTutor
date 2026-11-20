@@ -21,7 +21,7 @@ import {readWorkspace,writeWorkspace,workspaceKey,subscribeWorkspace,migrateWork
 import AiMarkdown, {normalizeAiText, mdInlineText} from './AiMarkdown.jsx';
 import {registerWorkspaceFlusher,beginNavigationPersistence} from './persistence/appWorkspace.js';
 import {readRuntimeState,writeRuntimeState,subscribeRuntimeState,getRuntimeModuleSnapshot,updateRuntimeState,removeRuntimeState,clearRuntimeUser} from './persistence/runtimeStore.js';
-import {api,apiStream,readUser,refreshSessionToken,invalidatePendingSessionRefresh} from './lib/api.js';
+import {api,apiStream,readUser,refreshSessionToken,refreshSessionTokenWithStatus,invalidatePendingSessionRefresh} from './lib/api.js';
 import {isMeaningfulText} from './lib/validation.js';
 /* V69 FOUNDATION REPAIR — production curriculum + stable learning foundation */
 /* V51 VOICE SPEED + CHAT CONTROLS */
@@ -855,6 +855,13 @@ function App(){
  const initialParsed=useMemo(()=>parseAppHash(window.location.hash),[]);
  const initialNonAdminBlocked=useMemo(()=>{const s=readUser();return Boolean(s&&initialParsed.page==='admin'&&String(s.role||'STUDENT').toUpperCase()!=='ADMIN')},[]);
  const [adminDenied,setAdminDenied]=useState(initialNonAdminBlocked);
+ const [authResolved,setAuthResolved]=useState(()=>{
+  const initial=readUser();
+  if(!initial)return true;
+  const parsed=parseAppHash(window.location.hash);
+  const publicPages=['login','about','privacy','terms','contact','verify-email','reset-password'];
+  return publicPages.includes(parsed.page);
+ });
  const [page,setPage]=useState(()=>{
   const session=readUser();
   const publicPages=['login','about','privacy','terms','contact','verify-email','reset-password'];
@@ -943,8 +950,42 @@ function App(){
   if(typeof document!=='undefined'){
    document.body.classList.remove('nav-drawer-open');
   }
-  window.location.replace('#/login');
+  const stepsBack=(typeof window.history.state?.novaIndex==='number')?window.history.state.novaIndex:0;
+  if(stepsBack>0){
+   try{
+    sessionStorage.setItem('nova_logout_rewind','true');
+    window.history.go(-stepsBack);
+   }catch{
+    try{window.history.replaceState({novaIndex:0,novaAuth:false,page:'login'},'','#/login');}catch{}
+    window.location.replace('#/login');
+   }
+  }else{
+   try{window.history.replaceState({novaIndex:0,novaAuth:false,page:'login'},'','#/login');}catch{}
+   window.location.replace('#/login');
+  }
  },[]);
+ useEffect(()=>{
+  if(authResolved)return;
+  const session=readUser();
+  if(!session?.token){
+   setAuthResolved(true);
+   return;
+  }
+  let alive=true;
+  refreshSessionTokenWithStatus().then(status=>{
+   if(!alive)return;
+   if(status==='unauthorized'){
+    clearUserClientState(session);
+   }else if(status==='ok'){
+    const fresh=readUser();
+    if(fresh)setUser(fresh);
+   }
+   setAuthResolved(true);
+  }).catch(()=>{
+   if(alive)setAuthResolved(true);
+  });
+  return()=>{alive=false};
+ },[clearUserClientState,authResolved]);
  const userRef=useRef(user);
  userRef.current=user;
  useEffect(()=>{const expire=()=>{clearUserClientState(userRef.current)};window.addEventListener('nova-session-expired',expire);return()=>window.removeEventListener('nova-session-expired',expire)},[clearUserClientState]);
@@ -1041,7 +1082,14 @@ function App(){
  };
  const pushHash=(nextKey)=>{
   const nextHash='#/'+nextKey;
-  if(window.location.hash!==nextHash)window.location.hash=nextHash;
+  if(window.location.hash===nextHash)return;
+  const currentIndex=(typeof window.history.state?.novaIndex==='number')?window.history.state.novaIndex:0;
+  const nextIndex=currentIndex+1;
+  try{
+   window.history.pushState({novaIndex:nextIndex,novaAuth:true,page:nextKey},'',nextHash);
+  }catch{
+   window.location.hash=nextHash;
+  }
  };
  const openCourse=(id,nextLessonId=null)=>{
   if(!user||!id)return;
@@ -1194,6 +1242,13 @@ function App(){
 
  useEffect(()=>{
   const onHash=()=>{
+   if(sessionStorage.getItem('nova_logout_rewind')==='true'){
+    sessionStorage.removeItem('nova_logout_rewind');
+    try{window.history.replaceState({novaIndex:0,novaAuth:false,page:'login'},'','#/login');}catch{}
+    if(window.location.hash!=='#/login')window.location.replace('#/login');
+    setPage('login');
+    return;
+   }
    const session=readUser();
    const parsed=parseAppHash(window.location.hash);
    const publicPages=['login','about','privacy','terms','contact','verify-email','reset-password'];
@@ -1203,6 +1258,13 @@ function App(){
      return;
     }
     setPage('login');
+    if(window.history.state?.novaAuth===true){
+     const curIndex=typeof window.history.state?.novaIndex==='number'?window.history.state.novaIndex:0;
+     if(curIndex>0){
+      window.history.back();
+      return;
+     }
+    }
     if(window.location.hash!=='#/login'&&window.location.hash!=='#login'&&window.location.hash!==''){
      window.location.replace('#/login');
     }
@@ -1248,8 +1310,15 @@ function App(){
    localStorage.setItem('nova_page',h);
   };
   window.addEventListener('hashchange',onHash);
+  window.addEventListener('popstate',onHash);
+  if(user&&(!window.history.state||typeof window.history.state.novaIndex!=='number')){
+   try{window.history.replaceState({novaIndex:0,novaAuth:true,page:routeKeyRef.current},'',window.location.hash||'#/dashboard');}catch{}
+  }
   if(!window.location.hash)window.location.replace('#/'+routeKeyRef.current);
-  return()=>window.removeEventListener('hashchange',onHash);
+  return()=>{
+   window.removeEventListener('hashchange',onHash);
+   window.removeEventListener('popstate',onHash);
+  };
  },[user?.role]);
 
  useEffect(()=>{
@@ -1274,7 +1343,12 @@ function App(){
  const logout=()=>{if(role!=='GUEST'){persistBeforeNavigation('logout')}else{api('/auth/guest',{method:'DELETE'}).catch(()=>{})}clearUserClientState(user)};
  const switchAccount=()=>{if(role!=='GUEST'){persistBeforeNavigation('switch-account')}else{api('/auth/guest',{method:'DELETE'}).catch(()=>{})}clearUserClientState(user)};
  const updateUser=next=>{const normalized={...(user||{}),...(next||{}),role:String(next?.role||user?.role||'STUDENT').toUpperCase()};localStorage.setItem('ai_user',JSON.stringify(normalized));setUser(normalized)};
- if(!user)return <Auth onLogin={u=>{invalidatePendingSessionRefresh();bootstrappedUserRef.current=null;const next={...u,role:String(u.role||'STUDENT').toUpperCase()};resetTransientLearningState(next.id);localStorage.removeItem('nova_nav_stack');const needsProfile=next.role==='STUDENT'&&next.profileComplete===false;const target=needsProfile?'onboarding':'dashboard';localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page',target);setUser(next);setPage(target);window.location.replace('#/'+target)}} dark={dark} setDark={setDark}/>;
+ if(!authResolved){
+  return <div className="app-bootstrap-shell" style={{minHeight:'100vh',display:'grid',placeItems:'center',background:dark?'#0E1013':'#FCFCFA'}}>
+   <div className="auth-spinner" aria-label="Loading NovaTutor" />
+  </div>;
+ }
+ if(!user)return <Auth onLogin={u=>{invalidatePendingSessionRefresh();bootstrappedUserRef.current=null;const next={...u,role:String(u.role||'STUDENT').toUpperCase()};resetTransientLearningState(next.id);localStorage.removeItem('nova_nav_stack');const needsProfile=next.role==='STUDENT'&&next.profileComplete===false;const target=needsProfile?'onboarding':'dashboard';localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page',target);setUser(next);setPage(target);try{window.history.replaceState({novaIndex:0,novaAuth:true,page:target},'','#/'+target);}catch{}window.location.replace('#/'+target)}} dark={dark} setDark={setDark}/>;
  return <div className="app app-topnav">
  <TopNav
   user={user} role={role} page={page} go={go} dark={dark} setDark={setDark}

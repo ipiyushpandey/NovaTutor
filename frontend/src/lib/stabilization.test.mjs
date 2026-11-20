@@ -576,5 +576,49 @@ test('Wake-Up Timer Continuity Simulation: elapsedSeconds & progressPct persist 
   assert.equal(onRetryRef.current(), 'retry-9');
 });
 
+test('JWT expiration, bootstrap state & history rewind invariants', async () => {
+  setupBrowserGlobals();
+  const { isJwtExpired, readUser } = await import('./api.js?t=' + Date.now());
+
+  // Helper to make test JWT
+  function createTestJwt(expSeconds) {
+    const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+    const payload = Buffer.from(JSON.stringify({ sub: 'test', exp: expSeconds })).toString('base64url');
+    return `${header}.${payload}.mockSignature`;
+  }
+
+  // 1. isJwtExpired checks
+  assert.equal(isJwtExpired(null), false);
+  assert.equal(isJwtExpired('not-a-jwt'), false);
+  assert.equal(isJwtExpired('a.b.c'), false);
+
+  const pastExp = Math.floor(Date.now() / 1000) - 60;
+  const expiredToken = createTestJwt(pastExp);
+  assert.equal(isJwtExpired(expiredToken), true);
+
+  const futureExp = Math.floor(Date.now() / 1000) + 3600;
+  const validToken = createTestJwt(futureExp);
+  assert.equal(isJwtExpired(validToken), false);
+
+  // 2. readUser synchronously clears expired tokens
+  localStorage.setItem('ai_user', JSON.stringify({ id: 99, token: expiredToken, role: 'STUDENT' }));
+  const expiredResult = readUser();
+  assert.equal(expiredResult, null, 'Expired session must return null on frame 0');
+  assert.equal(localStorage.getItem('ai_user'), null, 'Expired session must be synchronously purged from localStorage');
+
+  // Valid session preserved
+  localStorage.setItem('ai_user', JSON.stringify({ id: 100, token: validToken, role: 'STUDENT' }));
+  const validResult = readUser();
+  assert.ok(validResult, 'Valid session must return user object');
+  assert.equal(validResult.id, 100);
+
+  // 3. Main.jsx invariants
+  const mainJsx = fs.readFileSync(path.join(SRC_DIR, 'main.jsx'), 'utf8');
+  assert.match(mainJsx, /const \[authResolved,setAuthResolved\]=useState/, 'authResolved bootstrap state must exist');
+  assert.match(mainJsx, /app-bootstrap-shell/, 'app-bootstrap-shell fallback must exist');
+  assert.match(mainJsx, /sessionStorage\.setItem\('nova_logout_rewind','true'\)/, 'nova_logout_rewind flag must be set during history rewind');
+  assert.match(mainJsx, /window\.addEventListener\('popstate',onHash\)/, 'popstate listener must be registered for back/forward synchronization');
+});
+
 
 

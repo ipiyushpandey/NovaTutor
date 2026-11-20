@@ -20,7 +20,34 @@ const API=(()=>{const raw=(import.meta.env?.VITE_API_URL||'').trim().replace(/\/
 
 const readJSON=(key,fallback=null)=>{try{const raw=localStorage.getItem(key);return raw?JSON.parse(raw):fallback}catch{return fallback}};
 
-const readUser=()=>{const u=readJSON('ai_user',null);if(!u||typeof u!=='object'||!u.id||!u.token)return null;return {...u,role:String(u.role||'STUDENT').toUpperCase()}};
+function isJwtExpired(token){
+ if(!token||typeof token!=='string')return false;
+ const parts=token.split('.');
+ if(parts.length!==3)return false;
+ try{
+  const b64=parts[1].replace(/-/g,'+').replace(/_/g,'/');
+  const json=typeof atob==='function'?atob(b64):(typeof Buffer!=='undefined'?Buffer.from(b64,'base64').toString('utf8'):'');
+  if(!json)return false;
+  const payload=JSON.parse(json);
+  if(!payload||typeof payload!=='object')return false;
+  if(typeof payload.exp==='number'){
+   return Date.now()>=(payload.exp*1000-10000);
+  }
+  return false;
+ }catch{
+  return false;
+ }
+}
+
+const readUser=()=>{
+ const u=readJSON('ai_user',null);
+ if(!u||typeof u!=='object'||!u.id||!u.token)return null;
+ if(isJwtExpired(u.token)){
+  try{localStorage.removeItem('ai_user');localStorage.removeItem('nova_page');}catch{}
+  return null;
+ }
+ return {...u,role:String(u.role||'STUDENT').toUpperCase()};
+};
 
 let sessionRefreshPromise=null;
 let sessionRefreshController=null;
@@ -276,4 +303,4 @@ async function apiStream(path,opt={},onChunk,_retry=false){
  }
 }
 
-export {api,apiStream,readUser,refreshSessionToken,invalidatePendingSessionRefresh,API};
+export {api,apiStream,readUser,isJwtExpired,refreshSessionToken,refreshSessionTokenWithStatus,invalidatePendingSessionRefresh,API};
