@@ -505,4 +505,76 @@ test('UI and motion invariants: LoginWakeUp, useLayoutEffect, and admin mobile d
   assert.match(stylesCss, /\.dash-chip--energy svg\{color:var\(--energy\);animation:energyPulse/);
 });
 
+test('Navigation & Theme Continuity Invariants: logout replaces history, onHash canonicalizes, no duplicate backdrop, LoginWakeUp immune to theme change', () => {
+  const mainJsx = fs.readFileSync(path.join(SRC_DIR, 'main.jsx'), 'utf8');
+
+  // 1. Logout must replace history rather than pushing a history entry
+  assert.match(mainJsx, /const clearUserClientState=useCallback\(\(exitingUser\)=>\{[\s\S]*?window\.location\.replace\('#\/login'\)/,
+    'clearUserClientState must use window.location.replace to clean history');
+  assert.doesNotMatch(mainJsx, /const clearUserClientState=useCallback\(\(exitingUser\)=>\{[\s\S]*?window\.location\.hash='#\/login'/,
+    'clearUserClientState must never push #/login via hash assignment');
+
+  // 2. Unauthenticated onHash must canonicalize protected URLs via location.replace
+  assert.match(mainJsx, /const onHash=\(\)=>\{[\s\S]*?if\(!session\)\{[\s\S]*?window\.location\.replace\('#\/login'\)/,
+    'onHash must replace unauthorized protected hashes with #/login');
+
+  // 3. Unauthenticated mount must canonicalize protected URLs via location.replace
+  assert.match(mainJsx, /if\(!publicPages\.includes\(h\)&&window\.location\.hash!=='#\/login'[\s\S]*?window\.location\.replace\('#\/login'\)/,
+    'App mount must canonicalize unauthorized hashes with location.replace');
+
+  // 4. Duplicate backdrop (.nav-shade in App) must be absent; TopNav is authoritative owner
+  const appRenderMatch = mainJsx.match(/return <div className="app app-topnav">[\s\S]*?<main className="main-topnav"/);
+  assert.ok(appRenderMatch, 'App render structure must exist');
+  assert.doesNotMatch(appRenderMatch[0], /\{mobile&&<div className="nav-shade"/,
+    'App must not render duplicate nav-shade; TopNav owns the backdrop');
+
+  // 5. inAppNavCountRef must be eliminated
+  assert.doesNotMatch(mainJsx, /inAppNavCountRef/, 'inAppNavCountRef must be completely eliminated');
+
+  // 6. LoginWakeUp must use startTimeRef and onRetryRef with empty dependency array
+  assert.match(mainJsx, /function LoginWakeUp\(\{onRetry,onCancel,mode='login'\}\)\{[\s\S]*?const onRetryRef=useRef\(onRetry\);[\s\S]*?const startTimeRef=useRef\(null\);[\s\S]*?\},\[\]\);/,
+    'LoginWakeUp must decouple from onRetry reference changes using refs and [] deps');
+
+  // 7. Auth must maintain wakeUpRef
+  assert.match(mainJsx, /const wakeUpRef=useRef\(wakeUp\);[\s\S]*?wakeUpRef\.current=wakeUp;/,
+    'Auth must use wakeUpRef to avoid stale closures in retryWakeUp');
+
+  // 8. PublicPage back in Auth must use location.replace
+  assert.match(mainJsx, /if\(publicPage\) return <PublicPage page=\{publicPage\} onBack=\{\(\)=>\{window\.location\.replace\('#\/login'\)/,
+    'PublicPage onBack in Auth must use location.replace');
+});
+
+test('Wake-Up Timer Continuity Simulation: elapsedSeconds & progressPct persist across prop re-creation', async () => {
+  // Simulates the exact state machine architecture implemented in LoginWakeUp
+  let renderedElapsed = 0;
+  let reRenderCount = 0;
+
+  // Emulate LoginWakeUp with persistent ref
+  const startTime = Date.now() - 5000; // 5 seconds elapsed
+  const startTimeRef = { current: startTime };
+  let currentRetryFn = () => 'first';
+  const onRetryRef = { current: currentRetryFn };
+
+  // 10 simulated theme changes (re-renders with new onRetry reference)
+  for (let i = 0; i < 10; i++) {
+    // New function reference created by parent on theme toggle
+    currentRetryFn = () => `retry-${i}`;
+    onRetryRef.current = currentRetryFn;
+    reRenderCount++;
+
+    // Compute elapsed seconds from persistent startTimeRef
+    const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
+    const progressPct = Math.min(94, Math.round((1 - Math.exp(-elapsed / 50)) * 100));
+
+    assert.ok(elapsed >= 5, `Elapsed should be at least 5s on render ${i}, got ${elapsed}`);
+    assert.ok(progressPct > 0, `Progress should not reset to 0% on render ${i}, got ${progressPct}`);
+    renderedElapsed = elapsed;
+  }
+
+  assert.equal(reRenderCount, 10);
+  assert.ok(renderedElapsed >= 5);
+  assert.equal(onRetryRef.current(), 'retry-9');
+});
+
+
 

@@ -856,7 +856,12 @@ function App(){
  const initialNonAdminBlocked=useMemo(()=>{const s=readUser();return Boolean(s&&initialParsed.page==='admin'&&String(s.role||'STUDENT').toUpperCase()!=='ADMIN')},[]);
  const [adminDenied,setAdminDenied]=useState(initialNonAdminBlocked);
  const [page,setPage]=useState(()=>{
-  const session=readUser();if(!session)return 'login';
+  const session=readUser();
+  const publicPages=['login','about','privacy','terms','contact','verify-email','reset-password'];
+  if(!session){
+   const h=initialParsed.page;
+   return publicPages.includes(h)?h:'login';
+  }
   const isStudent=String(session.role||'STUDENT').toUpperCase()==='STUDENT';
   const needsProfile=isStudent&&session.profileComplete===false;
   if(needsProfile)return 'onboarding';
@@ -868,13 +873,22 @@ function App(){
   return ALLOWED_PAGES.includes(h)?h:(ALLOWED_PAGES.includes(saved)&&saved!=='login'?saved:'dashboard');
  });
  useEffect(()=>{if(initialNonAdminBlocked&&window.location.hash!=='#/dashboard'){window.location.replace('#/dashboard')}},[initialNonAdminBlocked]);
+ useEffect(()=>{
+  const session=readUser();
+  const publicPages=['login','about','privacy','terms','contact','verify-email','reset-password'];
+  if(!session){
+   const h=initialParsed.page;
+   if(!publicPages.includes(h)&&window.location.hash!=='#/login'&&window.location.hash!=='#login'&&window.location.hash!==''){
+    window.location.replace('#/login');
+   }
+  }
+ },[initialParsed.page]);
  useEffect(()=>{try{if('scrollRestoration' in window.history)window.history.scrollRestoration='manual'}catch{}},[]);
  const [courseId,setCourseId]=useState(()=>initialParsed.courseId);
  const [lessonId,setLessonId]=useState(()=>initialParsed.lessonId);
  const [dsaSlug,setDsaSlug]=useState(()=>initialParsed.dsaSlug);
  const [gateTab,setGateTab]=useState(()=>initialParsed.gateTab||'overview');
  const [studioTab,setStudioTab]=useState(()=>initialParsed.studioTab||null);
- const inAppNavCountRef=useRef(0);
  const [aiStatus,setAiStatus]=useState({configured:false,model:'—'}),[courses,setCourses]=useState(()=>{try{const c=localStorage.getItem('nova_courses_cache');return c?JSON.parse(c):[]}catch{return[]}}),[progress,setProgress]=useState([]),[mobile,setMobile]=useState(false),[user,setUser]=useState(readUser);
  const [restorationMinHeight,setRestorationMinHeight]=useState(null);
  const [wakingServer,setWakingServer]=useState(false);
@@ -926,7 +940,10 @@ function App(){
   setMobile(false);
   setUser(null);
   setPage('login');
-  window.location.hash='#/login';
+  if(typeof document!=='undefined'){
+   document.body.classList.remove('nav-drawer-open');
+  }
+  window.location.replace('#/login');
  },[]);
  const userRef=useRef(user);
  userRef.current=user;
@@ -1032,7 +1049,7 @@ function App(){
   const numId=Number(id);
   const numLesson=nextLessonId?Number(nextLessonId):null;
   const nextKey=numLesson?`course/${numId}/lesson/${numLesson}`:`course/${numId}`;
-  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';inAppNavCountRef.current+=1;}
+  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';}
   setCourseId(numId);
   setLessonId(numLesson);
   setPage('course');
@@ -1044,7 +1061,7 @@ function App(){
  const onDsaSlug=useCallback((nextSlug)=>{
   saveCurrentScroll();
   const nextKey=nextSlug?`dsa/${nextSlug}`:'dsa';
-  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';inAppNavCountRef.current+=1;}
+  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';}
   setDsaSlug(nextSlug||null);
   setPage('dsa');
   localStorage.setItem('nova_page','dsa');
@@ -1054,7 +1071,7 @@ function App(){
   saveCurrentScroll();
   const cleanTab=nextTab||'overview';
   const nextKey=cleanTab==='overview'?'gatecse':`gatecse/${cleanTab}`;
-  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';inAppNavCountRef.current+=1;}
+  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';}
   setGateTab(cleanTab);
   setPage('gatecse');
   localStorage.setItem('nova_page','gatecse');
@@ -1064,7 +1081,7 @@ function App(){
   saveCurrentScroll();
   const cleanTab=nextTab==='voice'?'voice':'teacher';
   const nextKey=cleanTab==='voice'?'learning-studio/voice':'learning-studio';
-  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';inAppNavCountRef.current+=1;}
+  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';}
   setStudioTab(cleanTab);
   setPage('learning-studio');
   localStorage.setItem('nova_learning_studio_tab',cleanTab);
@@ -1082,7 +1099,7 @@ function App(){
   if(nextStudioTab){localStorage.setItem('nova_learning_studio_tab',nextStudioTab);setStudioTab(nextStudioTab);}
   if(target==='dsa')setDsaSlug(null);
   if(target==='gatecse')setGateTab('overview');
-  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';inAppNavCountRef.current+=1;}
+  if(routeKeyRef.current!==nextKey){persistBeforeNavigation();navModeRef.current='push';}
   setPage(target);
   localStorage.setItem('nova_page',target);
   pushHash(nextKey);
@@ -1178,8 +1195,19 @@ function App(){
  useEffect(()=>{
   const onHash=()=>{
    const session=readUser();
-   if(!session){setPage('login');return}
    const parsed=parseAppHash(window.location.hash);
+   const publicPages=['login','about','privacy','terms','contact','verify-email','reset-password'];
+   if(!session){
+    if(publicPages.includes(parsed.page)){
+     setPage(parsed.page);
+     return;
+    }
+    setPage('login');
+    if(window.location.hash!=='#/login'&&window.location.hash!=='#login'&&window.location.hash!==''){
+     window.location.replace('#/login');
+    }
+    return;
+   }
    const role=String(session.role||'STUDENT').toUpperCase();
    const isStudent=role==='STUDENT';
    const needsProfile=isStudent&&session.profileComplete===false;
@@ -1246,17 +1274,16 @@ function App(){
  const logout=()=>{if(role!=='GUEST'){persistBeforeNavigation('logout')}else{api('/auth/guest',{method:'DELETE'}).catch(()=>{})}clearUserClientState(user)};
  const switchAccount=()=>{if(role!=='GUEST'){persistBeforeNavigation('switch-account')}else{api('/auth/guest',{method:'DELETE'}).catch(()=>{})}clearUserClientState(user)};
  const updateUser=next=>{const normalized={...(user||{}),...(next||{}),role:String(next?.role||user?.role||'STUDENT').toUpperCase()};localStorage.setItem('ai_user',JSON.stringify(normalized));setUser(normalized)};
- if(!user)return <Auth onLogin={u=>{invalidatePendingSessionRefresh();bootstrappedUserRef.current=null;inAppNavCountRef.current=0;const next={...u,role:String(u.role||'STUDENT').toUpperCase()};resetTransientLearningState(next.id);localStorage.removeItem('nova_nav_stack');const needsProfile=next.role==='STUDENT'&&next.profileComplete===false;const target=needsProfile?'onboarding':'dashboard';localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page',target);setUser(next);setPage(target);window.location.replace('#/'+target)}} dark={dark} setDark={setDark}/>;
+ if(!user)return <Auth onLogin={u=>{invalidatePendingSessionRefresh();bootstrappedUserRef.current=null;const next={...u,role:String(u.role||'STUDENT').toUpperCase()};resetTransientLearningState(next.id);localStorage.removeItem('nova_nav_stack');const needsProfile=next.role==='STUDENT'&&next.profileComplete===false;const target=needsProfile?'onboarding':'dashboard';localStorage.setItem('ai_user',JSON.stringify(next));localStorage.setItem('nova_page',target);setUser(next);setPage(target);window.location.replace('#/'+target)}} dark={dark} setDark={setDark}/>;
  return <div className="app app-topnav">
  <TopNav
   user={user} role={role} page={page} go={go} dark={dark} setDark={setDark}
   navModel={navModel} activeGroup={navActiveGroup} mobile={mobile} setMobile={setMobile} vp={vp}
   logout={logout} aiConfigured={aiStatus.configured}
  />
- {mobile&&<div className="nav-shade" onClick={()=>setMobile(false)}/>}
  <main className="main-topnav" style={restorationMinHeight?{minHeight:`${restorationMinHeight}px`}:undefined}>
  {wakingServer&&<div className="nv-toast" role="status">Waking up NovaTutor server… this can take a few seconds after idle.</div>}
- <div className="page-transition page-in" key={page}><ErrorBoundary><React.Suspense fallback={<div className="skeleton" style={{minHeight:'240px',margin:'24px 0'}}/>}>{adminDenied&&<div className="nv-toast" role="status">Admin area is restricted to administrator accounts.</div>}{page==='dashboard'&&<Dashboard courses={courses} progress={progress} go={go} openCourse={openCourse} user={user}/>} {page==='course'&&<CoursePage courseId={courseId} lessonId={lessonId} onSelectLesson={lid=>openLesson(courseId,lid)} courses={courses} progress={progress} refresh={load} onBack={()=>inAppNavCountRef.current>0?window.history.back():go('courses')}/>} {page==='coach'&&<NovaCoach user={user} go={go} courses={courses}/>} {page==='study-room'&&<NovaCoach user={user} go={go} courses={courses} initialTab="community"/>} {page==='analytics'&&<Analytics user={user}/>} {page==='nova-os'&&<NovaBrain user={user} go={go}/>} {page==='nova-brain'&&<NovaBrain user={user} go={go}/>} {page==='practice'&&<PracticeHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='prepare'&&<PrepareHub user={user} go={go} gateTab={gateTab} onGateTab={onGateTab} dsaSlug={dsaSlug} onDsaSlug={onDsaSlug}/>} {page==='courses'&&<MyLearningHub courses={courses} progress={progress} refresh={load} user={user} go={go} openCourse={openCourse}/>} {page==='learning-studio'&&<LearningStudio user={user} routeTab={studioTab} onRouteTab={onStudioTab}/>} {page==='tutor'&&<LearningStudio user={user} initialTab="teacher" onRouteTab={onStudioTab}/>} {page==='code'&&<CodeLab user={user}/>} {page==='quiz'&&<Quiz courses={courses} progress={progress} refresh={load} user={user}/>} {page==='chat'&&<ChatWorkspace user={user}/>} {page==='knowledge'&&<KnowledgeHub user={user}/>}
+ <div className="page-transition page-in" key={page}><ErrorBoundary><React.Suspense fallback={<div className="skeleton" style={{minHeight:'240px',margin:'24px 0'}}/>}>{adminDenied&&<div className="nv-toast" role="status">Admin area is restricted to administrator accounts.</div>}{page==='dashboard'&&<Dashboard courses={courses} progress={progress} go={go} openCourse={openCourse} user={user}/>} {page==='course'&&<CoursePage courseId={courseId} lessonId={lessonId} onSelectLesson={lid=>openLesson(courseId,lid)} courses={courses} progress={progress} refresh={load} onBack={()=>lessonId?openCourse(courseId,null):go('courses')}/>} {page==='coach'&&<NovaCoach user={user} go={go} courses={courses}/>} {page==='study-room'&&<NovaCoach user={user} go={go} courses={courses} initialTab="community"/>} {page==='analytics'&&<Analytics user={user}/>} {page==='nova-os'&&<NovaBrain user={user} go={go}/>} {page==='nova-brain'&&<NovaBrain user={user} go={go}/>} {page==='practice'&&<PracticeHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='prepare'&&<PrepareHub user={user} go={go} gateTab={gateTab} onGateTab={onGateTab} dsaSlug={dsaSlug} onDsaSlug={onDsaSlug}/>} {page==='courses'&&<MyLearningHub courses={courses} progress={progress} refresh={load} user={user} go={go} openCourse={openCourse}/>} {page==='learning-studio'&&<LearningStudio user={user} routeTab={studioTab} onRouteTab={onStudioTab}/>} {page==='tutor'&&<LearningStudio user={user} initialTab="teacher" onRouteTab={onStudioTab}/>} {page==='code'&&<CodeLab user={user}/>} {page==='quiz'&&<Quiz courses={courses} progress={progress} refresh={load} user={user}/>} {page==='chat'&&<ChatWorkspace user={user}/>} {page==='knowledge'&&<KnowledgeHub user={user}/>}
  {page==='mentor'&&<AdaptiveMentor user={user} courses={courses}/>} {page==='planner'&&<TodayHub user={user} go={go} initialTab="planner"/>} {page==='flashcards'&&<Flashcards user={user}/>} {page==='achievements'&&<Achievements user={user} go={go}/>} {page==='profile'&&<AILearningProfile user={user} courses={courses} go={go}/>} {page==='interview'&&<Interviewer user={user}/>} {page==='voice'&&<LearningStudio user={user} initialTab="voice" onRouteTab={onStudioTab}/>} {page==='dpp'&&<CourseDppIde user={user} courses={courses}/>} {page==='exam'&&<ExamSimulator user={user}/>} {page==='gatecse'&&<GateCse routeTab={gateTab} onRouteTab={onGateTab}/>} {page==='dsa'&&<DsaPractice user={user} api={api} routeSlug={dsaSlug} onRouteSlug={onDsaSlug}/>} {page==='career'&&<CareerHub user={user} go={go}/>} {page==='community'&&<CommunityHub user={user} go={go}/>} {page==='notifications'&&<TodayHub user={user} go={go} initialTab="today"/>} {page==='revision'&&<RevisionHub user={user} go={go}/>} {page==='settings'&&<SettingsPage user={user} dark={dark} setDark={setDark} logout={logout} switchAccount={switchAccount} onUserUpdate={updateUser} aiStatus={aiStatus}/>} {page==='about'&&<PublicPage page="about" signedIn onBack={()=>go('dashboard')}/>} {page==='privacy'&&<PublicPage page="privacy" signedIn onBack={()=>go('settings')}/>} {page==='terms'&&<PublicPage page="terms" signedIn onBack={()=>go('settings')}/>} {page==='contact'&&<PublicPage page="contact" signedIn onBack={()=>go('dashboard')}/>} {page==='admin'&&(role==='ADMIN'?<Admin user={user} courses={courses} refreshCourses={load} onBack={()=>go('dashboard')} dark={dark} setDark={setDark}/>:<AdminLocked go={go}/>)}</React.Suspense></ErrorBoundary></div></main></div>
 }
 function readHashRoute(){
@@ -1396,15 +1423,18 @@ function LoginWakeUp({onRetry,onCancel,mode='login'}){
  const [status,setStatus]=useState('waking');
  const [elapsedSeconds,setElapsedSeconds]=useState(0);
  const [attemptCount,setAttemptCount]=useState(1);
+ const onRetryRef=useRef(onRetry);
+ onRetryRef.current=onRetry;
+ const startTimeRef=useRef(null);
+ if(!startTimeRef.current)startTimeRef.current=Date.now();
 
  useEffect(()=>{
   let cancelled=false;
   let pollTimer=null;
-  const startTime=Date.now();
 
   const secTimer=setInterval(()=>{
    if(!cancelled){
-    setElapsedSeconds(Math.floor((Date.now()-startTime)/1000));
+    setElapsedSeconds(Math.floor((Date.now()-startTimeRef.current)/1000));
    }
   },1000);
 
@@ -1426,7 +1456,7 @@ function LoginWakeUp({onRetry,onCancel,mode='login'}){
     if(healthy){
      setStatus('ready');
      clearInterval(secTimer);
-     setTimeout(()=>{if(!cancelled)onRetry()},600);
+     setTimeout(()=>{if(!cancelled&&typeof onRetryRef.current==='function')onRetryRef.current()},600);
      return;
     }
    }catch{}
@@ -1444,7 +1474,7 @@ function LoginWakeUp({onRetry,onCancel,mode='login'}){
    clearInterval(secTimer);
    if(pollTimer)clearTimeout(pollTimer);
   };
- },[onRetry]);
+ },[]);
 
  const progressPct = status==='ready' ? 100 : Math.min(94, Math.round((1 - Math.exp(-elapsedSeconds / 50)) * 100));
 
@@ -1536,8 +1566,11 @@ function Auth({onLogin,dark,setDark}){
 
  function navigatePublic(id){window.location.hash='/'+id}
 
+ const wakeUpRef=useRef(wakeUp);
+ wakeUpRef.current=wakeUp;
+
  function retryWakeUp(){
-  const w=wakeUp;
+  const w=wakeUpRef.current;
   setWakeUp(null);
   if(w?.type==='guest'){
    startGuest();
@@ -1653,7 +1686,7 @@ function Auth({onLogin,dark,setDark}){
   finally{setLoading(false)}
  }
 
- if(publicPage) return <PublicPage page={publicPage} onBack={()=>{window.location.hash='/login';setPublicPage('')}}/>;
+ if(publicPage) return <PublicPage page={publicPage} onBack={()=>{window.location.replace('#/login');setPublicPage('')}}/>;
 
  const isAuthForm=['login','register','forgot'].includes(mode);
  const deliveryUnavailable=pending?.emailDeliveryConfigured===false
@@ -1687,7 +1720,7 @@ function Auth({onLogin,dark,setDark}){
   {mode==='verify'&&<div className="auth-state">
    {!verifyState?<><div className="auth-spinner" aria-hidden="true"/><p>Verifying your email address…</p></>
     :<><div className={'auth-state-icon '+(verifyState.ok?'ok':'bad')}>{verifyState.ok?'✓':'!'}</div><h3>{verifyState.ok?'Email verified':'Verification failed'}</h3><p>{verifyState.message}</p>
-      <button type="button" className="primary full" onClick={()=>{window.location.hash='/login';setMode('login');setErr('');setNotice(verifyState.ok?'Email verified. Sign in to continue.':'')}}>Continue to sign in</button>
+      <button type="button" className="primary full" onClick={()=>{window.location.replace('#/login');setMode('login');setErr('');setNotice(verifyState.ok?'Email verified. Sign in to continue.':'')}}>Continue to sign in</button>
       {!verifyState.ok&&<button type="button" className="switch" onClick={()=>{setMode('unverified');setPending({email:form.email,emailDeliveryConfigured:typeof providers.emailDeliveryConfigured==='boolean'?providers.emailDeliveryConfigured:null});setErr('')}}>Resend verification email</button>}</>}
   </div>}
 
