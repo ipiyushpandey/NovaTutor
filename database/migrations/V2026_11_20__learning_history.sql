@@ -13,7 +13,6 @@ CREATE TABLE IF NOT EXISTS learning_history (
     created_at DATETIME(6) NOT NULL,
     updated_at DATETIME(6) NOT NULL,
     PRIMARY KEY (id),
-    CONSTRAINT fk_history_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     INDEX idx_history_user_updated (user_id, updated_at),
     UNIQUE KEY ux_history_user_item (user_id, item_type, item_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

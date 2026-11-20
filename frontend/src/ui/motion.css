@@ -25,15 +25,15 @@
 .stagger>:nth-child(1){--i:0}.stagger>:nth-child(2){--i:1}.stagger>:nth-child(3){--i:2}
 .stagger>:nth-child(4){--i:3}.stagger>:nth-child(5){--i:4}.stagger>:nth-child(6){--i:5}
 
-/* ---- Scroll reveal: fires once when .in-view is applied ---- */
-.reveal{opacity:0;transform:translateY(14px);transition:opacity var(--t-slow) var(--ease-out),transform var(--t-slow) var(--ease-out)}
+/* ---- Scroll reveal: immediate visibility default with smooth settled state ---- */
+.reveal{opacity:1;transform:none;transition:opacity var(--t-slow) var(--ease-out),transform var(--t-slow) var(--ease-out)}
 .reveal.in-view{opacity:1;transform:none}
 
 /* Fallback safety: ensures asynchronous or observer-delayed elements never stay invisible */
 @keyframes nova-reveal-fallback{to{opacity:1;transform:none}}
-.reveal:not(.in-view){animation:nova-reveal-fallback 0.01s ease-out 0.5s forwards}
-.course-grid.stagger-reveal:not(.in-view) > .course-card{animation:nova-reveal-fallback 0.01s ease-out 0.5s forwards}
-.section-head.reveal:not(.in-view){animation:nova-reveal-fallback 0.01s ease-out 0.5s forwards}
+.reveal:not(.in-view){opacity:1;transform:none}
+.course-grid.stagger-reveal:not(.in-view) > .course-card{opacity:1;transform:none}
+.section-head.reveal:not(.in-view){opacity:1;transform:none}
 
 /* ---- Skeleton loading (pulsing opacity only) ---- */
 @keyframes nova-pulse{50%{opacity:.45}}
