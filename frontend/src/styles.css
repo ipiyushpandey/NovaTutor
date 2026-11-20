@@ -2542,6 +2542,14 @@ main{scroll-behavior:auto}
   box-shadow: 0 2px 10px -2px rgba(20,22,27,0.03);
 }
 
+:root.dark .dash-morning {
+  background: linear-gradient(180deg, var(--surface) 0%, rgba(22, 27, 35, 0.7) 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 22px 24px;
+  box-shadow: 0 2px 10px -2px rgba(0,0,0,0.3);
+}
+
 :root:not(.dark) .dash-continue {
   background: linear-gradient(180deg, #FFFFFF 0%, #F9FAF8 100%);
   border: 1px solid var(--border);
@@ -4268,6 +4276,23 @@ body{background:var(--bg);color:var(--text)}
 }
 .history-delete-item-btn:hover {
   color: var(--danger, #dc2626);
+}
+.history-item-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.history-confirm-prompt {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.history-item-confirm .mini {
+  padding: 2px 7px;
+  font-size: 11px;
+  min-height: 22px;
+  border-radius: var(--r-sm, 6px);
 }
 .history-empty {
   padding: 48px 24px;

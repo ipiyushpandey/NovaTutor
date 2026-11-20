@@ -23,6 +23,7 @@ export default function LearningHistoryView({ user, go, onReopenTopic }) {
   const [filter, setFilter] = useState('ALL');
   const [search, setSearch] = useState('');
   const [confirmClear, setConfirmClear] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
   const loadHistory = async () => {
     setLoading(true);
@@ -45,19 +46,25 @@ export default function LearningHistoryView({ user, go, onReopenTopic }) {
       const data = await api('/history');
       if (Array.isArray(data)) {
         setItems(data);
+        try {
+          localStorage.setItem(`nova_user_history_${user.id}`, JSON.stringify(data));
+        } catch {}
       } else {
         setItems([]);
       }
     } catch (err) {
       // Fallback to local storage cache if network is unavailable
+      const localKey = `nova_user_history_${user.id}`;
       try {
-        const localKey = `nova_user_history_${user.id}`;
         const raw = localStorage.getItem(localKey);
         setItems(raw ? JSON.parse(raw) : []);
       } catch {
         setItems([]);
       }
-      setError(err.message || 'Could not load learning history.');
+      const msg = String(err?.message || '');
+      if (!msg.toLowerCase().includes('not found') && !msg.includes('404')) {
+        setError('Could not sync history with cloud. Displaying your cached sessions.');
+      }
     } finally {
       setLoading(false);
     }
@@ -72,41 +79,62 @@ export default function LearningHistoryView({ user, go, onReopenTopic }) {
 
   const handleDelete = async (id, e) => {
     e.stopPropagation();
+    setConfirmDeleteId(null);
+    setError('');
+    const previousItems = items;
+    const updated = items.filter(x => x.id !== id);
+    setItems(updated);
+
     const isGuest = String(user?.role || '').toUpperCase() === 'GUEST';
     if (isGuest || !user?.token) {
       try {
         const guestKey = `nova_guest_history_${user?.id || 'guest'}`;
-        const updated = items.filter(x => x.id !== id);
         localStorage.setItem(guestKey, JSON.stringify(updated));
-        setItems(updated);
       } catch {}
       return;
     }
+
     try {
+      const localKey = `nova_user_history_${user.id}`;
+      localStorage.setItem(localKey, JSON.stringify(updated));
       await api(`/history/${id}`, { method: 'DELETE' });
-      setItems(prev => prev.filter(x => x.id !== id));
     } catch (err) {
-      setError(err.message || 'Could not delete history entry.');
+      const msg = String(err?.message || '');
+      // If resource was already deleted or not found on server, treat as success
+      if (msg.toLowerCase().includes('not found') || msg.includes('404')) {
+        return;
+      }
+      setItems(previousItems);
+      setError('Could not remove history entry right now. Please check your network connection.');
     }
   };
 
   const handleClearAll = async () => {
+    setError('');
+    const previousItems = items;
+    setItems([]);
+    setConfirmClear(false);
+
     const isGuest = String(user?.role || '').toUpperCase() === 'GUEST';
     if (isGuest || !user?.token) {
       try {
         const guestKey = `nova_guest_history_${user?.id || 'guest'}`;
         localStorage.removeItem(guestKey);
-        setItems([]);
-        setConfirmClear(false);
       } catch {}
       return;
     }
+
     try {
+      const localKey = `nova_user_history_${user.id}`;
+      localStorage.removeItem(localKey);
       await api('/history', { method: 'DELETE' });
-      setItems([]);
-      setConfirmClear(false);
     } catch (err) {
-      setError(err.message || 'Could not clear history.');
+      const msg = String(err?.message || '');
+      if (msg.toLowerCase().includes('not found') || msg.includes('404')) {
+        return;
+      }
+      setItems(previousItems);
+      setError('Could not clear history right now. Please check your network connection.');
     }
   };
 
@@ -303,15 +331,41 @@ export default function LearningHistoryView({ user, go, onReopenTopic }) {
                 <span className="history-reopen-link">
                   Reopen content <ChevronRight size={13} />
                 </span>
-                <button
-                  type="button"
-                  className="icon-btn history-delete-item-btn"
-                  onClick={e => handleDelete(item.id, e)}
-                  title="Remove from history"
-                  aria-label="Remove item from history"
-                >
-                  <Trash2 size={13} />
-                </button>
+                {confirmDeleteId === item.id ? (
+                  <div className="history-item-confirm" onClick={e => e.stopPropagation()}>
+                    <span className="history-confirm-prompt">Remove?</span>
+                    <button
+                      type="button"
+                      className="danger-btn compact mini"
+                      onClick={e => handleDelete(item.id, e)}
+                    >
+                      Yes
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary compact mini"
+                      onClick={e => {
+                        e.stopPropagation();
+                        setConfirmDeleteId(null);
+                      }}
+                    >
+                      No
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="icon-btn history-delete-item-btn"
+                    onClick={e => {
+                      e.stopPropagation();
+                      setConfirmDeleteId(item.id);
+                    }}
+                    title="Remove from history"
+                    aria-label="Remove item from history"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                )}
               </div>
             </article>
           ))}

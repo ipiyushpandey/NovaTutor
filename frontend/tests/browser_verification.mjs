@@ -525,6 +525,250 @@ async function runBrowserVerification() {
     await context.close();
   }
 
+  // -------------------------------------------------------------
+  // Test Suite 8: Home Page First-Load/Refresh Visibility & History Complete Repair
+  // -------------------------------------------------------------
+  console.log('\n--- 8. Testing Home Page Visibility & Learning History Complete Repair ---');
+  {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const page = await context.newPage();
+    const validJwt = makeDummyJwt(Math.floor(Date.now() / 1000) + 7200);
+
+    let historyStore = [
+      {
+        id: 101,
+        itemType: 'LESSON',
+        itemKey: 'course_1_lesson_1',
+        title: 'Lecture 1 — Introduction to Binary Search',
+        category: 'Data Structures & Algorithms',
+        targetRoute: 'course/1/lesson/1',
+        updatedAt: new Date(Date.now() - 3600000).toISOString(),
+      },
+      {
+        id: 102,
+        itemType: 'LESSON',
+        itemKey: 'course_999_lesson_1',
+        title: 'Lecture 1 — Retired Legacy Topic',
+        category: 'Archived Course',
+        targetRoute: 'course/999/lesson/1',
+        updatedAt: new Date(Date.now() - 7200000).toISOString(),
+      },
+      {
+        id: 103,
+        itemType: 'AI_TEACHER',
+        itemKey: 'teacher_session_1',
+        title: 'Dynamic Programming Subproblems',
+        category: 'AI Teacher',
+        targetRoute: 'learning-studio',
+        contentSnapshot: JSON.stringify({ topic: 'Dynamic Programming', message: 'Explain memoization', answer: 'Memoization stores subproblem solutions.' }),
+        updatedAt: new Date(Date.now() - 10800000).toISOString(),
+      }
+    ];
+
+    await page.route('**/api/**', route => {
+      const url = route.request().url();
+      const method = route.request().method();
+
+      if (url.includes('/auth/login') || url.includes('/auth/me')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ id: 202, name: 'Taylor Student', email: 'taylor@novatutor.local', role: 'STUDENT', profileComplete: true, token: validJwt }),
+        });
+      }
+      if (url.includes('/users/')) {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 202, name: 'Taylor Student', role: 'STUDENT', profileComplete: true }) });
+      }
+      if (url.includes('/courses')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify([
+            { id: 1, title: 'Data Structures & Algorithms', level: 'Beginner', totalLessons: 10, icon: '🌳', description: 'Master foundational algorithms.' },
+            { id: 2, title: 'Computer Networks', level: 'Intermediate', totalLessons: 8, icon: '🌐', description: 'TCP/IP, routing, and DNS.' },
+            { id: 3, title: 'Operating Systems', level: 'Advanced', totalLessons: 12, icon: '⚡', description: 'Threads, virtual memory, and concurrency.' }
+          ]),
+        });
+      }
+      if (url.includes('/analytics/')) {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ streak: 5, xp: 1250, studyMinutes: 180, courses: [] }) });
+      }
+      if (url.includes('/intelligence/')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            streak: 5,
+            quizzes: 4,
+            studyMinutes: 180,
+            weakAreas: [{ subject: 'Binary Search', topic: 'Boundary conditions', accuracy: 55, reason: 'Off-by-one errors' }],
+            recommendations: [{ title: 'Practice Binary Search range queries', description: 'Refine your edge-case handling.', action: 'Start revision', target: 'revision' }],
+            mastery: [{ subject: 'Arrays & Two Pointers', accuracy: 88, state: 'Mastered', trend: 'Improving' }, { subject: 'Binary Trees', accuracy: 62, state: 'Practicing', trend: 'Steady' }]
+          }),
+        });
+      }
+      if (url.includes('/progress/')) {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ courseId: 1, percent: 30, completedLessons: 3, totalLessons: 10 }]) });
+      }
+      if (url.includes('/ai/status')) {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: true, model: 'gemini' }) });
+      }
+      if (url.includes('/history')) {
+        if (method === 'DELETE') {
+          const match = url.match(/\/history\/(\d+)/);
+          if (match) {
+            const delId = Number(match[1]);
+            historyStore = historyStore.filter(x => x.id !== delId);
+            return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ deleted: true }) });
+          } else {
+            historyStore = [];
+            return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ cleared: true }) });
+          }
+        }
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(historyStore) });
+      }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    });
+
+    // Sign in to Dashboard
+    await page.goto('http://localhost:5188/#/login');
+    await page.waitForTimeout(300);
+    await page.fill('input[type="email"]', 'taylor@novatutor.local');
+    await page.fill('input[type="password"]', 'Password123');
+    await page.click('button.auth-submit');
+    await page.waitForTimeout(600);
+
+    assert.equal(await page.locator('.app-topnav').count(), 1, 'TopNav must mount on login');
+    assert.match(page.url(), /#\/dashboard/);
+
+    // 1. Initial Load Visibility Verification: zero invisible elements
+    console.log('  → Verifying Home page initial load visibility...');
+    await page.waitForSelector('.dash-morning');
+    await page.waitForSelector('.course-grid');
+    await page.waitForTimeout(400);
+
+    const invisibleElements = await page.evaluate(() => {
+      const candidates = document.querySelectorAll('.dash-morning, .dash-continue, .nova-brain, .intelligence-snapshot, .mastery-snapshot, .course-card');
+      const bad = [];
+      const vh = window.innerHeight;
+      candidates.forEach(el => {
+        const rect = el.getBoundingClientRect();
+        if (rect.top < vh && rect.bottom > 0) {
+          const style = window.getComputedStyle(el);
+          if (style.opacity === '0' || style.visibility === 'hidden') {
+            bad.push({ tag: el.tagName, className: el.className });
+          }
+        }
+      });
+      return bad;
+    });
+
+    assert.equal(invisibleElements.length, 0, `All Home page visible elements must have opacity > 0 on initial load, found hidden: ${JSON.stringify(invisibleElements)}`);
+    console.log('  ✓ Home page initial load: Zero invisible/black elements in viewport');
+
+    // Capture desktop light screenshot
+    await page.screenshot({ path: 'docs/stabilization/ui-evidence/dashboard-desktop-light.png', fullPage: false });
+
+    // 2. Refresh Page Verification: zero invisible elements after reload
+    console.log('  → Refreshing Home page...');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('.dash-morning');
+    await page.waitForTimeout(500);
+
+    const invisibleAfterRefresh = await page.evaluate(() => {
+      const candidates = document.querySelectorAll('.dash-morning, .dash-continue, .nova-brain, .intelligence-snapshot, .mastery-snapshot, .course-card');
+      const bad = [];
+      const vh = window.innerHeight;
+      candidates.forEach(el => {
+        const rect = el.getBoundingClientRect();
+        if (rect.top < vh && rect.bottom > 0) {
+          const style = window.getComputedStyle(el);
+          if (style.opacity === '0' || style.visibility === 'hidden') {
+            bad.push({ tag: el.tagName, className: el.className });
+          }
+        }
+      });
+      return bad;
+    });
+
+    assert.equal(invisibleAfterRefresh.length, 0, `All Home page elements must remain visible after refresh, found hidden: ${JSON.stringify(invisibleAfterRefresh)}`);
+    console.log('  ✓ Home page after refresh: Zero invisible/black elements in viewport');
+
+    // 3. Dark Mode Toggle Verification
+    console.log('  → Toggling dark mode...');
+    await page.click('button.theme-toggle');
+    await page.waitForTimeout(300);
+
+    const isDark = await page.evaluate(() => document.documentElement.classList.contains('dark'));
+    assert.ok(isDark, 'HTML element must have .dark class');
+
+    const morningBg = await page.evaluate(() => window.getComputedStyle(document.querySelector('.dash-morning')).backgroundColor);
+    console.log(`  ✓ Dark mode active, dash-morning computed background: ${morningBg}`);
+    await page.screenshot({ path: 'docs/stabilization/ui-evidence/dashboard-desktop-dark.png', fullPage: false });
+
+    // Switch back to light mode
+    await page.click('button.theme-toggle');
+    await page.waitForTimeout(200);
+
+    // 4. Mobile Viewport Check
+    console.log('  → Verifying mobile viewport (390px)...');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForTimeout(300);
+    const mobileOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+    assert.equal(mobileOverflow, false, 'Mobile Home page must not have horizontal overflow');
+    await page.screenshot({ path: 'docs/stabilization/ui-evidence/dashboard-mobile.png', fullPage: false });
+    console.log('  ✓ Mobile Home page verified with zero horizontal overflow');
+
+    // Restore desktop viewport
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.waitForTimeout(200);
+
+    // 5. Learning History Repair Verification
+    console.log('  → Navigating to Learning History (#/history)...');
+    await page.evaluate(() => { window.location.hash = '#/history'; });
+    await page.waitForSelector('.learning-history-page');
+    await page.waitForSelector('.history-card');
+    await page.waitForTimeout(300);
+
+    const initialCardCount = await page.locator('.history-card').count();
+    assert.equal(initialCardCount, 3, 'Must render 3 history items');
+    await page.screenshot({ path: 'docs/stabilization/ui-evidence/history-desktop.png', fullPage: false });
+
+    // Test inline individual delete confirmation
+    console.log('  → Testing individual delete with inline confirmation...');
+    const firstTrashBtn = page.locator('.history-card:nth-child(1) .history-delete-item-btn');
+    await firstTrashBtn.click();
+    await page.waitForTimeout(200);
+
+    // Verify inline confirmation prompt appears
+    const confirmPrompt = await page.locator('.history-item-confirm').count();
+    assert.equal(confirmPrompt, 1, 'Inline confirmation prompt "Remove? Yes / No" must appear');
+    await page.screenshot({ path: 'docs/stabilization/ui-evidence/history-delete-confirm.png', fullPage: false });
+
+    // Click Yes to delete
+    await page.click('.history-item-confirm button.danger-btn');
+    await page.waitForTimeout(300);
+
+    const cardCountAfterDelete = await page.locator('.history-card').count();
+    assert.equal(cardCountAfterDelete, 2, 'Item must be removed immediately upon confirmed deletion');
+    console.log('  ✓ Individual delete with confirmation: Item cleanly removed');
+
+    // Test missing/unavailable resource fallback
+    console.log('  → Testing reopening unavailable/retired course from history...');
+    const retiredCard = page.locator('.history-card:has-text("Retired Legacy Topic")');
+    await retiredCard.click();
+    await page.waitForTimeout(300);
+
+    const toastVisible = await page.locator('.nv-toast').count();
+    assert.ok(toastVisible >= 1, 'Graceful toast notification must appear when opening unavailable resource');
+    const toastText = await page.locator('.nv-toast').textContent();
+    assert.ok(toastText.includes('no longer available'), `Toast must inform user resource is unavailable, got: "${toastText}"`);
+    console.log(`  ✓ Graceful unavailable resource fallback verified: "${toastText}"`);
+
+    passedChecks++;
+    await context.close();
+  }
+
   await browser.close();
   console.log(`\n🎉 All ${passedChecks} Playwright Real Browser Verification Test Suites PASSED!`);
 }

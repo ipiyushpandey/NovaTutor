@@ -35,22 +35,75 @@ function useScrollReveal(containerRef, deps = []) {
   if (typeof window === 'undefined') return;
   const isReduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const root = containerRef?.current || document;
-  const elements = root.querySelectorAll('.reveal:not(.in-view), .stagger-reveal:not(.in-view)');
+
+  const revealEl = (el) => {
+   if (!el || el.classList.contains('in-view')) return;
+   el.classList.add('in-view');
+  };
+
   if (isReduced || typeof IntersectionObserver === 'undefined') {
-   elements.forEach(el => el.classList.add('in-view'));
+   root.querySelectorAll?.('.reveal:not(.in-view), .stagger-reveal:not(.in-view)')?.forEach(revealEl);
    return;
   }
+
   const io = new IntersectionObserver((entries, obs) => {
    entries.forEach(entry => {
     if (entry.isIntersecting) {
-     entry.target.classList.add('in-view');
+     revealEl(entry.target);
      obs.unobserve(entry.target);
     }
    });
-  }, { threshold: 0.05, rootMargin: '0px 0px 40px 0px' });
-  elements.forEach(el => io.observe(el));
+  }, { threshold: 0.05, rootMargin: '0px 0px 60px 0px' });
+
+  const checkAndObserve = (el) => {
+   if (!el || el.classList.contains('in-view')) return;
+   try {
+    const rect = el.getBoundingClientRect();
+    const vh = window.innerHeight || document.documentElement.clientHeight || 800;
+    if (rect.top <= vh + 60 && rect.bottom >= -60) {
+     revealEl(el);
+    } else {
+     io.observe(el);
+    }
+   } catch {
+    revealEl(el);
+   }
+  };
+
+  const scan = () => {
+   try {
+    const elements = root.querySelectorAll?.('.reveal:not(.in-view), .stagger-reveal:not(.in-view)') || [];
+    elements.forEach(checkAndObserve);
+   } catch {}
+  };
+
+  scan();
+
+  let mo = null;
+  if (typeof MutationObserver !== 'undefined') {
+   mo = new MutationObserver((mutations) => {
+    let hasAdditions = false;
+    for (const m of mutations) {
+     if (m.addedNodes?.length) {
+      hasAdditions = true;
+      break;
+     }
+    }
+    if (hasAdditions) {
+     scan();
+    }
+   });
+   try {
+    const targetNode = root === document ? (document.body || document.documentElement) : root;
+    if (targetNode) {
+     mo.observe(targetNode, { childList: true, subtree: true });
+    }
+   } catch {}
+  }
+
   return () => {
    io.disconnect();
+   if (mo) mo.disconnect();
   };
  }, deps);
 }
@@ -884,6 +937,7 @@ function App(){
  const [aiStatus,setAiStatus]=useState({configured:false,model:'—'}),[courses,setCourses]=useState(()=>{try{const c=localStorage.getItem('nova_courses_cache');return c?JSON.parse(c):[]}catch{return[]}}),[progress,setProgress]=useState([]),[mobile,setMobile]=useState(false),[user,setUser]=useState(readUser);
  const [restorationMinHeight,setRestorationMinHeight]=useState(null);
  const [wakingServer,setWakingServer]=useState(false);
+ const [historyToast,setHistoryToast]=useState('');
  const [vp,setVp]=useState(()=>typeof window!=='undefined'&&window.matchMedia('(max-width:960px)').matches);
  useEffect(()=>{const mq=window.matchMedia('(max-width:960px)');const on=e=>{setVp(e.matches);if(!e.matches)setMobile(false)};mq.addEventListener('change',on);return()=>mq.removeEventListener('change',on)},[]);
  const [dark,setDark]=useState(()=>localStorage.getItem('nova_theme')==='dark');
@@ -1338,8 +1392,17 @@ function App(){
     window.dispatchEvent(new Event('nova:tutor-memory-updated'));
    }catch(e){}
   }
+  if(item.itemType==='LESSON'&&item.targetRoute?.startsWith('course/')){
+   const parts=item.targetRoute.split('/');
+   const targetCid=parts[1];
+   if(courses.length&&!courses.some(c=>String(c.id)===String(targetCid))){
+    setHistoryToast('This course is no longer available in the curriculum. You can remove it from history.');
+    setTimeout(()=>setHistoryToast(''),5000);
+    return;
+   }
+  }
   go(item.targetRoute||'dashboard');
- },[go,user?.id]);
+ },[go,user?.id,courses]);
  if(!authResolved){
   return <div className="app-bootstrap-shell" style={{minHeight:'100vh',display:'grid',placeItems:'center',background:dark?'#0E1013':'#FCFCFA'}}>
    <div className="auth-spinner" aria-label="Loading NovaTutor" />
@@ -1353,6 +1416,7 @@ function App(){
   logout={logout} aiConfigured={aiStatus.configured}
  />
  <main className="main-topnav" style={restorationMinHeight?{minHeight:`${restorationMinHeight}px`}:undefined}>
+ {historyToast&&<div className="nv-toast" role="status">{historyToast}</div>}
  {wakingServer&&<div className="nv-toast" role="status">Waking up NovaTutor server… this can take a few seconds after idle.</div>}
  <div className="page-transition page-in" key={page}><ErrorBoundary><React.Suspense fallback={<div className="skeleton" style={{minHeight:'240px',margin:'24px 0'}}/>}>{adminDenied&&<div className="nv-toast" role="status">Admin area is restricted to administrator accounts.</div>}{page==='dashboard'&&<Dashboard courses={courses} progress={progress} go={go} openCourse={openCourse} user={user}/>} {page==='course'&&<CoursePage courseId={courseId} lessonId={lessonId} onSelectLesson={lid=>openLesson(courseId,lid)} courses={courses} progress={progress} refresh={load} onBack={()=>lessonId?openCourse(courseId,null):go('courses')}/>} {page==='coach'&&<NovaCoach user={user} go={go} courses={courses}/>} {page==='study-room'&&<NovaCoach user={user} go={go} courses={courses} initialTab="community"/>} {page==='analytics'&&<Analytics user={user}/>} {page==='nova-os'&&<NovaBrain user={user} go={go}/>} {page==='nova-brain'&&<NovaBrain user={user} go={go}/>} {page==='practice'&&<PracticeHub courses={courses} progress={progress} refresh={load} user={user} go={go}/>} {page==='prepare'&&<PrepareHub user={user} go={go} gateTab={gateTab} onGateTab={onGateTab} dsaSlug={dsaSlug} onDsaSlug={onDsaSlug}/>} {page==='courses'&&<MyLearningHub courses={courses} progress={progress} refresh={load} user={user} go={go} openCourse={openCourse}/>} {page==='history'&&<LearningHistoryView user={user} go={go} onReopenTopic={handleReopenHistoryTopic}/>} {page==='learning-studio'&&<LearningStudio user={user} routeTab={studioTab} onRouteTab={onStudioTab}/>} {page==='tutor'&&<LearningStudio user={user} initialTab="teacher" onRouteTab={onStudioTab}/>} {page==='code'&&<CodeLab user={user}/>} {page==='quiz'&&<Quiz courses={courses} progress={progress} refresh={load} user={user}/>} {page==='chat'&&<ChatWorkspace user={user}/>} {page==='knowledge'&&<KnowledgeHub user={user}/>}
  {page==='mentor'&&<AdaptiveMentor user={user} courses={courses}/>} {page==='planner'&&<TodayHub user={user} go={go} initialTab="planner"/>} {page==='flashcards'&&<Flashcards user={user}/>} {page==='achievements'&&<Achievements user={user} go={go}/>} {page==='profile'&&<AILearningProfile user={user} courses={courses} go={go}/>} {page==='interview'&&<Interviewer user={user}/>} {page==='voice'&&<LearningStudio user={user} initialTab="voice" onRouteTab={onStudioTab}/>} {page==='dpp'&&<CourseDppIde user={user} courses={courses}/>} {page==='exam'&&<ExamSimulator user={user}/>} {page==='gatecse'&&<GateCse routeTab={gateTab} onRouteTab={onGateTab}/>} {page==='dsa'&&<DsaPractice user={user} api={api} routeSlug={dsaSlug} onRouteSlug={onDsaSlug}/>} {page==='career'&&<CareerHub user={user} go={go}/>} {page==='community'&&<CommunityHub user={user} go={go}/>} {page==='notifications'&&<TodayHub user={user} go={go} initialTab="today"/>} {page==='revision'&&<RevisionHub user={user} go={go}/>} {page==='settings'&&<SettingsPage user={user} dark={dark} setDark={setDark} logout={logout} switchAccount={switchAccount} onUserUpdate={updateUser} aiStatus={aiStatus}/>} {page==='about'&&<PublicPage page="about" signedIn onBack={()=>go('dashboard')}/>} {page==='privacy'&&<PublicPage page="privacy" signedIn onBack={()=>go('settings')}/>} {page==='terms'&&<PublicPage page="terms" signedIn onBack={()=>go('settings')}/>} {page==='contact'&&<PublicPage page="contact" signedIn onBack={()=>go('dashboard')}/>} {page==='admin'&&(role==='ADMIN'?<Admin user={user} courses={courses} refreshCourses={load} onBack={()=>go('dashboard')} dark={dark} setDark={setDark}/>:<AdminLocked go={go}/>)}</React.Suspense></ErrorBoundary></div></main></div>
@@ -2121,7 +2185,7 @@ function Dashboard({courses,progress,go,openCourse,user}){
  const [nextLesson,setNextLesson]=useState(null);
  useEffect(()=>{const courseId=featured?.c?.id;if(!courseId){setNextLesson(null);return}let alive=true;api('/courses/'+courseId).then(d=>{if(!alive)return;const lessons=d?.lessons||[];const idx=Math.min(Number(featured?.p?.completedLessons)||0,Math.max(0,lessons.length-1));setNextLesson(lessons[idx]||null)}).catch(()=>{});return()=>{alive=false}},[featured?.c?.id,featured?.p?.completedLessons]);
  return <>
-  <section className="dash-morning reveal">
+  <section className="dash-morning">
    <div className="dash-morning-copy"><span className="eyebrow">{dateStr}</span><h1>{dayPhase}, {user.name?.split(' ')[0]||'learner'}</h1></div>
    <div className="dash-morning-meta">
     {/* Unknown ≠ zero: until the analytics/progress payload arrives the chip
@@ -2132,7 +2196,7 @@ function Dashboard({courses,progress,go,openCourse,user}){
    </div>
   </section>
   <HomeFeatureStrip go={go}/>
-  {!featured?.c&&courses.length===0&&<section className="dash-continue reveal skeleton-card" style={{opacity:0.65}}><div className="dash-continue-main"><span className="eyebrow skeleton-line" style={{display:'inline-block',width:140,height:12,borderRadius:4,background:'var(--surface-2)'}}/><div className="skeleton-line" style={{width:240,height:24,margin:'10px 0',borderRadius:6,background:'var(--surface-2)'}}/><div className="skeleton-line" style={{width:320,height:14,borderRadius:4,background:'var(--surface-2)'}}/></div></section>}
+  {!featured?.c&&courses.length===0&&<section className="dash-continue skeleton-card" style={{opacity:0.65}}><div className="dash-continue-main"><span className="eyebrow skeleton-line" style={{display:'inline-block',width:140,height:12,borderRadius:4,background:'var(--surface-2)'}}/><div className="skeleton-line" style={{width:240,height:24,margin:'10px 0',borderRadius:6,background:'var(--surface-2)'}}/><div className="skeleton-line" style={{width:320,height:14,borderRadius:4,background:'var(--surface-2)'}}/></div></section>}
   {featured?.c&&<section className="dash-continue reveal hover-lift clickable-card" role="button" tabIndex={0} onClick={()=>openCourse?openCourse(featured.c.id):go('courses')} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();if(openCourse)openCourse(featured.c.id);else go('courses')}}}>
    <div className="dash-continue-main">
     <span className="eyebrow">{inProgress?'CONTINUE WHERE YOU LEFT OFF':'START LEARNING'}</span>
