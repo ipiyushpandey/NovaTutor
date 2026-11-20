@@ -29,6 +29,12 @@
 .reveal{opacity:0;transform:translateY(14px);transition:opacity var(--t-slow) var(--ease-out),transform var(--t-slow) var(--ease-out)}
 .reveal.in-view{opacity:1;transform:none}
 
+/* Fallback safety: ensures asynchronous or observer-delayed elements never stay invisible */
+@keyframes nova-reveal-fallback{to{opacity:1;transform:none}}
+.reveal:not(.in-view){animation:nova-reveal-fallback 0.01s ease-out 0.5s forwards}
+.course-grid.stagger-reveal:not(.in-view) > .course-card{animation:nova-reveal-fallback 0.01s ease-out 0.5s forwards}
+.section-head.reveal:not(.in-view){animation:nova-reveal-fallback 0.01s ease-out 0.5s forwards}
+
 /* ---- Skeleton loading (pulsing opacity only) ---- */
 @keyframes nova-pulse{50%{opacity:.45}}
 .skeleton{background:var(--surface-2);border-radius:var(--r-sm);animation:nova-pulse 1.4s ease-in-out infinite}

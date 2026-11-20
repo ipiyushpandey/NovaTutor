@@ -99,12 +99,11 @@ export default function LearningHistoryView({ user, go, onReopenTopic }) {
       localStorage.setItem(localKey, JSON.stringify(updated));
       await api(`/history/${id}`, { method: 'DELETE' });
     } catch (err) {
-      const msg = String(err?.message || '');
-      // If resource was already deleted or not found on server, treat as success
-      if (msg.toLowerCase().includes('not found') || msg.includes('404')) {
-        return;
-      }
       setItems(previousItems);
+      try {
+        const localKey = `nova_user_history_${user.id}`;
+        localStorage.setItem(localKey, JSON.stringify(previousItems));
+      } catch {}
       setError('Could not remove history entry right now. Please check your network connection.');
     }
   };
@@ -129,11 +128,11 @@ export default function LearningHistoryView({ user, go, onReopenTopic }) {
       localStorage.removeItem(localKey);
       await api('/history', { method: 'DELETE' });
     } catch (err) {
-      const msg = String(err?.message || '');
-      if (msg.toLowerCase().includes('not found') || msg.includes('404')) {
-        return;
-      }
       setItems(previousItems);
+      try {
+        const localKey = `nova_user_history_${user.id}`;
+        localStorage.setItem(localKey, JSON.stringify(previousItems));
+      } catch {}
       setError('Could not clear history right now. Please check your network connection.');
     }
   };

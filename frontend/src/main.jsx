@@ -53,14 +53,14 @@ function useScrollReveal(containerRef, deps = []) {
      obs.unobserve(entry.target);
     }
    });
-  }, { threshold: 0.05, rootMargin: '0px 0px 60px 0px' });
+  }, { threshold: 0.01, rootMargin: '0px 0px 100px 0px' });
 
   const checkAndObserve = (el) => {
    if (!el || el.classList.contains('in-view')) return;
    try {
     const rect = el.getBoundingClientRect();
     const vh = window.innerHeight || document.documentElement.clientHeight || 800;
-    if (rect.top <= vh + 60 && rect.bottom >= -60) {
+    if (rect.top <= vh + 100 && rect.bottom >= -100) {
      revealEl(el);
     } else {
      io.observe(el);
@@ -78,32 +78,40 @@ function useScrollReveal(containerRef, deps = []) {
   };
 
   scan();
+  const rafId = requestAnimationFrame(scan);
+  const t1 = setTimeout(scan, 80);
+  const t2 = setTimeout(scan, 350);
 
   let mo = null;
   if (typeof MutationObserver !== 'undefined') {
-   mo = new MutationObserver((mutations) => {
-    let hasAdditions = false;
-    for (const m of mutations) {
-     if (m.addedNodes?.length) {
-      hasAdditions = true;
-      break;
-     }
-    }
-    if (hasAdditions) {
-     scan();
+   let moScheduled = false;
+   mo = new MutationObserver(() => {
+    if (!moScheduled) {
+     moScheduled = true;
+     requestAnimationFrame(() => {
+      moScheduled = false;
+      scan();
+     });
     }
    });
    try {
     const targetNode = root === document ? (document.body || document.documentElement) : root;
     if (targetNode) {
-     mo.observe(targetNode, { childList: true, subtree: true });
+     mo.observe(targetNode, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
     }
    } catch {}
   }
 
+  const onResize = () => scan();
+  window.addEventListener('resize', onResize, { passive: true });
+
   return () => {
+   cancelAnimationFrame(rafId);
+   clearTimeout(t1);
+   clearTimeout(t2);
    io.disconnect();
    if (mo) mo.disconnect();
+   window.removeEventListener('resize', onResize);
   };
  }, deps);
 }
@@ -2151,23 +2159,36 @@ function Dashboard({courses,progress,go,openCourse,user}){
   if(!user?.id)return;
   let alive=true;
   const pull=()=>{
-   Promise.allSettled([api('/analytics/'+user.id),api('/progress/'+user.id),api('/intelligence/'+user.id)]).then(([aRes,pRes,iRes])=>{
+   api('/analytics/'+user.id).then(val=>{
+    if(!alive||!val)return;
+    setLive(val);
+    if(user?.id){
+     const prevDash=readRuntimeState(user.id,'dashboard',{})||{};
+     writeRuntimeState(user.id,'dashboard',{...prevDash,analytics:val});
+    }
+   }).catch(()=>{});
+
+   api('/progress/'+user.id).then(val=>{
+    if(!alive||!Array.isArray(val))return;
+    setLiveProgress(val);
+    if(user?.id){
+     const prevDash=readRuntimeState(user.id,'dashboard',{})||{};
+     writeRuntimeState(user.id,'dashboard',{...prevDash,progress:val});
+    }
+   }).catch(()=>{});
+
+   api('/intelligence/'+user.id).then(val=>{
     if(!alive)return;
-    const newLive=aRes.status==='fulfilled'?aRes.value:live;
-    const newProgress=pRes.status==='fulfilled'&&Array.isArray(pRes.value)?pRes.value:liveProgress;
-    const newIntel=iRes.status==='fulfilled'?iRes.value:intel;
-    if(aRes.status==='fulfilled')setLive(aRes.value);
-    if(pRes.status==='fulfilled'&&Array.isArray(pRes.value))setLiveProgress(pRes.value);
-    if(iRes.status==='fulfilled'){setIntel(iRes.value);setIntelUpdatedAt(new Date());}
+    setIntel(val||null);
+    setIntelUpdatedAt(new Date());
     setIntelLoading(false);
     if(user?.id){
-     writeRuntimeState(user.id,'dashboard',{
-      analytics:newLive,
-      progress:newProgress,
-      intel:newIntel,
-      intelUpdatedAt:new Date().toISOString()
-     });
+     const prevDash=readRuntimeState(user.id,'dashboard',{})||{};
+     writeRuntimeState(user.id,'dashboard',{...prevDash,intel:val,intelUpdatedAt:new Date().toISOString()});
     }
+   }).catch(()=>{
+    if(!alive)return;
+    setIntelLoading(false);
    });
   };
   pull();
@@ -2196,8 +2217,8 @@ function Dashboard({courses,progress,go,openCourse,user}){
    </div>
   </section>
   <HomeFeatureStrip go={go}/>
-  {!featured?.c&&courses.length===0&&<section className="dash-continue skeleton-card" style={{opacity:0.65}}><div className="dash-continue-main"><span className="eyebrow skeleton-line" style={{display:'inline-block',width:140,height:12,borderRadius:4,background:'var(--surface-2)'}}/><div className="skeleton-line" style={{width:240,height:24,margin:'10px 0',borderRadius:6,background:'var(--surface-2)'}}/><div className="skeleton-line" style={{width:320,height:14,borderRadius:4,background:'var(--surface-2)'}}/></div></section>}
-  {featured?.c&&<section className="dash-continue reveal hover-lift clickable-card" role="button" tabIndex={0} onClick={()=>openCourse?openCourse(featured.c.id):go('courses')} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();if(openCourse)openCourse(featured.c.id);else go('courses')}}}>
+  {!featured?.c&&courses.length===0&&<section key="dash-continue-skeleton" className="dash-continue skeleton-card" style={{opacity:0.65}}><div className="dash-continue-main"><span className="eyebrow skeleton-line" style={{display:'inline-block',width:140,height:12,borderRadius:4,background:'var(--surface-2)'}}/><div className="skeleton-line" style={{width:240,height:24,margin:'10px 0',borderRadius:6,background:'var(--surface-2)'}}/><div className="skeleton-line" style={{width:320,height:14,borderRadius:4,background:'var(--surface-2)'}}/></div></section>}
+  {featured?.c&&<section key={`dash-continue-${featured.c.id}`} className="dash-continue reveal hover-lift clickable-card" role="button" tabIndex={0} onClick={()=>openCourse?openCourse(featured.c.id):go('courses')} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();if(openCourse)openCourse(featured.c.id);else go('courses')}}}>
    <div className="dash-continue-main">
     <span className="eyebrow">{inProgress?'CONTINUE WHERE YOU LEFT OFF':'START LEARNING'}</span>
     <h2><span className="dash-continue-icon icon-rotate-subtle" aria-hidden="true">{featured.c.icon}</span>{featured.c.title}</h2>
@@ -2226,11 +2247,11 @@ function IntelligenceSnapshot({user,go,sharedIntel,sharedUpdatedAt}){
   const timer=setInterval(()=>{if(!document.hidden)load()},60000);
   return()=>{alive=false;window.removeEventListener('nova:learning-updated',onUpdate);clearInterval(timer)};
  },[user?.id,usesShared]);
- const data=usesShared?sharedIntel:ownData;
+ const rawData=usesShared?sharedIntel:ownData;
  const updatedAt=usesShared?sharedUpdatedAt:ownUpdatedAt;
- if(!data)return <section className="intelligence-snapshot loading"><div><span className="eyebrow">NOVA INTELLIGENCE</span><h3>Building your learning memory…</h3><p>NovaTutor is learning from your course, quiz and coding activity.</p></div><Brain size={28}/></section>;
+ const data=rawData||{streak:0,quizzes:0,studyMinutes:0,weakAreas:[],recommendations:[{title:'Begin your first study session',description:'Explore our catalog of structured courses and interactive problem sets.',action:'Explore courses',target:'courses'}]};
  const weak=data.weakAreas?.[0];const rec=data.recommendations?.[0];
- return <section className="intelligence-snapshot reveal"><div className="intel-main"><span className="eyebrow">NOVA INTELLIGENCE • LIVE</span><h3>Here’s what you should do next.</h3><p>{rec?.description||'Keep learning and NovaTutor will personalize your next steps.'}</p><div className="intel-actions">{rec&&<button className="primary" onClick={()=>go(rec.target||'analytics')}>{rec.action}<ChevronRight size={14}/></button>}<button className="secondary" onClick={()=>go('analytics')}>View learning memory</button></div><small className="intel-updated">{updatedAt?`Updated ${updatedAt.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`:'Updating…'}</small></div><div className="intel-mini"><div><b>{data.streak}</b><span>day streak</span></div><div><b>{data.quizzes}</b><span>quiz attempts</span></div><div><b>{data.studyMinutes}</b><span>study minutes</span></div>{weak&&<div className="intel-weak"><span>Weakest area</span><b>{weak.subject}</b><small>{weak.accuracy}% accuracy</small></div>}</div></section>}
+ return <section className="intelligence-snapshot reveal"><div className="intel-main"><span className="eyebrow">NOVA INTELLIGENCE • LIVE</span><h3>Here’s what you should do next.</h3><p>{rec?.description||'Keep learning and NovaTutor will personalize your next steps.'}</p><div className="intel-actions">{rec&&<button className="primary" onClick={()=>go(rec.target||'analytics')}>{rec.action}<ChevronRight size={14}/></button>}<button className="secondary" onClick={()=>go('analytics')}>View learning memory</button></div><small className="intel-updated">{updatedAt?`Updated ${updatedAt.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`:'Live profile'}</small></div><div className="intel-mini"><div><b>{data.streak}</b><span>day streak</span></div><div><b>{data.quizzes}</b><span>quiz attempts</span></div><div><b>{data.studyMinutes}</b><span>study minutes</span></div>{weak&&<div className="intel-weak"><span>Weakest area</span><b>{weak.subject}</b><small>{weak.accuracy}% accuracy</small></div>}</div></section>}
 function MasterySnapshot({user,go,sharedIntel}){
  const usesShared=sharedIntel!==undefined;
  const [ownData,setOwnData]=useState(null);
