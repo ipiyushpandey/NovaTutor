@@ -269,7 +269,7 @@ public class GeminiProvider implements AiProvider {
         int taskOutputTokens = switch (task) {
             case TUTOR, ADAPTIVE_TUTOR -> Math.min(maxOutputTokens, 3500);
             case CODE, CODING -> Math.min(maxOutputTokens, 3500);
-            case STUDY_PLAN, EXAM_STRATEGY -> Math.min(maxOutputTokens, 4500);
+            case STUDY_PLAN, EXAM_STRATEGY -> Math.min(maxOutputTokens, 8192);
             case SUMMARIZE -> Math.min(maxOutputTokens, 3500);
             case FLASHCARDS, QUIZ -> Math.min(maxOutputTokens, 2400);
             default -> Math.min(maxOutputTokens, 3000);
