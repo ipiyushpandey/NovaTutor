@@ -52,6 +52,8 @@ public class MentorController {
         this.streamExecutor = streamExecutor;
     }
 
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper = new com.fasterxml.jackson.databind.ObjectMapper();
+
     @PreDestroy
     public void shutdown() {
         streamExecutor.shutdownNow();
@@ -86,19 +88,38 @@ public class MentorController {
                 if (cancellation.isCancelled()) return;
                 cancellation.attachThread(Thread.currentThread());
                 try {
-                    ai.stream(request, chunk -> {
+                    StreamCompletion completion = ai.stream(request, chunk -> {
                         if (cancellation.isCancelled()) throw new IllegalStateException("Client disconnected");
                         try { emitter.send(SseEmitter.event().data(chunk)); }
                         catch (IOException e) { cancellation.cancel(); throw new IllegalStateException(e); }
                     }, cancellation);
                     if (!cancellation.isCancelled()) {
-                        emitter.send(SseEmitter.event().name("done").data("done"));
+                        Map<String, Object> payload = new java.util.LinkedHashMap<>();
+                        payload.put("status", completion.status());
+                        payload.put("finishReason", completion.finishReason());
+                        payload.put("chunks", completion.chunkCount());
+                        payload.put("totalChars", completion.totalChars());
+                        payload.put("durationMs", completion.durationMs());
+                        String dataJson = objectMapper.writeValueAsString(payload);
+
+                        if (completion.isTruncated()) {
+                            emitter.send(SseEmitter.event().name("truncated").data(dataJson));
+                        } else if (completion.isSafetyRefusal()) {
+                            emitter.send(SseEmitter.event().name("safety").data(dataJson));
+                        } else {
+                            emitter.send(SseEmitter.event().name("done").data(dataJson));
+                        }
                         emitter.complete();
                     }
                 } catch (Exception e) {
                     if (!cancellation.isCancelled()) {
-                        try { emitter.send(SseEmitter.event().name("error").data("AI request failed. Please try again.")); }
-                        catch (Exception ignored) { }
+                        try {
+                            Map<String, Object> errPayload = Map.of(
+                                "status", "ERROR",
+                                "message", "AI request failed. Please try again."
+                            );
+                            emitter.send(SseEmitter.event().name("error").data(objectMapper.writeValueAsString(errPayload)));
+                        } catch (Exception ignored) { }
                         emitter.complete();
                     }
                 } finally {

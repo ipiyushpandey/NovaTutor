@@ -4439,3 +4439,47 @@ body{background:var(--bg);color:var(--text)}
   margin: 0;
 }
 
+/* AI Streaming status banners */
+.ai-stream-status-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  margin: 12px 0;
+  border-radius: var(--radius-md, 8px);
+  font-size: 13px;
+  line-height: 1.4;
+  border: 1px solid var(--border);
+  background: var(--surface-raised, #f8f9fa);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+.ai-stream-status-banner.is-truncated {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+  color: var(--text);
+}
+.ai-stream-status-banner.is-interrupted {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+  color: var(--text);
+}
+.ai-stream-status-banner .banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+@media (max-width: 640px) {
+  .ai-stream-status-banner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .ai-stream-status-banner .banner-actions,
+  .ai-stream-status-banner button {
+    width: 100%;
+    justify-content: center;
+  }
+}
+

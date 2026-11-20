@@ -662,8 +662,145 @@ test('Upgrade Invariants: Learning History, Quiz Review, and Composable Navigati
 
   // 3. Scroll performance compositing invariant in styles.css
   const stylesCss = fs.readFileSync(path.join(SRC_DIR, 'styles.css'), 'utf8');
-  assert.ok(!stylesCss.includes('.hero, .course-card, .panel, .stat, .quiz-q, .result-card, .chat-shell, .chat-sidebar, .chat-main, .module-card, .lesson-item, .gate-subject-card, .practice-card, .study-card, .notes-reader, .rag-card, .upload-card, .today-focus-card, .today-card, .today-task, .today-agenda-item, .today-challenge-card, .today-heatmap-shell, .profile-identity-card, .profile-metric-card, .profile-domain-card, .profile-action-card, .profile-history-card, .exam-subject-card, .exam-metric-card, .exam-review-card, .exam-q-palette, .dsa-row, .dsa-hero, .dsa-stat-grid, .dsa-editor-card, .dsa-result-card, .dsa-test-tab, .dsa-test-panel, .dsa-diff-card, .career-path-card, .career-market-card, .career-skill-chip, .career-step-card, .career-salary-card, .career-filter-chip, .career-job-card, .career-readiness-card, .career-salary-band, .interview-feedback-box, .interview-category-card, .interview-metric-card, .community-sidebar-card, .community-feed-item, .community-room-card, .community-message, .community-member-card, .community-thread-card, .stat-tile, .card, .dock-nav, .dock-card, .dock-menu, .dock-subpanel, .dock-glass, .dock-backdrop, .dock-sheet, .dock-drawer, .dock-popover, .dock-modal, .dock-toast, .dock-tooltip, .dock-badge, .dock-pill, .dock-chip, .dock-tag, .dock-indicator, .dock-status, .dock-avatar, .dock-icon-box, .dock-btn-glass, .dock-input-glass, .dock-select-glass, .dock-table-glass, .dock-list-glass, .dock-item-glass, .dock-header-glass, .dock-footer-glass, .dock-sidebar-glass, .dock-main-glass, .dock-card-header, .dock-card-body, .dock-card-footer, .dock-card-glass, .dock-card-border, .dock-card-shadow, .dock-card-glow, .dock-card-highlight, .dock-card-accent, .dock-card-primary, .dock-card-secondary, .dock-card-tertiary, .dock-card-quaternary, .dock-card-gradient, .dock-card-pattern, .dock-card-texture, .dock-card-image, .dock-card-video, .dock-card-canvas, .dock-card-svg, .dock-card-icon, .dock-card-title, .dock-card-subtitle, .dock-card-desc, .dock-card-meta, .dock-card-badge, .dock-card-pill, .dock-card-chip, .dock-card-tag, .dock-card-indicator, .dock-card-status, .dock-card-avatar, .dock-card-btn, .dock-card-link, .dock-card-input, .dock-card-select, .dock-card-textarea, .dock-card-checkbox, .dock-card-radio, .dock-card-switch, .dock-card-slider, .dock-card-range, .dock-card-progress, .dock-card-spinner, .dock-card-skeleton, .dock-card-divider, .dock-card-spacer, .dock-card-group, .dock-card-row, .dock-card-col, .dock-card-grid, .dock-card-flex, .dock-card-box, .dock-card-container, .dock-card-wrapper, .dock-card-content, .dock-card-inner, .dock-card-outer, .dock-card-pane, .dock-card-section, .dock-card-article, .dock-card-aside, .dock-card-header-inner, .dock-card-body-inner, .dock-card-footer-inner, .dock-card-glass-inner, .dock-card-border-inner, .dock-card-shadow-inner, .dock-card-glow-inner, .dock-card-highlight-inner, .dock-card-accent-inner, .dock-card-primary-inner, .dock-card-secondary-inner, .dock-card-tertiary-inner, .dock-card-quaternary-inner, .dock-card-gradient-inner, .dock-card-pattern-inner, .dock-card-texture-inner, .dock-card-image-inner, .dock-card-video-inner, .dock-card-canvas-inner, .dock-card-svg-inner, .dock-card-icon-inner, .dock-card-title-inner, .dock-card-subtitle-inner, .dock-card-desc-inner, .dock-card-meta-inner, .dock-card-badge-inner, .dock-card-pill-inner, .dock-card-chip-inner, .dock-card-tag-inner, .dock-card-indicator-inner, .dock-card-status-inner, .dock-card-avatar-inner, .dock-card-btn-inner, .dock-card-link-inner, .dock-card-input-inner, .dock-card-select-inner, .dock-card-textarea-inner, .dock-card-checkbox-inner, .dock-card-radio-inner, .dock-card-switch-inner, .dock-card-slider-inner, .dock-card-range-inner, .dock-card-progress-inner, .dock-card-spinner-inner, .dock-card-skeleton-inner, .dock-card-divider-inner, .dock-card-spacer-inner, .dock-card-group-inner, .dock-card-row-inner, .dock-card-col-inner, .dock-card-grid-inner, .dock-card-flex-inner, .dock-card-box-inner, .dock-card-container-inner, .dock-card-wrapper-inner, .dock-card-content-inner {\n  backdrop-filter: blur(14px);'), 'Heavy backdrop-filter on repeated scroll cards must remain removed');
+  assert.ok(!stylesCss.includes('backdrop-filter: blur(14px);'), 'Heavy backdrop-filter on repeated scroll cards must remain removed');
 });
+
+test('AI Stream Completion & Safe Recovery Semantics', async () => {
+  setupBrowserGlobals();
+  const { apiStream } = await import('./api.js?streamTest=' + Date.now());
+
+  // 1. Normal COMPLETED stream
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    body: {
+      getReader() {
+        const chunks = [
+          'data: Hello \n\n',
+          'data: student!\n\n',
+          'event: done\ndata: {"status":"COMPLETED","finishReason":"STOP","chunks":2,"totalChars":14}\n\n'
+        ];
+        let idx = 0;
+        return {
+          async read() {
+            if (idx < chunks.length) {
+              return { value: new TextEncoder().encode(chunks[idx++]), done: false };
+            }
+            return { done: true };
+          },
+          cancel: async () => {}
+        };
+      }
+    }
+  });
+
+  let text = '';
+  const completedSummary = await apiStream('/ai/ask/stream', { method: 'POST' }, chunk => { text += chunk; });
+  assert.equal(text, 'Hello student!');
+  assert.equal(completedSummary.completed, true);
+  assert.equal(completedSummary.truncated, false);
+  assert.equal(completedSummary.status, 'COMPLETED');
+  assert.equal(completedSummary.reason, 'STOP');
+
+  // 2. Truncated MAX_TOKENS stream
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    body: {
+      getReader() {
+        const chunks = [
+          'data: Step 1: Initialize pointer.\n\n',
+          'event: truncated\ndata: {"status":"TRUNCATED","finishReason":"MAX_TOKENS","chunks":1,"totalChars":28}\n\n'
+        ];
+        let idx = 0;
+        return {
+          async read() {
+            if (idx < chunks.length) {
+              return { value: new TextEncoder().encode(chunks[idx++]), done: false };
+            }
+            return { done: true };
+          },
+          cancel: async () => {}
+        };
+      }
+    }
+  });
+
+  let truncatedText = '';
+  const truncatedSummary = await apiStream('/ai/ask/stream', { method: 'POST' }, chunk => { truncatedText += chunk; });
+  assert.equal(truncatedText, 'Step 1: Initialize pointer.');
+  assert.equal(truncatedSummary.completed, false);
+  assert.equal(truncatedSummary.truncated, true);
+  assert.equal(truncatedSummary.status, 'TRUNCATED');
+  assert.equal(truncatedSummary.reason, 'MAX_TOKENS');
+
+  // 3. Safety Refusal stream
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    body: {
+      getReader() {
+        const chunks = [
+          'event: safety\ndata: {"status":"SAFETY_REFUSAL","finishReason":"SAFETY","message":"Content blocked by safety policy"}\n\n'
+        ];
+        let idx = 0;
+        return {
+          async read() {
+            if (idx < chunks.length) {
+              return { value: new TextEncoder().encode(chunks[idx++]), done: false };
+            }
+            return { done: true };
+          },
+          cancel: async () => {}
+        };
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => apiStream('/ai/ask/stream', { method: 'POST' }, () => {}),
+    err => err.safetyRefusal === true && err.message.includes('safety policy')
+  );
+
+  // 4. Interrupted stream without completion token
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    body: {
+      getReader() {
+        const chunks = ['data: Partial response before socket disconnect\n\n'];
+        let idx = 0;
+        return {
+          async read() {
+            if (idx < chunks.length) {
+              return { value: new TextEncoder().encode(chunks[idx++]), done: false };
+            }
+            return { done: true };
+          },
+          cancel: async () => {}
+        };
+      }
+    }
+  });
+
+  let partialAccum = '';
+  await assert.rejects(
+    () => apiStream('/ai/ask/stream', { method: 'POST' }, chunk => { partialAccum += chunk; }),
+    err => err.interrupted === true && partialAccum.includes('Partial response')
+  );
+
+  // 5. Source code invariants for AI Stream completion and continuation
+  const mainJsx = fs.readFileSync(path.join(SRC_DIR, 'main.jsx'), 'utf8');
+  assert.ok(!mainJsx.includes('nextAnswer.length<500'), 'Arbitrary length<500 check must be removed from AiPanel');
+  assert.ok(!mainJsx.includes('streamAccum.length<300'), 'Arbitrary length<300 check must be removed from AdaptiveMentor');
+  assert.match(mainJsx, /function continueGeneration/, 'AiPanel continueGeneration must exist');
+  assert.match(mainJsx, /continueMentorGeneration/, 'AdaptiveMentor continueMentorGeneration must exist');
+  assert.match(mainJsx, /ai-stream-status-banner/, 'ai-stream-status-banner must be rendered');
+
+  const stylesCss = fs.readFileSync(path.join(SRC_DIR, 'styles.css'), 'utf8');
+  assert.match(stylesCss, /\.ai-stream-status-banner/, 'CSS styles for .ai-stream-status-banner must exist');
+});
+
 
 
 

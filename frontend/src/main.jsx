@@ -2340,6 +2340,8 @@ function AiPanel({task,title,subtitle,icon,user,modeHint}){
  const [lessonDoubtError,setLessonDoubtError]=useState('');
  const responseRef=useRef(null);const requestSeqRef=useRef(0);const answerBoxRef=useRef(null);const lastAskRef=useRef(null);const streamAbortRef=useRef(null);const askRef=useRef(null);const prefillTimerRef=useRef(null);
  const [askError,setAskError]=useState('');
+ const [streamTruncated,setStreamTruncated]=useState(false);
+ const [streamInterrupted,setStreamInterrupted]=useState(false);
  useEffect(()=>{if(user?.id)api('/intelligence/'+user.id).then(setLearningContext).catch(()=>setLearningContext(null));},[user?.id]);
  useEffect(()=>()=>{if(prefillTimerRef.current){clearTimeout(prefillTimerRef.current);prefillTimerRef.current=null;}try{streamAbortRef.current?.abort()}catch{}},[]);
  useEffect(()=>{const apply=()=>{const m=readTutorMemory(user?.id);if(contextKey&&m.contextKey&&m.contextKey!==contextKey)return;setTopic(m.topic||'');setMessage(m.message||'');setAnswer(m.contextKey===contextKey?m.answer:'');setStudentAnswer(m.contextKey===contextKey?m.studentAnswer:'');setFeedback(m.contextKey===contextKey?m.feedback:'');setAnswerSubmitted(Boolean(m.contextKey===contextKey&&m.answerSubmitted));};window.addEventListener('nova:tutor-memory-updated',apply);return()=>window.removeEventListener('nova:tutor-memory-updated',apply)},[user?.id,contextKey]);
@@ -2355,24 +2357,34 @@ function AiPanel({task,title,subtitle,icon,user,modeHint}){
   const msgArg=typeof messageOverride==='string'?messageOverride:null;
   const topArg=typeof topicOverride==='string'?topicOverride:null;
   const ctxArg=typeof contextKeyOverride==='string'?contextKeyOverride:null;
-  const effectiveMessage=msgArg??message;const effectiveTopic=topArg??topic;const effectiveContextKey=ctxArg??contextKey;if(!effectiveMessage.trim())return;const requestId=++requestSeqRef.current;try{streamAbortRef.current?.abort()}catch{}const ac=new AbortController();streamAbortRef.current=ac;lastAskRef.current={message:effectiveMessage,topic:effectiveTopic,contextKey:effectiveContextKey};setLoading(true);setAskError('');setAnswer('');setFeedback('');setStudentAnswer('');setAnswerSubmitted(false);requestAnimationFrame(()=>{answerBoxRef.current?.scrollIntoView({behavior:'smooth',block:'start'})});try{const profile=user?.profileComplete?`\nStudent profile: goal=${user.learningGoal||'not specified'}, interests=${user.interests||'not specified'}, strengths=${user.strengths||'not specified'}, weaknesses=${user.weaknesses||'not specified'}, learning style=${user.learningStyle||'not specified'}. Teach in a way that matches this profile and prefer visual explanations, diagrams, flowcharts or concrete examples when they improve understanding.`:'';const intelligenceContext=learningContext?`\nLearning memory: streak=${learningContext.streak||0}, studyMinutes=${learningContext.studyMinutes||0}, quizAttempts=${learningContext.quizzes||0}, weakAreas=${(learningContext.weakAreas||[]).slice(0,3).map(x=>`${x.subject||x.topic} (${x.accuracy||0}% accuracy)`).join(', ')||'none detected'}, nextAction=${learningContext.recommendations?.[0]?.title||'keep learning'}. Use this context only when it helps; do not invent activity.`:'';// Internal lesson context (from a course launch) is appended ONLY to the
+  const effectiveMessage=msgArg??message;const effectiveTopic=topArg??topic;const effectiveContextKey=ctxArg??contextKey;if(!effectiveMessage.trim())return;const requestId=++requestSeqRef.current;try{streamAbortRef.current?.abort()}catch{}const ac=new AbortController();streamAbortRef.current=ac;lastAskRef.current={message:effectiveMessage,topic:effectiveTopic,contextKey:effectiveContextKey};setLoading(true);setAskError('');setStreamTruncated(false);setStreamInterrupted(false);setAnswer('');setFeedback('');setStudentAnswer('');setAnswerSubmitted(false);requestAnimationFrame(()=>{answerBoxRef.current?.scrollIntoView({behavior:'smooth',block:'start'})});try{const profile=user?.profileComplete?`\nStudent profile: goal=${user.learningGoal||'not specified'}, interests=${user.interests||'not specified'}, strengths=${user.strengths||'not specified'}, weaknesses=${user.weaknesses||'not specified'}, learning style=${user.learningStyle||'not specified'}. Teach in a way that matches this profile and prefer visual explanations, diagrams, flowcharts or concrete examples when they improve understanding.`:'';const intelligenceContext=learningContext?`\nLearning memory: streak=${learningContext.streak||0}, studyMinutes=${learningContext.studyMinutes||0}, quizAttempts=${learningContext.quizzes||0}, weakAreas=${(learningContext.weakAreas||[]).slice(0,3).map(x=>`${x.subject||x.topic} (${x.accuracy||0}% accuracy)`).join(', ')||'none detected'}, nextAction=${learningContext.recommendations?.[0]?.title||'keep learning'}. Use this context only when it helps; do not invent activity.`:'';// Internal lesson context (from a course launch) is appended ONLY to the
 // outgoing AI request — never to the visible composer, tutor memory, or logs.
 const lessonBg=internalContextRef.current?`\n\nLESSON CONTEXT:\n${internalContextRef.current}`:'';const teacherRequest=task==='TUTOR'?effectiveMessage+profile+(modeHint?`\n\nTEACHING MODE: ${modeHint}.`:'')+lessonBg+'\n\nTEACHER INSTRUCTIONS: Explain clearly and step-by-step with practical examples, code/diagrams when relevant, common mistakes, and finish with one short **Mini Question:** to test understanding.':effectiveMessage+profile+lessonBg;const finalTeacherRequest=`CURRENT STUDENT REQUEST:\n${teacherRequest}${intelligenceContext}`; let nextAnswer='';
  if(task==='TUTOR'){
+  let streamSummary=null;
   try{
-   await apiStream('/ai/ask/stream',{method:'POST',signal:ac.signal,body:JSON.stringify({task,topic:effectiveTopic,message:finalTeacherRequest,level:'beginner',language:getAiLanguage()})},chunk=>{if(requestId!==requestSeqRef.current)return;nextAnswer+=chunk;setAnswer(nextAnswer);});
+   streamSummary=await apiStream('/ai/ask/stream',{method:'POST',signal:ac.signal,body:JSON.stringify({task,topic:effectiveTopic,message:finalTeacherRequest,level:'beginner',language:getAiLanguage()})},chunk=>{if(requestId!==requestSeqRef.current)return;nextAnswer+=chunk;setAnswer(nextAnswer);});
   }catch(streamError){
    if(streamError?.name==='AbortError'||requestId!==requestSeqRef.current)return;
-   // Keep any already streamed answer and surface a clear notice. If nothing arrived,
-   // transparently fall back to the standard JSON endpoint.
-   if(!nextAnswer.trim()||nextAnswer.length<500){
+   if(!nextAnswer.trim()){
     try{
      const r=await api('/ai/ask',{method:'POST',signal:ac.signal,body:JSON.stringify({task,topic:effectiveTopic,message:finalTeacherRequest,level:'beginner',language:getAiLanguage()})});
      if(r?.answer)nextAnswer=r.answer;
+     else throw new Error('No response returned.');
     }catch(fallbackErr){
-     if(!nextAnswer.trim())throw fallbackErr;
+     throw fallbackErr;
     }
+   }else{
+    if(requestId===requestSeqRef.current){
+     setStreamInterrupted(true);
+     setAskError(streamError?.message||'The AI stream ended before completion. Your partial answer is preserved.');
+    }
+    return;
    }
+  }
+  if(requestId!==requestSeqRef.current)return;
+  if(streamSummary?.truncated){
+   setStreamTruncated(true);
   }
  }else{
   const r=await api('/ai/ask',{method:'POST',signal:ac.signal,body:JSON.stringify({task,topic:effectiveTopic,message:finalTeacherRequest,level:'beginner',language:getAiLanguage()})});
@@ -2392,6 +2404,50 @@ const lessonBg=internalContextRef.current?`\n\nLESSON CONTEXT:\n${internalContex
   contentSnapshot:JSON.stringify({topic:effectiveTopic,message:effectiveMessage,answer:nextAnswer,contextKey:effectiveContextKey})
  }).catch(()=>{});}catch(e){if(e?.name==='AbortError')return;if(requestId===requestSeqRef.current)setAskError(e.message||'Nova could not be reached right now. Please try again.')}finally{if(requestId===requestSeqRef.current)setLoading(false)}}
  askRef.current=ask;
+
+ async function continueGeneration(){
+  if(!answer||loading)return;
+  const requestId=++requestSeqRef.current;
+  try{streamAbortRef.current?.abort()}catch{}
+  const ac=new AbortController();
+  streamAbortRef.current=ac;
+  setLoading(true);
+  setAskError('');
+  setStreamTruncated(false);
+  setStreamInterrupted(false);
+  let accumulated=answer;
+  const continuationPrompt=`CONTINUATION REQUEST: The previous answer reached its output token limit. Pick up and continue the explanation seamlessly from the exact end of the text below. Do NOT repeat previous sentences or greetings. Continue immediately with the next concept or step:\n\n[LAST PART OF PREVIOUS ANSWER]:\n${answer.slice(-1200)}`;
+  try{
+   const summary=await apiStream('/ai/ask/stream',{
+    method:'POST',
+    signal:ac.signal,
+    body:JSON.stringify({
+     task:'TUTOR',
+     topic:lastAskRef.current?.topic||topic,
+     message:continuationPrompt,
+     level:'beginner',
+     language:getAiLanguage()
+    })
+   },chunk=>{
+    if(requestId!==requestSeqRef.current)return;
+    accumulated+=chunk;
+    setAnswer(accumulated);
+   });
+   if(requestId!==requestSeqRef.current)return;
+   if(summary?.truncated){
+    setStreamTruncated(true);
+   }else{
+    saveTutorMemory(user?.id,{topic:lastAskRef.current?.topic||topic,message:lastAskRef.current?.message||message,answer:accumulated,feedback:'',studentAnswer:'',answerSubmitted:false,contextKey:lastAskRef.current?.contextKey||contextKey});
+    appendTutorTurn(user?.id,'ASSISTANT',accumulated,{topic:lastAskRef.current?.topic||topic,source:'ai-teacher',contextKey:lastAskRef.current?.contextKey||contextKey});
+   }
+  }catch(err){
+   if(err?.name==='AbortError'||requestId!==requestSeqRef.current)return;
+   setStreamInterrupted(true);
+   setAskError(err?.message||'Continuation was interrupted. Click to retry.');
+  }finally{
+   if(requestId===requestSeqRef.current)setLoading(false);
+  }
+ }
  const previousTeachingModeRef=useRef(modeHint||'');
  useEffect(()=>{
   const previous=previousTeachingModeRef.current;
@@ -2437,9 +2493,11 @@ Answer only this specific doubt using the current lesson as context. Explain the
   setStudentAnswer('');
   setAnswerSubmitted(false);
   setAskError('');
+  setStreamTruncated(false);
+  setStreamInterrupted(false);
   saveTutorMemory(user?.id,{topic,message,answer:'',feedback:'',studentAnswer:'',answerSubmitted:false,contextKey});
  };
- return <div className="ai-workspace"><aside className="ai-composer"><label>TOPIC</label><input value={topic} onChange={e=>setTopic(e.target.value)} placeholder="e.g. Java inheritance"/><textarea value={message} onChange={e=>setMessage(e.target.value)} rows="9" aria-label="Message to Nova" placeholder="Ask Nova to teach you, explain a concept, or test you…"/><button className="primary full" onClick={ask} disabled={loading}>{loading?'Thinking…':'Ask Nova'} <Send size={14}/></button><small className="ai-composer-hint">Nova teaches at your level, then checks your understanding.</small></aside><section ref={answerBoxRef} className={"ai-transcript ai-teacher-answer-box "+(task==='TUTOR'?'is-teacher':'')} aria-live="polite"><div className="ai-transcript-head"><div className="ai-avatar">{icon}</div><div><b>{title}</b><small>Teaching → check → feedback</small></div>{Boolean(answer||loading||askError)&&<button type="button" className="ai-clear-action" onClick={handleClearTeacher} title="Clear response" aria-label="Clear response"><RotateCcw size={12}/> Clear</button>}<span className="ai-live-dot" aria-hidden="true"/></div>{askError&&<div className="error-banner ai-teacher-error" role="alert"><span><b>Nova couldn't finish this answer.</b> {askError} Your previous teaching content is safe.</span><button className="secondary compact" onClick={()=>{const r=lastAskRef.current;if(r)ask(r.message,r.topic,r.contextKey)}}>Try again</button></div>}{loading&&!answer&&<div className="ai-teacher-thinking"><span className="nova-thinking-dots" aria-hidden="true"><i/><i/><i/></span>Nova is thinking…</div>}{answer?<div className="ai-transcript-body"><div className="ai-turn ai-turn-teacher"><div ref={responseRef} className="answer ai-teacher-response"><AiMarkdown content={teacherAnswerBody}/></div></div>{teacherMiniQuestion&&<div className="teacher-mini-question"><span>Mini question for you</span><AiMarkdown content={teacherMiniQuestion}/></div>}{answerSubmitted&&teacherMiniQuestion&&<div className="teacher-feedback teacher-submitted"><b>✓ Answer submitted</b><div><AiMarkdown content={feedback||'Your teacher has already evaluated this response.'}/></div></div>}{teacherMiniQuestion&&<div className="teacher-check"><div className="teacher-check-head"><b>Your turn</b><small>Answer above to continue the lesson.</small></div><textarea value={studentAnswer} onChange={e=>setStudentAnswer(e.target.value)} rows="5" placeholder="Write your answer here…"/><button className="primary" onClick={submitStudentAnswer} disabled={checking||!studentAnswer.trim()}>{checking?'Checking your answer…':'Reply to teacher'} <CheckCircle2 size={15}/></button></div>}</div>:<div className="empty ai-empty-motion"><LottiePlayer src={lottieLogoUrl} className="ai-empty-lottie" ariaLabel="Nova thinking"/><b>Your lesson appears here</b><span>Ask a focused question and Nova will teach you, then check your understanding.</span></div>}</section>{task==='TUTOR'&&<section className="ai-lesson-doubt" aria-label="Ask a doubt about this lesson"><div className="lesson-doubt-head"><div><span className="eyebrow">LESSON DOUBT</span><h4>Still stuck on this lesson?</h4><p>Each answer stays in its own section below; ask another doubt anytime.</p></div></div>{lessonDoubtHistory.map((item,index)=><div className="lesson-doubt-answer" key={index}><div className="lesson-doubt-question"><span>YOUR DOUBT</span><b>{item.question}</b></div><div className="answer-head"><div className="ai-avatar">{icon}</div><div><b>Nova's explanation</b><small>Based on this lesson</small></div></div><AiMarkdown content={item.answer}/></div>)}<div className="lesson-doubt-composer"><textarea value={lessonDoubt} onChange={e=>setLessonDoubt(e.target.value)} rows="3" aria-label="Type your doubt about this lesson" placeholder="Type your doubt here — e.g. “Why does the loop stop at n-1 instead of n?”"/><button className="primary" onClick={askTeacherLessonDoubt} disabled={lessonDoubtLoading||!lessonDoubt.trim()}>{lessonDoubtLoading?'Clearing doubt…':'Ask'} <Send size={14}/></button></div><small className="lesson-doubt-context">{lessonContext.topic||'Current lesson'}</small>{lessonDoubtError&&<div className="error-banner">{lessonDoubtError}</div>}</section>}</div>}
+ return <div className="ai-workspace"><aside className="ai-composer"><label>TOPIC</label><input value={topic} onChange={e=>setTopic(e.target.value)} placeholder="e.g. Java inheritance"/><textarea value={message} onChange={e=>setMessage(e.target.value)} rows="9" aria-label="Message to Nova" placeholder="Ask Nova to teach you, explain a concept, or test you…"/><button className="primary full" onClick={ask} disabled={loading}>{loading?'Thinking…':'Ask Nova'} <Send size={14}/></button><small className="ai-composer-hint">Nova teaches at your level, then checks your understanding.</small></aside><section ref={answerBoxRef} className={"ai-transcript ai-teacher-answer-box "+(task==='TUTOR'?'is-teacher':'')} aria-live="polite"><div className="ai-transcript-head"><div className="ai-avatar">{icon}</div><div><b>{title}</b><small>Teaching → check → feedback</small></div>{Boolean(answer||loading||askError||streamTruncated||streamInterrupted)&&<button type="button" className="ai-clear-action" onClick={handleClearTeacher} title="Clear response" aria-label="Clear response"><RotateCcw size={12}/> Clear</button>}<span className="ai-live-dot" aria-hidden="true"/></div>{askError&&<div className="error-banner ai-teacher-error" role="alert"><span><b>Nova couldn't finish this answer.</b> {askError} Your previous teaching content is safe.</span><button className="secondary compact" onClick={()=>{const r=lastAskRef.current;if(r)ask(r.message,r.topic,r.contextKey)}}>Try again</button></div>}{loading&&!answer&&<div className="ai-teacher-thinking"><span className="nova-thinking-dots" aria-hidden="true"><i/><i/><i/></span>Nova is thinking…</div>}{answer?<div className="ai-transcript-body"><div className="ai-turn ai-turn-teacher"><div ref={responseRef} className="answer ai-teacher-response"><AiMarkdown content={teacherAnswerBody}/></div></div>{streamTruncated&&<div className="ai-stream-status-banner is-truncated" role="status"><span><b>Response reached length limit.</b> Click continue to receive the next part of this lesson seamlessly.</span><button type="button" className="primary compact" onClick={continueGeneration} disabled={loading}><PlayCircle size={14}/> Continue lesson</button></div>}{streamInterrupted&&<div className="ai-stream-status-banner is-interrupted" role="alert"><span><b>Stream interrupted.</b> Partial response preserved. Click below to continue or retry.</span><div className="banner-actions"><button type="button" className="secondary compact" onClick={continueGeneration} disabled={loading}>Continue from here</button><button type="button" className="secondary compact" onClick={()=>{const r=lastAskRef.current;if(r)ask(r.message,r.topic,r.contextKey)}} disabled={loading}>Restart</button></div></div>}{teacherMiniQuestion&&<div className="teacher-mini-question"><span>Mini question for you</span><AiMarkdown content={teacherMiniQuestion}/></div>}{answerSubmitted&&teacherMiniQuestion&&<div className="teacher-feedback teacher-submitted"><b>✓ Answer submitted</b><div><AiMarkdown content={feedback||'Your teacher has already evaluated this response.'}/></div></div>}{teacherMiniQuestion&&<div className="teacher-check"><div className="teacher-check-head"><b>Your turn</b><small>Answer above to continue the lesson.</small></div><textarea value={studentAnswer} onChange={e=>setStudentAnswer(e.target.value)} rows="5" placeholder="Write your answer here…"/><button className="primary" onClick={submitStudentAnswer} disabled={checking||!studentAnswer.trim()}>{checking?'Checking your answer…':'Reply to teacher'} <CheckCircle2 size={15}/></button></div>}</div>:<div className="empty ai-empty-motion"><LottiePlayer src={lottieLogoUrl} className="ai-empty-lottie" ariaLabel="Nova thinking"/><b>Your lesson appears here</b><span>Ask a focused question and Nova will teach you, then check your understanding.</span></div>}</section>{task==='TUTOR'&&<section className="ai-lesson-doubt" aria-label="Ask a doubt about this lesson"><div className="lesson-doubt-head"><div><span className="eyebrow">LESSON DOUBT</span><h4>Still stuck on this lesson?</h4><p>Each answer stays in its own section below; ask another doubt anytime.</p></div></div>{lessonDoubtHistory.map((item,index)=><div className="lesson-doubt-answer" key={index}><div className="lesson-doubt-question"><span>YOUR DOUBT</span><b>{item.question}</b></div><div className="answer-head"><div className="ai-avatar">{icon}</div><div><b>Nova's explanation</b><small>Based on this lesson</small></div></div><AiMarkdown content={item.answer}/></div>)}<div className="lesson-doubt-composer"><textarea value={lessonDoubt} onChange={e=>setLessonDoubt(e.target.value)} rows="3" aria-label="Type your doubt about this lesson" placeholder="Type your doubt here — e.g. “Why does the loop stop at n-1 instead of n?”"/><button className="primary" onClick={askTeacherLessonDoubt} disabled={lessonDoubtLoading||!lessonDoubt.trim()}>{lessonDoubtLoading?'Clearing doubt…':'Ask'} <Send size={14}/></button></div><small className="lesson-doubt-context">{lessonContext.topic||'Current lesson'}</small>{lessonDoubtError&&<div className="error-banner">{lessonDoubtError}</div>}</section>}</div>}
 
 function LearningStudio({user,initialTab=null,routeTab=null,onRouteTab}){
  const [tab,setTab]=useState(()=>{
@@ -2651,6 +2709,9 @@ function KnowledgeHub({user}){
 
 function AdaptiveMentor({user,courses}){
  const [courseId,setCourseId]=useState(''); const [lessonId,setLessonId]=useState(''); const [lessons,setLessons]=useState([]); const [mode,setMode]=useState('TEACH'); const [message,setMessage]=useState(''); const [answer,setAnswer]=useState(''); const [loading,setLoading]=useState(false); const [state,setState]=useState(null); const [recommended,setRecommended]=useState(null);
+ const [mentorTruncated,setMentorTruncated]=useState(false);
+ const [mentorInterrupted,setMentorInterrupted]=useState(false);
+ const [mentorError,setMentorError]=useState('');
  const requestSeqRef=useRef(0); const abortRef=useRef(null);
  useModulePersistence(user?.id,'lesson',{courseId,lessonId,mode,message,answer,state,recommended},{courseId:x=>setCourseId(x||''),lessonId:x=>setLessonId(x||''),mode:x=>setMode(x||'TEACH'),message:x=>setMessage(x||''),answer:x=>setAnswer(x||''),state:x=>setState(x||null),recommended:x=>setRecommended(x||null)});
  useEffect(()=>{api('/mentor/state/'+user.id).then(r=>{if(r)setState(prev=>prev||r)}).catch(()=>{});api('/learning/next/'+user.id).then(r=>{setRecommended(prev=>prev||r);if(!courseId&&r?.course?.id)setCourseId(String(r.course.id));}).catch(()=>{});},[user.id]);
@@ -2677,15 +2738,18 @@ function AdaptiveMentor({user,courses}){
   const ac=new AbortController();
   abortRef.current=ac;
   setLoading(true);
+  setMentorTruncated(false);
+  setMentorInterrupted(false);
+  setMentorError('');
 
   // Supply previous answer context so both doubts and mini-quiz answers are accurately processed
   const contextualMessage=answer?`[PREVIOUS MENTOR QUESTION / EXPLANATION]:\n${answer.slice(-1400)}\n\n[STUDENT ANSWER OR FOLLOW-UP DOUBT]:\n${effectiveMsg}`:effectiveMsg;
 
   let streamAccum='';
   try{
-   // Fast SSE streaming path — response begins appearing in ~1-2s
+   let mentorSummary=null;
    try{
-    await apiStream('/mentor/ask/stream',{
+    mentorSummary=await apiStream('/mentor/ask/stream',{
      method:'POST',
      signal:ac.signal,
      body:JSON.stringify({userId:user.id,courseId:Number(courseId),lessonId:Number(effectiveLessonId),mode:activeMode,message:contextualMessage,level:state?.recommendedLevel||'beginner',language:getAiLanguage()})
@@ -2696,36 +2760,87 @@ function AdaptiveMentor({user,courses}){
     });
    }catch(streamErr){
     if(streamErr?.name==='AbortError'||requestId!==requestSeqRef.current)return;
-    // Fall back to complete JSON response if streaming was interrupted
-    if(!streamAccum.trim()||streamAccum.length<300){
-     const r=await api('/mentor/ask',{
-      method:'POST',
-      signal:ac.signal,
-      body:JSON.stringify({userId:user.id,courseId:Number(courseId),lessonId:Number(effectiveLessonId),mode:activeMode,message:contextualMessage,level:state?.recommendedLevel||'beginner',language:getAiLanguage()})
-     });
-     streamAccum=r.answer||streamAccum||'No response.';
+    if(!streamAccum.trim()){
+     try{
+      const r=await api('/mentor/ask',{
+       method:'POST',
+       signal:ac.signal,
+       body:JSON.stringify({userId:user.id,courseId:Number(courseId),lessonId:Number(effectiveLessonId),mode:activeMode,message:contextualMessage,level:state?.recommendedLevel||'beginner',language:getAiLanguage()})
+      });
+      streamAccum=r.answer||'No response.';
+     }catch(fallbackErr){
+      throw fallbackErr;
+     }
+    }else{
+     if(requestId===requestSeqRef.current){
+      setMentorInterrupted(true);
+      setMentorError(streamErr?.message||'The AI stream ended before completion. Your partial answer is preserved.');
+     }
+     return;
     }
    }
    if(requestId!==requestSeqRef.current)return;
+   if(mentorSummary?.truncated){
+    setMentorTruncated(true);
+   }
    setAnswer(streamAccum||'Mentor response complete.');
   }catch(e){
    if(e?.name==='AbortError')return;
    if(requestId===requestSeqRef.current){
-    setAnswer(e.message||'Mentor request failed. Please try again in a moment.');
+    setMentorError(e.message||'Mentor request failed. Please try again in a moment.');
    }
   }finally{
    if(requestId===requestSeqRef.current)setLoading(false);
   }
  }
 
+ const continueMentorGeneration = async () => {
+  let effectiveLessonId=lessonId||(lessons.length?String(lessons[0].id):'');
+  if(!answer||loading||!effectiveLessonId)return;
+  const requestId=++requestSeqRef.current;
+  try{abortRef.current?.abort()}catch{}
+  const ac=new AbortController();
+  abortRef.current=ac;
+  setLoading(true);
+  setMentorError('');
+  setMentorTruncated(false);
+  setMentorInterrupted(false);
+  let accum=answer;
+  const contMsg=`CONTINUATION REQUEST: The previous answer reached its length limit. Continue the explanation seamlessly from the exact end of the text below. Do NOT repeat previous sentences:\n\n[LAST PART OF PREVIOUS ANSWER]:\n${answer.slice(-1200)}`;
+  try{
+   const summary=await apiStream('/mentor/ask/stream',{
+    method:'POST',
+    signal:ac.signal,
+    body:JSON.stringify({userId:user.id,courseId:Number(courseId),lessonId:Number(effectiveLessonId),mode:mode,message:contMsg,level:state?.recommendedLevel||'beginner',language:getAiLanguage()})
+   },chunk=>{
+    if(requestId!==requestSeqRef.current)return;
+    accum+=chunk;
+    setAnswer(accum);
+   });
+   if(requestId!==requestSeqRef.current)return;
+   if(summary?.truncated){
+    setMentorTruncated(true);
+   }
+  }catch(err){
+   if(err?.name==='AbortError'||requestId!==requestSeqRef.current)return;
+   setMentorInterrupted(true);
+   setMentorError(err?.message||'Mentor continuation was interrupted. Click to retry.');
+  }finally{
+   if(requestId===requestSeqRef.current)setLoading(false);
+  }
+ };
+
  const handleClearMentor=()=>{
   try{abortRef.current?.abort()}catch{}
   if(typeof window!=='undefined'&&window.speechSynthesis)window.speechSynthesis.cancel();
   setAnswer('');
   setMessage('');
+  setMentorTruncated(false);
+  setMentorInterrupted(false);
+  setMentorError('');
  };
  const lesson=lessons.find(x=>String(x.id)===String(lessonId));
- return <><div className="page-title"><span className="eyebrow">ADAPTIVE LEARNING ENGINE</span><h1>Meet your <span>AI Mentor.</span></h1><p>Nova adapts explanations, examples and hints to your progress instead of teaching everyone the same way.</p></div><div className="mentor-layout"><div className="mentor-control"><div className="mentor-badge"><div className="title-icon"><GraduationCap/></div><div><b>Adaptive mode</b><small>{state?`${state.recommendedLevel} • ${Math.round(state.averageProgress)}% average progress`:'Reading your learning state…'}</small></div></div><label>COURSE</label><select aria-label="Course" value={courseId} onChange={e=>{setCourseId(e.target.value);setLessonId('')}}><option value="">Choose a course</option>{courses.map(c=><option key={c.id} value={c.id}>{c.title}</option>)}</select><label>LESSON</label><select aria-label="Lesson" value={lessonId} onChange={e=>setLessonId(e.target.value)} disabled={!lessons.length}><option value="">Choose a lesson</option>{lessons.map(l=><option key={l.id} value={l.id}>{l.orderIndex}. {l.title}</option>)}</select><label>TUTOR MODE</label><div className="mode-grid">{[['TEACH','Teach','Step-by-step'],['SIMPLIFY','Simplify','Easy analogy'],['EXAMPLE','Example','Practical demo'],['HINT','Hint','Guided help'],['CHECK','Check','Test me']].map(([id,t,d])=><button key={id} className={mode===id?'mode active':'mode'} onClick={()=>setMode(id)}><Lightbulb size={15}/><b>{t}</b><small>{d}</small></button>)}</div><button className="primary full mentor-start-btn" onClick={()=>ask(null,mode)} disabled={loading||!lessonId}><PlayCircle size={15}/> {answer?'Restart lesson':'Start teaching session'}</button><button className="text-btn" onClick={()=>{setAnswer('');setMessage('');setRecommended(null);api('/learning/next/'+user.id).then(setRecommended).catch(()=>{})}}><RefreshCw size={14}/> Refresh recommendation</button></div><div className="mentor-chat"><div className="mentor-context"><div className="ai-avatar"><Brain size={18}/></div><div><b>{lesson?.title||'Choose a lesson'}</b><small>{recommended?.reason||'Select a course and lesson to begin.'}</small></div>{lessonId&&!answer&&<button className="primary compact" onClick={()=>ask(null,mode)} disabled={loading}><PlayCircle size={14}/> Start</button>}{Boolean(answer||loading)&&<button type="button" className="ai-clear-action" onClick={handleClearMentor} title="Clear response" aria-label="Clear response"><RotateCcw size={12}/> Clear</button>}</div>{recommended?.available&&<div className="recommend"><Sparkles size={15}/><span><b>Next best step:</b> {recommended.lesson?.title||'Continue learning'}</span></div>}<div className="mentor-recovery"><div><span className="eyebrow">WEAKNESS RECOVERY</span><b>{state?.weakestSubject||state?.weakArea||'Your next skill gap'}</b><small>Use a short loop: review → practice → explain → revisit. Nova keeps the session focused instead of sending you back to the full syllabus.</small></div><button className="secondary" onClick={()=>{setMode('SIMPLIFY');ask('Explain this lesson simply using an everyday analogy and one practical demo.','SIMPLIFY')}}>Start recovery <ChevronRight size={13}/></button></div><div className="mentor-answer">{answer?<div className="answer"><AiMarkdown content={answer}/></div>:<div className="empty"><GraduationCap size={48}/><b>Your mentor is ready</b><span>Pick a lesson and click Start session, or ask a question below.</span></div>}</div><div className="mentor-input"><textarea rows="4" value={message} onChange={e=>setMessage(e.target.value)} placeholder="Ask a doubt or answer the mentor's check question above… (Enter to send, Shift+Enter for newline)" onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();if(message.trim()||!answer)ask()}}}/><div><small>Enter to send · Shift+Enter for newline</small><button className="primary" onClick={()=>ask()} disabled={loading||!lessonId||(!message.trim()&&Boolean(answer))}>{loading?'Thinking…':'Send to mentor'} <Send size={15}/></button></div></div></div></div></>
+ return <><div className="page-title"><span className="eyebrow">ADAPTIVE LEARNING ENGINE</span><h1>Meet your <span>AI Mentor.</span></h1><p>Nova adapts explanations, examples and hints to your progress instead of teaching everyone the same way.</p></div><div className="mentor-layout"><div className="mentor-control"><div className="mentor-badge"><div className="title-icon"><GraduationCap/></div><div><b>Adaptive mode</b><small>{state?`${state.recommendedLevel} • ${Math.round(state.averageProgress)}% average progress`:'Reading your learning state…'}</small></div></div><label>COURSE</label><select aria-label="Course" value={courseId} onChange={e=>{setCourseId(e.target.value);setLessonId('')}}><option value="">Choose a course</option>{courses.map(c=><option key={c.id} value={c.id}>{c.title}</option>)}</select><label>LESSON</label><select aria-label="Lesson" value={lessonId} onChange={e=>setLessonId(e.target.value)} disabled={!lessons.length}><option value="">Choose a lesson</option>{lessons.map(l=><option key={l.id} value={l.id}>{l.orderIndex}. {l.title}</option>)}</select><label>TUTOR MODE</label><div className="mode-grid">{[['TEACH','Teach','Step-by-step'],['SIMPLIFY','Simplify','Easy analogy'],['EXAMPLE','Example','Practical demo'],['HINT','Hint','Guided help'],['CHECK','Check','Test me']].map(([id,t,d])=><button key={id} className={mode===id?'mode active':'mode'} onClick={()=>setMode(id)}><Lightbulb size={15}/><b>{t}</b><small>{d}</small></button>)}</div><button className="primary full mentor-start-btn" onClick={()=>ask(null,mode)} disabled={loading||!lessonId}><PlayCircle size={15}/> {answer?'Restart lesson':'Start teaching session'}</button><button className="text-btn" onClick={()=>{setAnswer('');setMessage('');setRecommended(null);api('/learning/next/'+user.id).then(setRecommended).catch(()=>{})}}><RefreshCw size={14}/> Refresh recommendation</button></div><div className="mentor-chat"><div className="mentor-context"><div className="ai-avatar"><Brain size={18}/></div><div><b>{lesson?.title||'Choose a lesson'}</b><small>{recommended?.reason||'Select a course and lesson to begin.'}</small></div>{lessonId&&!answer&&<button className="primary compact" onClick={()=>ask(null,mode)} disabled={loading}><PlayCircle size={14}/> Start</button>}{Boolean(answer||loading)&&<button type="button" className="ai-clear-action" onClick={handleClearMentor} title="Clear response" aria-label="Clear response"><RotateCcw size={12}/> Clear</button>}</div>{recommended?.available&&<div className="recommend"><Sparkles size={15}/><span><b>Next best step:</b> {recommended.lesson?.title||'Continue learning'}</span></div>}<div className="mentor-recovery"><div><span className="eyebrow">WEAKNESS RECOVERY</span><b>{state?.weakestSubject||state?.weakArea||'Your next skill gap'}</b><small>Use a short loop: review → practice → explain → revisit. Nova keeps the session focused instead of sending you back to the full syllabus.</small></div><button className="secondary" onClick={()=>{setMode('SIMPLIFY');ask('Explain this lesson simply using an everyday analogy and one practical demo.','SIMPLIFY')}}>Start recovery <ChevronRight size={13}/></button></div><div className="mentor-answer">{mentorError&&<div className="error-banner ai-teacher-error" role="alert"><span><b>Mentor request interrupted.</b> {mentorError}</span><button className="secondary compact" onClick={()=>ask(null,mode)}>Try again</button></div>}{answer?<div className="answer"><AiMarkdown content={answer}/></div>:<div className="empty"><GraduationCap size={48}/><b>Your mentor is ready</b><span>Pick a lesson and click Start session, or ask a question below.</span></div>}{mentorTruncated&&<div className="ai-stream-status-banner is-truncated" role="status"><span><b>Mentor response reached length limit.</b> Click continue to receive the next part.</span><button type="button" className="primary compact" onClick={continueMentorGeneration} disabled={loading}><PlayCircle size={14}/> Continue response</button></div>}{mentorInterrupted&&<div className="ai-stream-status-banner is-interrupted" role="alert"><span><b>Stream interrupted.</b> Partial response preserved.</span><button type="button" className="secondary compact" onClick={continueMentorGeneration} disabled={loading}>Continue from here</button></div>}</div><div className="mentor-input"><textarea rows="4" value={message} onChange={e=>setMessage(e.target.value)} placeholder="Ask a doubt or answer the mentor's check question above… (Enter to send, Shift+Enter for newline)" onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();if(message.trim()||!answer)ask()}}}/><div><small>Enter to send · Shift+Enter for newline</small><button className="primary" onClick={()=>ask()} disabled={loading||!lessonId||(!message.trim()&&Boolean(answer))}>{loading?'Thinking…':'Send to mentor'} <Send size={15}/></button></div></div></div></div></>
 }
 
 function StudyPlanner({user}){

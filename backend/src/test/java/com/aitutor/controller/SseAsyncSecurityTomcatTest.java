@@ -55,13 +55,14 @@ class SseAsyncSecurityTomcatTest {
                 }
 
                 @Override
-                public void stream(AiRequest r, Consumer<String> onChunk, StreamCancellation cancellation) throws Exception {
+                public com.aitutor.ai.StreamCompletion stream(AiRequest r, Consumer<String> onChunk, StreamCancellation cancellation) throws Exception {
                     if (r == null || r.task() == null) {
                         throw new ApiException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_AI_REQUEST", "AI task is required.");
                     }
                     onChunk.accept("Hello ");
                     Thread.sleep(25);
                     onChunk.accept("from real Tomcat!");
+                    return new com.aitutor.ai.StreamCompletion(com.aitutor.ai.StreamCompletion.COMPLETED, "STOP", 2, 24, 25);
                 }
             };
         }

@@ -20,6 +20,7 @@ public class QuizController {
     private static final int QUIZ_SIZE = 20;
     private final QuizQuestionRepository repo; private final CourseRepository courses; private final UserRepository users; private final QuizAttemptRepository attempts; private final LearningEventRepository events; private final com.aitutor.intelligence.LearningEventService eventService; private final AuthenticatedUser authenticatedUser;
     public QuizController(QuizQuestionRepository repo, CourseRepository courses, UserRepository users, QuizAttemptRepository attempts, LearningEventRepository events, com.aitutor.intelligence.LearningEventService eventService, AuthenticatedUser authenticatedUser){this.repo=repo;this.courses=courses;this.users=users;this.attempts=attempts;this.events=events;this.eventService=eventService;this.authenticatedUser=authenticatedUser;}
+    public record Question(Long id, String question, List<String> options, String difficulty){}
     public record QuestionReview(Long id, String question, List<String> options, int selectedOption, int correctOption, boolean correct, String explanation, String difficulty, String topic){}
     record Answer(Long questionId,int selectedOption){}
     record Submit(Long userId,List<Answer> answers){}

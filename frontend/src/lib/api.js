@@ -257,6 +257,15 @@ async function apiStream(path,opt={},onChunk,_retry=false){
   const decoder=new TextDecoder();
   let buffer='';
   let sawDone=false;
+  const streamSummary={
+    completed:false,
+    truncated:false,
+    safetyRefusal:false,
+    status:'UNKNOWN',
+    reason:'',
+    chunks:0,
+    totalChars:0
+  };
   const consume=(event)=>{
     const lines=event.split(/\r?\n/);
     let eventName='message';
@@ -270,9 +279,61 @@ async function apiStream(path,opt={},onChunk,_retry=false){
       }
     }
     const data=dataLines.join('\n');
-    if(eventName==='done'){sawDone=true;return}
+    if(eventName==='done'){
+      sawDone=true;
+      streamSummary.completed=true;
+      streamSummary.status='COMPLETED';
+      try{
+        const p=JSON.parse(data);
+        if(p.status)streamSummary.status=p.status;
+        if(p.finishReason)streamSummary.reason=p.finishReason;
+        if(p.chunks)streamSummary.chunks=p.chunks;
+        if(p.totalChars)streamSummary.totalChars=p.totalChars;
+      }catch{}
+      return;
+    }
+    if(eventName==='truncated'){
+      sawDone=true;
+      streamSummary.completed=false;
+      streamSummary.truncated=true;
+      streamSummary.status='TRUNCATED';
+      streamSummary.reason='MAX_TOKENS';
+      try{
+        const p=JSON.parse(data);
+        if(p.status)streamSummary.status=p.status;
+        if(p.finishReason)streamSummary.reason=p.finishReason;
+      }catch{}
+      return;
+    }
+    if(eventName==='safety'){
+      sawDone=true;
+      streamSummary.completed=false;
+      streamSummary.safetyRefusal=true;
+      streamSummary.status='SAFETY_REFUSAL';
+      let msg='The AI response was blocked by content safety guidelines.';
+      try{
+        const p=JSON.parse(data);
+        if(p.message)msg=p.message;
+      }catch{}
+      const err=new Error(msg);
+      err.safetyRefusal=true;
+      err.status=400;
+      throw err;
+    }
     if(!data)return;
-    if(eventName==='error'||data==='AI request failed. Please try again.')throw new Error(data);
+    if(eventName==='error'||data==='AI request failed. Please try again.'){
+      let msg=data;
+      try{
+        const p=JSON.parse(data);
+        msg=p.message||msg;
+      }catch{}
+      const err=new Error(msg);
+      err.streamError=true;
+      err.streamSummary=streamSummary;
+      throw err;
+    }
+    streamSummary.chunks++;
+    streamSummary.totalChars+=data.length;
     onChunk(data);
   };
   try{
@@ -290,7 +351,13 @@ async function apiStream(path,opt={},onChunk,_retry=false){
   }finally{
    try{await reader.cancel();}catch{}
   }
-  if(!sawDone)throw new Error('The AI stream ended before completion. You can retry to continue.');
+  if(!sawDone){
+    const err=new Error('The AI stream ended before completion. You can retry to continue.');
+    err.interrupted=true;
+    err.streamSummary=streamSummary;
+    throw err;
+  }
+  return streamSummary;
  }catch(e){
   if(e.name==='AbortError'){
    if(externalSignal?.aborted&&!timedOut)throw e;

@@ -43,9 +43,8 @@ public class GeminiProvider implements AiProvider {
         this.fallbackModel = (fallbackModel == null || fallbackModel.isBlank())
                 ? "gemini-3.1-flash-lite" : fallbackModel.trim();
         this.maxAttempts = Math.max(1, Math.min(maxAttempts, 2));
-        // AI Teacher is optimized for fast first response. Keep a bounded ceiling so
-        // a large environment value cannot turn a normal lesson into a long generation.
-        this.maxOutputTokens = Math.max(512, Math.min(maxOutputTokens, 16000));
+        // AI Teacher is optimized for fast first response while allowing full depth.
+        this.maxOutputTokens = Math.max(512, Math.min(maxOutputTokens, 32768));
         this.objectMapper = objectMapper;
         this.streamingClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
@@ -98,11 +97,11 @@ public class GeminiProvider implements AiProvider {
      * If the first configured model fails before any content arrives, the
      * fallback model is attempted once.
      */
-    public void stream(AiRequest r, Consumer<String> onChunk) throws Exception {
-        stream(r, onChunk, null);
+    public StreamCompletion stream(AiRequest r, Consumer<String> onChunk) throws Exception {
+        return stream(r, onChunk, null);
     }
 
-    public void stream(AiRequest r, Consumer<String> onChunk, StreamCancellation cancellation) throws Exception {
+    public StreamCompletion stream(AiRequest r, Consumer<String> onChunk, StreamCancellation cancellation) throws Exception {
         if (!available()) throw new IllegalStateException("Gemini API key missing");
         if (cancellation != null && cancellation.isCancelled()) {
             throw new IllegalStateException("Client disconnected");
@@ -115,11 +114,10 @@ public class GeminiProvider implements AiProvider {
             }
             AtomicBoolean emitted = new AtomicBoolean(false);
             try {
-                streamModel(modelName, prompt, r.task(), chunk -> {
+                return streamModel(modelName, prompt, r.task(), chunk -> {
                     emitted.set(true);
                     onChunk.accept(chunk);
                 }, cancellation);
-                return;
             } catch (Exception e) {
                 if (cancellation != null && cancellation.isCancelled()) {
                     throw new IllegalStateException("Client disconnected");
@@ -134,7 +132,7 @@ public class GeminiProvider implements AiProvider {
         throw last == null ? new IllegalStateException("Gemini streaming request failed") : last;
     }
 
-    private void streamModel(String modelName, String prompt, AiTask task, Consumer<String> onChunk,
+    private StreamCompletion streamModel(String modelName, String prompt, AiTask task, Consumer<String> onChunk,
                              StreamCancellation cancellation) throws Exception {
         Map<String, Object> body = buildBody(prompt, task, false);
         String json = objectMapper.writeValueAsString(body);
@@ -152,6 +150,7 @@ public class GeminiProvider implements AiProvider {
                 .POST(HttpRequest.BodyPublishers.ofString(json, StandardCharsets.UTF_8))
                 .build();
 
+        long startNanos = System.nanoTime();
         HttpResponse<java.io.InputStream> response = streamingClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             String error;
@@ -164,7 +163,8 @@ public class GeminiProvider implements AiProvider {
             throw new IllegalStateException("Gemini HTTP " + response.statusCode() + ": " + safeMessage(error));
         }
 
-        boolean emitted = false;
+        int chunkCount = 0;
+        long totalChars = 0;
         String finishReason = "";
         long deadlineNanos = System.nanoTime() + Duration.ofSeconds(180).toNanos();
         java.io.InputStream rawBody = response.body();
@@ -173,7 +173,8 @@ public class GeminiProvider implements AiProvider {
             String line;
             while ((line = reader.readLine()) != null) {
                 if (cancellation != null && cancellation.isCancelled()) {
-                    throw new IllegalStateException("Client disconnected");
+                    long durationMs = (System.nanoTime() - startNanos) / 1_000_000;
+                    return new StreamCompletion(StreamCompletion.CANCELLED, "CANCELLED", chunkCount, totalChars, durationMs);
                 }
                 if (System.nanoTime() > deadlineNanos) {
                     throw new IllegalStateException("Gemini stream exceeded maximum duration");
@@ -190,7 +191,8 @@ public class GeminiProvider implements AiProvider {
                 for (JsonNode part : parts) {
                     String text = part.path("text").asText("");
                     if (!text.isEmpty()) {
-                        emitted = true;
+                        chunkCount++;
+                        totalChars += text.length();
                         onChunk.accept(text);
                     }
                 }
@@ -198,12 +200,22 @@ public class GeminiProvider implements AiProvider {
         } finally {
             if (cancellation != null) cancellation.attachStream(null);
         }
-        if (!emitted) throw new IllegalStateException("Gemini returned no text");
-        // Surface provider-side truncation instead of presenting a partial answer
-        // as if it were complete. The client already preserves streamed chunks.
-        if (Set.of("MAX_TOKENS", "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII").contains(finishReason)) {
-            throw new IllegalStateException("Gemini stopped before completing the answer (" + finishReason + ")");
+
+        long durationMs = (System.nanoTime() - startNanos) / 1_000_000;
+        if (chunkCount == 0) {
+            if ("SAFETY".equalsIgnoreCase(finishReason) || "BLOCKLIST".equalsIgnoreCase(finishReason)) {
+                throw new IllegalStateException("Gemini refused the request due to content safety policy (" + finishReason + ")");
+            }
+            throw new IllegalStateException("Gemini returned no text");
         }
+
+        if ("MAX_TOKENS".equalsIgnoreCase(finishReason)) {
+            return new StreamCompletion(StreamCompletion.TRUNCATED, "MAX_TOKENS", chunkCount, totalChars, durationMs);
+        }
+        if (Set.of("SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII").contains(finishReason)) {
+            return new StreamCompletion(StreamCompletion.SAFETY_REFUSAL, finishReason, chunkCount, totalChars, durationMs);
+        }
+        return new StreamCompletion(StreamCompletion.COMPLETED, finishReason.isBlank() ? "STOP" : finishReason, chunkCount, totalChars, durationMs);
     }
 
     private List<String> buildModelChain() {
@@ -267,12 +279,12 @@ public class GeminiProvider implements AiProvider {
 
     private Map<String, Object> buildBody(String prompt, AiTask task, boolean compact) {
         int taskOutputTokens = switch (task) {
-            case TUTOR, ADAPTIVE_TUTOR -> Math.min(maxOutputTokens, 3500);
-            case CODE, CODING -> Math.min(maxOutputTokens, 3500);
+            case TUTOR, ADAPTIVE_TUTOR -> Math.min(maxOutputTokens, 8192);
+            case CODE, CODING -> Math.min(maxOutputTokens, 8192);
             case STUDY_PLAN, EXAM_STRATEGY -> Math.min(maxOutputTokens, 8192);
-            case SUMMARIZE -> Math.min(maxOutputTokens, 3500);
-            case FLASHCARDS, QUIZ -> Math.min(maxOutputTokens, 2400);
-            default -> Math.min(maxOutputTokens, 3000);
+            case SUMMARIZE -> Math.min(maxOutputTokens, 4096);
+            case FLASHCARDS, QUIZ -> Math.min(maxOutputTokens, 4096);
+            default -> Math.min(maxOutputTokens, 4096);
         };
         Map<String, Object> generationConfig = new LinkedHashMap<>();
         generationConfig.put("maxOutputTokens", taskOutputTokens);

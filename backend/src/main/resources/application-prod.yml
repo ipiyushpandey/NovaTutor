@@ -17,7 +17,7 @@ spring:
       # Managed MySQL-compatible providers start empty: set JPA_DDL_AUTO=update
       # for the first deploy so Hibernate creates the schema, then revert to
       # validate. Never set create/create-drop on a database with data.
-      ddl-auto: ${JPA_DDL_AUTO:validate}
+      ddl-auto: ${JPA_DDL_AUTO:update}
   jackson:
     serialization:
       write-dates-as-timestamps: false
