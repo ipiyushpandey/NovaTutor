@@ -287,37 +287,196 @@ function cleanSpokenText(raw){
   .replace(/`([^`]+)`/g,'$1')
   .replace(/\[([^\]]+)\]\([^\)]+\)/g,'$1')
   .replace(/https?:\/\/\S+/gi,'')
+  .replace(/O\(\s*1\s*\)/gi,'O of 1')
+  .replace(/O\(\s*n\s*\)/gi,'O of n')
+  .replace(/O\(\s*log\s*n\s*\)/gi,'O of log n')
+  .replace(/O\(\s*n\s*log\s*n\s*\)/gi,'O of n log n')
+  .replace(/O\(\s*n\^?2\s*\)/gi,'O of n squared')
+  .replace(/===?/g,' equals ')
+  .replace(/!==?/g,' does not equal ')
+  .replace(/<=/g,' less than or equal to ')
+  .replace(/>=/g,' greater than or equal to ')
+  .replace(/&&/g,' and ')
+  .replace(/\|\|/g,' or ')
+  .replace(/->|=>/g,' arrow ')
   .replace(/[*_#~>]/g,'')
   .replace(/\{[^{}]*\}/g,'')
   .replace(/\s+/g,' ')
   .trim();
 }
+
+function chunkTextForSpeech(text){
+ const clean=cleanSpokenText(text);
+ if(!clean)return [];
+ const sentences=clean.match(/[^.!?\n]+[.!?\n]+|[^.!?\n]+$/g)||[clean];
+ const chunks=[];
+ let current='';
+ for(const s of sentences){
+  const trimmed=s.trim();
+  if(!trimmed)continue;
+  if(current&&(current.length+trimmed.length+1<=220)){
+   current+=' '+trimmed;
+  }else{
+   if(current)chunks.push(current);
+   if(trimmed.length>240){
+    const clauses=trimmed.match(/[^,;:]+[,;:]+|[^,;:]+$/g)||[trimmed];
+    let sub='';
+    for(const c of clauses){
+     const cTrim=c.trim();
+     if(!cTrim)continue;
+     if(sub&&(sub.length+cTrim.length+1<=180)){
+      sub+=' '+cTrim;
+     }else{
+      if(sub)chunks.push(sub);
+      sub=cTrim;
+     }
+    }
+    if(sub)chunks.push(sub);
+    current='';
+   }else{
+    current=trimmed;
+   }
+  }
+ }
+ if(current)chunks.push(current);
+ return chunks;
+}
+
 const getBestNaturalVoice=(targetLang=getVoiceTutorLanguage())=>{
  if(typeof window==='undefined'||!window.speechSynthesis)return null;
  const voices=window.speechSynthesis.getVoices()||[];
  if(!voices.length)return null;
- const indianRegex=/(rishi|veena|neerja|swara|kavya|heera|prabhat|madhur|google\s*(?:en-in|hi-in|hindi)|india)/i;
  const targetNorm=String(targetLang||'en-IN').toLowerCase();
  const prefix=targetNorm.slice(0,2);
  const targetVoices=voices.filter(v=>String(v.lang||'').toLowerCase().startsWith(prefix));
- if(!targetVoices.length){
-  return voices.find(v=>String(v.lang||'').toLowerCase()===targetNorm)||voices.find(v=>v.default)||voices[0]||null;
- }
- if(targetNorm.includes('in')||prefix==='hi'){
-  const indianVoice=targetVoices.find(v=>indianRegex.test(v.name));
-  if(indianVoice)return indianVoice;
- }
+ const list=targetVoices.length?targetVoices:voices;
+
+ // Reject legacy robotic synthesizers
+ const roboticRegex=/(whisper|bells|organ|bad news|cellos|good news|hysterical|pipe organ|trinoids|zarvox|albert|fred|junior|ralph)/i;
+ const validVoices=list.filter(v=>!roboticRegex.test(v.name));
+ const pool=validVoices.length?validVoices:list;
+
+ const indianRegex=/(rishi|veena|neerja|swara|kavya|heera|prabhat|madhur|google\s*(?:en-in|hi-in|hindi)|india)/i;
+ const indianVoice=pool.find(v=>indianRegex.test(v.name));
+ if(indianVoice)return indianVoice;
+
  if(prefix==='en'){
-  const enNeuralRegex=/(google\s*(?:uk|us)\s*english|natural|neural|samantha|daniel|ava|karen|serena|jenny|victoria|rishi|swara)/i;
-  const enVoice=targetVoices.find(v=>enNeuralRegex.test(v.name));
+  const enNeuralRegex=/(google\s*(?:uk|us)\s*english|natural|neural|samantha|daniel|ava|karen|serena|jenny|victoria|rishi|swara|guy)/i;
+  const enVoice=pool.find(v=>enNeuralRegex.test(v.name));
   if(enVoice)return enVoice;
  }
- const langNeural=targetVoices.find(v=>/(natural|neural|premium|enhanced|google)/i.test(v.name));
- if(langNeural)return langNeural;
- const exact=targetVoices.find(v=>String(v.lang||'').toLowerCase()===targetNorm);
+
+ const neuralGeneral=pool.find(v=>/(natural|neural|premium|enhanced|google)/i.test(v.name));
+ if(neuralGeneral)return neuralGeneral;
+
+ const exact=pool.find(v=>String(v.lang||'').toLowerCase()===targetNorm);
  if(exact)return exact;
- return targetVoices[0]||null;
+
+ return pool[0]||null;
 };
+
+function playSpokenTextQueue(text,{lang,onStart,onEnd,onError,sessionRef,targetRate=0.96,targetPitch=1.01}={}){
+ if(typeof window==='undefined'||!window.speechSynthesis)return null;
+ const chunks=chunkTextForSpeech(text);
+ if(!chunks.length){
+  if(onEnd)onEnd();
+  return null;
+ }
+
+ const currentSession=sessionRef?sessionRef.current:1;
+ const targetLang=lang||getSpeechLanguage();
+ const voice=getBestNaturalVoice(targetLang);
+ let chunkIndex=0;
+ let keepAliveTimer=null;
+
+ const clearKeepAlive=()=>{
+  if(keepAliveTimer){
+   clearInterval(keepAliveTimer);
+   keepAliveTimer=null;
+  }
+ };
+
+ const playNext=()=>{
+  if(sessionRef&&sessionRef.current!==currentSession){
+   clearKeepAlive();
+   return;
+  }
+  if(chunkIndex>=chunks.length){
+   clearKeepAlive();
+   if(onEnd)onEnd();
+   return;
+  }
+  const textChunk=chunks[chunkIndex++];
+  const u=new SpeechSynthesisUtterance(textChunk);
+  u.lang=targetLang;
+  u.rate=0.98;
+  u.pitch=1.0;
+  u.volume=1;
+  if(voice)u.voice=voice;
+
+  u.onstart=()=>{
+   if(sessionRef&&sessionRef.current!==currentSession){
+    try{window.speechSynthesis.cancel()}catch{}
+    clearKeepAlive();
+    return;
+   }
+   if(chunkIndex===1&&onStart)onStart();
+  };
+
+  u.onend=()=>{
+   if(sessionRef&&sessionRef.current!==currentSession){
+    clearKeepAlive();
+    return;
+   }
+   setTimeout(playNext,40);
+  };
+
+  u.onerror=(err)=>{
+   if(sessionRef&&sessionRef.current!==currentSession){
+    clearKeepAlive();
+    return;
+   }
+   if(err?.error==='interrupted'||err?.error==='canceled'){
+    clearKeepAlive();
+    return;
+   }
+   if(chunkIndex<chunks.length){
+    setTimeout(playNext,40);
+   }else{
+    clearKeepAlive();
+    if(onEnd)onEnd();
+   }
+  };
+
+  try{
+   window.speechSynthesis.speak(u);
+  }catch{
+   clearKeepAlive();
+   if(onError)onError();
+  }
+ };
+
+ keepAliveTimer=setInterval(()=>{
+  if(sessionRef&&sessionRef.current!==currentSession){
+   clearKeepAlive();
+   return;
+  }
+  if(window.speechSynthesis&&window.speechSynthesis.speaking){
+   try{
+    window.speechSynthesis.pause();
+    window.speechSynthesis.resume();
+   }catch{}
+  }
+ },10000);
+
+ playNext();
+
+ return ()=>{
+  clearKeepAlive();
+  try{window.speechSynthesis.cancel()}catch{}
+ };
+}
+
 
 const tutorMemoryKey=(userId)=>`nova_tutor_memory_${userId||'guest'}`;
 const tutorMemoryFallback={topic:'',message:'',answer:'',feedback:'',studentAnswer:'',answerSubmitted:false,history:[],contextKey:''};
@@ -1234,47 +1393,98 @@ function PublicPage({page,onBack,signedIn=false}){
 }
 
 function LoginWakeUp({onRetry,onCancel,mode='login'}){
- const [status,setStatus]=useState('checking');
+ const [status,setStatus]=useState('waking');
+ const [elapsedSeconds,setElapsedSeconds]=useState(0);
+ const [attemptCount,setAttemptCount]=useState(1);
+
  useEffect(()=>{
   let cancelled=false;
   let pollTimer=null;
-  async function poll(){
+  const startTime=Date.now();
+
+  const secTimer=setInterval(()=>{
+   if(!cancelled){
+    setElapsedSeconds(Math.floor((Date.now()-startTime)/1000));
+   }
+  },1000);
+
+  async function checkHealth(){
+   if(cancelled)return;
    try{
-    const res=await api('/actuator/health/readiness',{timeoutMs:3500});
+    let healthy=false;
+    try{
+     const res=await api('/api/health',{timeoutMs:3500});
+     if(res?.status==='UP')healthy=true;
+    }catch{
+     try{
+      const res=await api('/actuator/health/readiness',{timeoutMs:3500});
+      if(res?.status==='UP')healthy=true;
+     }catch{}
+    }
+
     if(cancelled)return;
-    if(res?.status==='UP'){
+    if(healthy){
      setStatus('ready');
-     setTimeout(()=>{if(!cancelled)onRetry()},800);
+     clearInterval(secTimer);
+     setTimeout(()=>{if(!cancelled)onRetry()},600);
      return;
     }
    }catch{}
-   if(!cancelled)pollTimer=setTimeout(poll,4000);
+
+   if(!cancelled){
+    setAttemptCount(c=>c+1);
+    pollTimer=setTimeout(checkHealth,28000);
+   }
   }
-  pollTimer=setTimeout(poll,2500);
-  return()=>{cancelled=true;if(pollTimer)clearTimeout(pollTimer)};
+
+  pollTimer=setTimeout(checkHealth,1500);
+
+  return()=>{
+   cancelled=true;
+   clearInterval(secTimer);
+   if(pollTimer)clearTimeout(pollTimer);
+  };
  },[onRetry]);
 
+ const progressPct = status==='ready' ? 100 : Math.min(94, Math.round((1 - Math.exp(-elapsedSeconds / 50)) * 100));
+
  return <div className="auth-wakeup-box" role="status" aria-live="polite">
-  <div className="auth-wakeup-beacon">
-   <div className="auth-wakeup-n-mark" aria-hidden="true">
-    <svg width="34" height="34" viewBox="0 0 32 32" fill="none">
-     <rect x="1" y="1" width="30" height="30" rx="9" className="auth-wakeup-n-bg"/>
-     <path d="M9.4 23.2V10.6a1 1 0 0 1 1.72-.7L21.3 21.6" className="auth-wakeup-n-stroke" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"/>
-     <path d="M22.6 8.8v12.7" className="auth-wakeup-n-stroke" strokeWidth="2.6" strokeLinecap="round"/>
-     <circle cx="24.7" cy="6.9" r="2.2" className="auth-wakeup-n-dot"/>
-    </svg>
-    <div className="auth-wakeup-halo"/>
+  <div className="auth-wakeup-header">
+   <div className="auth-wakeup-beacon">
+    <div className="auth-wakeup-n-mark" aria-hidden="true">
+     <svg width="34" height="34" viewBox="0 0 32 32" fill="none">
+      <rect x="1" y="1" width="30" height="30" rx="9" className="auth-wakeup-n-bg"/>
+      <path d="M9.4 23.2V10.6a1 1 0 0 1 1.72-.7L21.3 21.6" className="auth-wakeup-n-stroke" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"/>
+      <path d="M22.6 8.8v12.7" className="auth-wakeup-n-stroke" strokeWidth="2.6" strokeLinecap="round"/>
+      <circle cx="24.7" cy="6.9" r="2.2" className="auth-wakeup-n-dot"/>
+     </svg>
+     <div className="auth-wakeup-halo"/>
+    </div>
+   </div>
+   <div>
+    <h4 className="auth-wakeup-title">{status==='ready'?'Backend is ready!':'Server is waking up (cold start)'}</h4>
+    <p className="auth-wakeup-desc">{status==='ready'?'Connection established. Completing your request…':'Render free-tier instances sleep when idle. Cold start typically takes 60–120s while the JVM and database start.'}</p>
    </div>
   </div>
-  <div className="auth-wakeup-content">
-   <h4 className="auth-wakeup-title">{status==='ready'?'NovaTutor is ready!':'First visit? NovaTutor is waking up.'}</h4>
-   <p className="auth-wakeup-desc">{status==='ready'?'Backend connected. Completing your sign in…':'This cloud server sleeps when idle to conserve resources. Waking it up may take around a minute.'}</p>
-   <div className="auth-wakeup-meta">
-    <span className="auth-wakeup-badge"><span className={'status-indicator '+(status==='ready'?'ready':'waking')}/>{status==='ready'?'Server live':'Connecting to backend…'}</span>
-    <div className="auth-wakeup-actions">
-     <button type="button" className="auth-wakeup-retry-btn" onClick={onRetry} disabled={status==='ready'}>Retry now</button>
-     <button type="button" className="auth-wakeup-dismiss-btn" onClick={onCancel}>Dismiss</button>
-    </div>
+
+  <div className="auth-wakeup-progress-wrap">
+   <div className="auth-wakeup-bar">
+    <div className={'auth-wakeup-bar-fill '+(status==='ready'?'ready':'')} style={{width:`${progressPct}%`}}/>
+   </div>
+   <div className="auth-wakeup-timer-row">
+    <span>{elapsedSeconds}s elapsed · estimated 60–120s</span>
+    <span>{status==='ready'?'100%':`${progressPct}%`}</span>
+   </div>
+  </div>
+
+  <div className="auth-wakeup-meta">
+   <span className="auth-wakeup-badge">
+    <span className={'status-indicator '+(status==='ready'?'ready':'waking')}/>
+    {status==='ready'?'Backend online':`Checking every ~30s (attempt ${attemptCount})`}
+   </span>
+   <div className="auth-wakeup-actions">
+    <button type="button" className="auth-wakeup-retry-btn" onClick={onRetry} disabled={status==='ready'}>Retry now</button>
+    <button type="button" className="auth-wakeup-dismiss-btn" onClick={onCancel}>Cancel</button>
    </div>
   </div>
  </div>;
@@ -1329,8 +1539,38 @@ function Auth({onLogin,dark,setDark}){
  function retryWakeUp(){
   const w=wakeUp;
   setWakeUp(null);
-  if(w?.type==='guest')startGuest();
-  else submit({preventDefault:()=>{}});
+  if(w?.type==='guest'){
+   startGuest();
+  }else if(w?.type==='login'&&w.form){
+   setLoading(true);
+   api('/auth/login',{method:'POST',body:JSON.stringify({email:w.form.email,password:w.form.password,portal:w.form.portal}),timeoutMs:25000})
+    .then(onLogin)
+    .catch(x=>{
+     if(x.isWakeUp||x.code==='SERVER_WAKING_UP'||/waking up|timed out/i.test(x.message)){
+      setWakeUp(w);
+     }else{
+      setErr(x.message||'Could not sign in.');
+     }
+    })
+    .finally(()=>setLoading(false));
+  }else if(w?.type==='register'&&w.form){
+   setLoading(true);
+   api('/auth/register',{method:'POST',body:JSON.stringify(w.form),timeoutMs:25000})
+    .then(res=>{setPending(res);setMode('pending');})
+    .catch(x=>{
+     if(x.isWakeUp||x.code==='SERVER_WAKING_UP'||/waking up|timed out/i.test(x.message)){
+      setWakeUp(w);
+     }else if(/already registered|duplicate|in use/i.test(x.message)){
+      setMode('login');
+      setNotice('Your account was created during wake-up. Please sign in with your password.');
+     }else{
+      setErr(x.message||'Could not create account.');
+     }
+    })
+    .finally(()=>setLoading(false));
+  }else{
+   submit({preventDefault:()=>{}});
+  }
  }
 
  async function submit(e){
@@ -1356,7 +1596,10 @@ function Auth({onLogin,dark,setDark}){
    }
   }catch(x){
    if(x.isWakeUp||x.code==='SERVER_WAKING_UP'||/waking up|timed out/i.test(x.message)){
-    setWakeUp({type:'submit'});
+    setWakeUp({
+     type:mode==='login'?'login':mode==='register'?'register':'submit',
+     form:mode==='register'?{name:form.name,email:form.email,password:form.password}:mode==='login'?{email:form.email,password:form.password,portal:adminMode?'admin':'student'}:null
+    });
     setErr('');
     return;
    }
@@ -1687,6 +1930,38 @@ function GlobalSearch({courses,go}){
  return <div className="global-search"><div className="global-search-input"><FileSearch size={16}/><input value={q} onFocus={()=>setOpen(true)} onChange={e=>{setQ(e.target.value);setOpen(true)}} onKeyDown={e=>{if(e.key==='Escape'){setOpen(false);setQ('')}if(e.key==='Enter'&&results[0]){go(results[0].id);setOpen(false);setQ('')}}} placeholder="Search NovaTutor…" aria-label="Search NovaTutor"/>{q&&<button onClick={()=>{setQ('');setOpen(false)}} aria-label="Clear search">×</button>}</div>{open&&term&&<div className="global-search-results">{results.length?results.map(r=><button key={r.id+r.label} onClick={()=>{go(r.id);setOpen(false);setQ('')}}><span className="search-kind">{r.kind}</span><b>{r.label}</b><ChevronRight size={13}/></button>):<div className="search-empty">No matching NovaTutor module or course.</div>}</div>}</div>
 }
 
+function HomeFeatureStrip({go}){
+ const features=[
+  {id:'gatecse',label:'GATE CSE Prep',icon:GraduationCap,tag:'PYQs & Mocks'},
+  {id:'dsa',label:'DSA Practice',icon:Code2,tag:'Judge Arena'},
+  {id:'learning-studio',label:'AI Teacher',icon:BrainCircuit,tag:'Streaming AI'},
+  {id:'quiz',label:'Smart Quizzes',icon:Target,tag:'Adaptive XP'},
+  {id:'dpp',label:'Daily DPP & IDE',icon:Sparkles,tag:'Code Runner'},
+  {id:'planner',label:'AI Study Planner',icon:CalendarDays,tag:'Personalized'},
+  {id:'nova-brain',label:'NovaBrain Memory',icon:Brain,tag:'Knowledge Graph'},
+  {id:'interview',label:'AI Interviewer',icon:UserRound,tag:'Voice & Mock'},
+ ];
+ const items=[...features,...features];
+ return <section className="nova-ticker-container" aria-label="Core workspace features">
+  <div className="nova-ticker-label">
+   <Sparkles size={13} className="ticker-label-icon"/>
+   <span>LEARNING WORKSPACE</span>
+  </div>
+  <div className="nova-ticker-viewport">
+   <div className="nova-ticker-track">
+    {items.map((f,idx)=>{
+     const Icon=f.icon;
+     return <button key={f.id+'-'+idx} type="button" className="nova-ticker-item" onClick={()=>go(f.id)} aria-label={`Open ${f.label}`}>
+      <span className="ticker-icon-wrap" aria-hidden="true"><Icon size={14}/></span>
+      <b className="ticker-name">{f.label}</b>
+      <small className="ticker-tag">{f.tag}</small>
+     </button>;
+    })}
+   </div>
+  </div>
+ </section>;
+}
+
 function Dashboard({courses,progress,go,openCourse,user}){
  const cachedDash=useMemo(()=>{
   if(!user?.id)return null;
@@ -1752,6 +2027,7 @@ function Dashboard({courses,progress,go,openCourse,user}){
     <span className="dash-chip" title="Lessons completed"><BookOpen size={13}/>{total?`${done}/${total} lessons`:'—'}</span>
    </div>
   </section>
+  <HomeFeatureStrip go={go}/>
   {!featured?.c&&courses.length===0&&<section className="dash-continue reveal skeleton-card" style={{opacity:0.65}}><div className="dash-continue-main"><span className="eyebrow skeleton-line" style={{display:'inline-block',width:140,height:12,borderRadius:4,background:'var(--surface-2)'}}/><div className="skeleton-line" style={{width:240,height:24,margin:'10px 0',borderRadius:6,background:'var(--surface-2)'}}/><div className="skeleton-line" style={{width:320,height:14,borderRadius:4,background:'var(--surface-2)'}}/></div></section>}
   {featured?.c&&<section className="dash-continue reveal hover-lift clickable-card" role="button" tabIndex={0} onClick={()=>openCourse?openCourse(featured.c.id):go('courses')} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();if(openCourse)openCourse(featured.c.id);else go('courses')}}}>
    <div className="dash-continue-main">
@@ -2637,8 +2913,21 @@ function Interviewer({user}){
  const [subject,setSubject]=useState('Java'),[mode,setMode]=useState('Standard'),[type,setType]=useState('Technical'),[role,setRole]=useState('Java Developer'),[difficulty,setDifficulty]=useState('Intermediate'),[qno,setQno]=useState(0),[question,setQuestion]=useState(''),[answer,setAnswer]=useState(''),[feedback,setFeedback]=useState(''),[loading,setLoading]=useState(false),[started,setStarted]=useState(false),[speaking,setSpeaking]=useState(false),[listening,setListening]=useState(false),[scores,setScores]=useState([]),[finished,setFinished]=useState(false),[coachReview,setCoachReview]=useState(''),[coachLoading,setCoachLoading]=useState(false);
  useModulePersistence(user?.id,'interview',{subject,mode,type,role,difficulty,qno,question,answer,feedback,started,scores,finished,coachReview},{subject:x=>setSubject(x||'Java'),mode:x=>setMode(x||'Standard'),type:x=>setType(x||'Technical'),role:x=>setRole(x||'Java Developer'),difficulty:x=>setDifficulty(x||'Intermediate'),qno:x=>setQno(Number(x)||0),question:x=>setQuestion(x||''),answer:x=>setAnswer(x||''),feedback:x=>setFeedback(x||''),started:x=>setStarted(Boolean(x)),scores:x=>setScores(Array.isArray(x)?x:[]),finished:x=>setFinished(Boolean(x)),coachReview:x=>setCoachReview(x||'')});const recognitionRef=React.useRef(null);const supported=typeof window!=='undefined'&&(window.SpeechRecognition||window.webkitSpeechRecognition);const TOTAL=10;
  const speechSessionRef=React.useRef(0);
- function stopSpeech(){speechSessionRef.current+=1;try{if(window.speechSynthesis){window.speechSynthesis.cancel();if(window.speechSynthesis.paused){window.speechSynthesis.resume();window.speechSynthesis.cancel();}}}catch{}setSpeaking(false);}
- function speak(text=question){if(!text||!window.speechSynthesis)return;stopSpeech();const thisSession=++speechSessionRef.current;setSpeaking(true);const u=new SpeechSynthesisUtterance(cleanSpokenText(text));u.rate=0.98;u.pitch=1.0;u.volume=1;const lang=getSpeechLanguage();u.lang=lang;const voice=getBestNaturalVoice(lang);if(voice)u.voice=voice;u.onstart=()=>{if(thisSession===speechSessionRef.current)setSpeaking(true);else{try{window.speechSynthesis.cancel()}catch{}}};u.onend=()=>{if(thisSession===speechSessionRef.current)setSpeaking(false)};u.onerror=()=>{if(thisSession===speechSessionRef.current)setSpeaking(false)};try{window.speechSynthesis.speak(u)}catch{if(thisSession===speechSessionRef.current)setSpeaking(false);}}
+ function speak(text=question){
+  if(!text||!window.speechSynthesis)return;
+  stopSpeech();
+  const thisSession=++speechSessionRef.current;
+  setSpeaking(true);
+  playSpokenTextQueue(text,{
+   lang:getSpeechLanguage(),
+   sessionRef:speechSessionRef,
+   targetRate:0.96,
+   targetPitch:1.01,
+   onStart:()=>setSpeaking(true),
+   onEnd:()=>{if(speechSessionRef.current===thisSession)setSpeaking(false)},
+   onError:()=>{if(speechSessionRef.current===thisSession)setSpeaking(false)}
+  });
+ }
  const listenRestartRef=React.useRef(false);
  function stopListen(){listenRestartRef.current=false;try{recognitionRef.current?.stop()}catch{}recognitionRef.current=null;setListening(false)}
  function listen(){if(listening){stopListen();return}if(!supported)return;stopSpeech();listenRestartRef.current=true;const SR=window.SpeechRecognition||window.webkitSpeechRecognition;const startRecognition=()=>{if(!listenRestartRef.current)return;const r=new SR();recognitionRef.current=r;r.lang=getSpeechLanguage();r.interimResults=true;r.continuous=true;r.onstart=()=>setListening(true);r.onend=()=>{recognitionRef.current=null;if(listenRestartRef.current){setTimeout(startRecognition,120);return}setListening(false)};r.onresult=e=>{let t='';for(let i=0;i<e.results.length;i++)t+=e.results[i][0].transcript+' ';setAnswer(t.trim())};r.onerror=e=>{if(e?.error==='not-allowed'||e?.error==='service-not-allowed'){listenRestartRef.current=false;setListening(false);recognitionRef.current=null}};try{r.start()}catch{if(listenRestartRef.current)setTimeout(startRecognition,250)}};startRecognition()}
@@ -2708,76 +2997,28 @@ function VoiceTutor({user}){
   isSpeakingRef.current=true;
   setSpeaking(true);
 
-  const cleanText=cleanSpokenText(raw);
-
-  const rawChunks=cleanText.match(/[^.!?\n]+[.!?\n]+|[^.!?\n]+$/g)||[cleanText];
-  const chunks=[];
-  for(const c of rawChunks){
-   const trimmed=c.trim();
-   if(!trimmed)continue;
-   if(trimmed.length>180){
-    const sub=trimmed.match(/[^,;]+[,;]+|[^,;]+$/g)||[trimmed];
-    for(const s of sub){if(s.trim())chunks.push(s.trim());}
-   }else{
-    chunks.push(trimmed);
-   }
-  }
-
-  if(!chunks.length){
-   isSpeakingRef.current=false;
-   setSpeaking(false);
-   return;
-  }
-
-  let chunkIndex=0;
-  const targetLang=getVoiceTutorLanguage();
-  const voice=getBestNaturalVoice(targetLang);
-
-  const playNext=()=>{
-   if(thisSession!==playbackSessionRef.current)return;
-   if(chunkIndex>=chunks.length){
-    isSpeakingRef.current=false;
-    setSpeaking(false);
-    return;
-   }
-   const textChunk=chunks[chunkIndex++];
-   const u=new SpeechSynthesisUtterance(textChunk);
-   u.lang=targetLang;
-   u.rate=0.98;
-   u.pitch=1.0;
-   u.volume=1;
-   if(voice)u.voice=voice;
-
-   u.onstart=()=>{
-    if(thisSession!==playbackSessionRef.current){
-     try{window.speechSynthesis.cancel()}catch{}
-     return;
-    }
+  playSpokenTextQueue(raw,{
+   lang:getVoiceTutorLanguage(),
+   sessionRef:playbackSessionRef,
+   targetRate:0.96,
+   targetPitch:1.01,
+   onStart:()=>{
     isSpeakingRef.current=true;
     setSpeaking(true);
-   };
-   u.onend=()=>{
-    if(thisSession!==playbackSessionRef.current)return;
-    playNext();
-   };
-   u.onerror=(e)=>{
-    if(thisSession!==playbackSessionRef.current)return;
-    if(e?.error==='interrupted'||e?.error==='canceled')return;
-    isSpeakingRef.current=false;
-    setSpeaking(false);
-   };
-
-   try{
-    window.speechSynthesis.speak(u);
-   }catch{
-    if(thisSession===playbackSessionRef.current){
+   },
+   onEnd:()=>{
+    if(playbackSessionRef.current===thisSession){
+     isSpeakingRef.current=false;
+     setSpeaking(false);
+    }
+   },
+   onError:()=>{
+    if(playbackSessionRef.current===thisSession){
      isSpeakingRef.current=false;
      setSpeaking(false);
     }
    }
-  };
-
-  playNext();
+  });
  }
 
  function handleVoiceToggle(){

@@ -95,7 +95,7 @@ export default function DsaPractice({user,api,routeSlug=null,onRouteSlug=null}){
 
   return (
     <div className="dsa-page">
-      <section className="dsa-hero reveal">
+      <section className="dsa-hero">
         <div className="dsa-hero-copy">
           <span className="eyebrow">NOVA DSA ARENA</span>
           <h1>Master DSA, <span>one submission</span> at a time.</h1>
@@ -118,14 +118,14 @@ export default function DsaPractice({user,api,routeSlug=null,onRouteSlug=null}){
         </div>
       </section>
 
-      <section className="dsa-stat-grid stagger-reveal">
+      <section className="dsa-stat-grid">
         <div><b>{summary?summary.total:'—'}</b><span>Total problems</span></div>
         <div><b style={{color:'var(--success)'}}>{summary?summary.solved:'—'}</b><span>Solved</span></div>
         <div><b style={{color:'var(--energy)'}}>{summary?summary.attempted:'—'}</b><span>Attempted</span></div>
         <div><b style={{color:'var(--energy)'}}>{summary?summary.bookmarked:'—'}</b><span>Bookmarked</span></div>
       </section>
 
-      <section id="dsa-browser" className="reveal">
+      <section id="dsa-browser">
         <div className="dsa-section-head">
           <h3>Problem set</h3>
           <p>Filter by difficulty, topic or your own progress. Hidden tests never leave the server — pass every one to turn a problem green.</p>
@@ -148,7 +148,7 @@ export default function DsaPractice({user,api,routeSlug=null,onRouteSlug=null}){
         {!problems&&!err&&<div className="dsa-loading">Loading problem set…</div>}
         {problems&&filtered.length===0&&!err&&<div className="dsa-loading">No problems match these filters.</div>}
 
-        <div className="dsa-list stagger-reveal">
+        <div className="dsa-list">
           {filtered.map((p,i)=>{
             const st=progress[p.slug]||{};
             return (
