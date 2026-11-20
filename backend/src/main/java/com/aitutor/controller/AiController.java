@@ -101,7 +101,7 @@ public class AiController {
                         } else if (completion.isSafetyRefusal()) {
                             emitter.send(SseEmitter.event().name("safety").data(dataJson));
                         } else {
-                            emitter.send(SseEmitter.event().name("done").data(dataJson));
+                            emitter.send(SseEmitter.event().name("done").data("done"));
                         }
                         emitter.complete();
                     }
