@@ -85,6 +85,7 @@ app:
 ai:
   gemini:
     api-key: ${GEMINI_API_KEY:}
+    daily-limit: ${AI_GEMINI_DAILY_LIMIT:1500}
     # Measured on the live API: 3.6-flash needs ~7-10 s even for a trivial
     # answer, while 3.5-flash-lite answers in ~1.3 s. The lightweight model is
     # therefore the default for interactive tutoring and the heavier model is

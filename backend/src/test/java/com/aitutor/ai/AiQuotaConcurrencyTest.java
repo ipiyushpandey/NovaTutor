@@ -191,18 +191,24 @@ public class AiQuotaConcurrencyTest {
         ApiException blankEx = assertThrows(ApiException.class, testMetrics::reserveDailyQuota);
         assertEquals(HttpStatus.SERVICE_UNAVAILABLE, blankEx.status());
         assertEquals("AI_QUOTA_COUNTER_INVALID", blankEx.code());
+        ApiException blankReadEx = assertThrows(ApiException.class, testMetrics::getTodayRequests);
+        assertEquals("AI_QUOTA_COUNTER_INVALID", blankReadEx.code());
 
         // Case 2: Non-numeric malformed counter value
         meta.saveAndFlush(new AppMeta(todayKey, "corrupted_counter_value_99x"));
         ApiException malformedEx = assertThrows(ApiException.class, testMetrics::reserveDailyQuota);
         assertEquals(HttpStatus.SERVICE_UNAVAILABLE, malformedEx.status());
         assertEquals("AI_QUOTA_COUNTER_INVALID", malformedEx.code());
+        ApiException malformedReadEx = assertThrows(ApiException.class, testMetrics::getTodayRequests);
+        assertEquals("AI_QUOTA_COUNTER_INVALID", malformedReadEx.code());
 
         // Case 3: Negative counter value
         meta.saveAndFlush(new AppMeta(todayKey, "-42"));
         ApiException negativeEx = assertThrows(ApiException.class, testMetrics::reserveDailyQuota);
         assertEquals(HttpStatus.SERVICE_UNAVAILABLE, negativeEx.status());
         assertEquals("AI_QUOTA_COUNTER_INVALID", negativeEx.code());
+        ApiException negativeReadEx = assertThrows(ApiException.class, testMetrics::getTodayRequests);
+        assertEquals("AI_QUOTA_COUNTER_INVALID", negativeReadEx.code());
     }
 
     @Test
@@ -225,6 +231,8 @@ public class AiQuotaConcurrencyTest {
         ApiException dbEx = assertThrows(ApiException.class, unbackedMetrics::reserveDailyQuota);
         assertEquals(HttpStatus.SERVICE_UNAVAILABLE, dbEx.status());
         assertEquals("AI_QUOTA_STORAGE_UNAVAILABLE", dbEx.code());
+        ApiException dbReadEx = assertThrows(ApiException.class, unbackedMetrics::getTodayRequests);
+        assertEquals("AI_QUOTA_STORAGE_UNAVAILABLE", dbReadEx.code());
     }
 
     @Test

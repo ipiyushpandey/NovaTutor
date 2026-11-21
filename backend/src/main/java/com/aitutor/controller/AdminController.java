@@ -212,25 +212,6 @@ public class AdminController {
     @GetMapping("/ai/usage")
     public Map<String,Object> aiUsage(@RequestHeader(value="Authorization", required=false) String authorization) {
         admin(authorization);
-        String todayKey = "ai_daily_usage_" + java.time.LocalDate.now(java.time.ZoneOffset.UTC);
-        try {
-            var stored = meta.findById(todayKey);
-            long storedCount = stored.map(m -> {
-                try { return Long.parseLong(m.getValue().trim()); } catch (Exception e) { return 0L; }
-            }).orElse(0L);
-            long memCount = aiMetrics.getTodayRequests();
-            if (storedCount > memCount) {
-                aiMetrics.setTodayBase(storedCount);
-            } else if (memCount > storedCount) {
-                meta.save(new AppMeta(todayKey, String.valueOf(memCount)));
-            }
-            meta.findById("ai.dailyLimit").ifPresent(m -> {
-                try {
-                    int lim = Integer.parseInt(m.getValue().trim());
-                    if (lim > 0) aiMetrics.setDailyLimit(lim);
-                } catch (Exception ignored) {}
-            });
-        } catch (Exception ignored) {}
         return aiMetrics.snapshot();
     }
 

@@ -78,6 +78,7 @@ app:
 ai:
   gemini:
     api-key: ${GEMINI_API_KEY}
+    daily-limit: ${AI_GEMINI_DAILY_LIMIT:1500}
     model: ${GEMINI_MODEL:gemini-3.5-flash-lite}
     fallback-model: ${GEMINI_FALLBACK_MODEL:gemini-3.1-flash-lite}
     max-attempts: ${GEMINI_MAX_ATTEMPTS:1}

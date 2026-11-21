@@ -39,6 +39,11 @@ class AiMetricsTest {
         assertEquals(0L, snapshot.get("totalRequests"));
         assertEquals(0.0, snapshot.get("failureRate"));
         assertTrue(((List<?>) snapshot.get("tasks")).isEmpty());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> quota = (Map<String, Object>) snapshot.get("dailyQuota");
+        assertNotNull(quota);
+        assertEquals("UNAVAILABLE", quota.get("limitStatus"));
+        assertEquals(false, quota.get("available"));
     }
 
     @Test

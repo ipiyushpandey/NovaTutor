@@ -31,14 +31,35 @@ public class AiMetrics {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.aitutor.config.AppMetaRepository meta;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    public AiMetrics(
+            @org.springframework.beans.factory.annotation.Value("${ai.gemini.daily-limit:1500}") int dailyLimit,
+            @org.springframework.beans.factory.annotation.Autowired(required = false) com.aitutor.config.AppMetaRepository meta,
+            @org.springframework.beans.factory.annotation.Autowired(required = false) org.springframework.transaction.PlatformTransactionManager transactionManager
+    ) {
+        this.dailyLimit = Math.max(1, dailyLimit);
+        this.meta = meta;
+        this.transactionManager = transactionManager;
+    }
+
+    public AiMetrics(int dailyLimit) {
+        this(dailyLimit, null, null);
+    }
+
     public AiMetrics() {
-        this(1500);
+        this(1500, null, null);
     }
 
-    public AiMetrics(@org.springframework.beans.factory.annotation.Value("${ai.gemini.daily-limit:1500}") int dailyLimit) {
-        this.dailyLimit = Math.max(10, dailyLimit);
-    }
-
+    /**
+     * Startup initialization:
+     * 1. Guarantees the shared mutex row exists in the database.
+     * 2. Reads the current day's accumulated usage into memory to warm up local counters.
+     *
+     * Precedence Rule:
+     * Application configuration (ai.gemini.daily-limit via environment variable or properties file)
+     * is the single authoritative source of truth for the daily AI quota limit.
+     * Database metadata under 'ai.dailyLimit' will never silently override the configured limit on startup.
+     */
     @jakarta.annotation.PostConstruct
     public void initFromDb() {
         if (meta == null) return;
@@ -51,12 +72,6 @@ public class AiMetrics {
                 try {
                     long stored = Long.parseLong(m.getValue().trim());
                     if (stored > 0) setTodayBase(stored);
-                } catch (Exception ignored) {}
-            });
-            meta.findById("ai.dailyLimit").ifPresent(m -> {
-                try {
-                    int lim = Integer.parseInt(m.getValue().trim());
-                    if (lim > 0) setDailyLimit(lim);
                 } catch (Exception ignored) {}
             });
         } catch (Exception ignored) {}
@@ -236,24 +251,62 @@ public class AiMetrics {
 
     public long getTodayRequests() {
         checkDateRoll();
-        if (meta != null) {
-            try {
-                String todayKey = "ai_daily_usage_" + todayDate;
-                var currentOpt = meta.findById(todayKey);
-                if (currentOpt.isPresent()) {
-                    String raw = currentOpt.get().getValue();
-                    if (raw != null && !raw.isBlank()) {
-                        long stored = Long.parseLong(raw.trim());
-                        if (stored >= 0) {
-                            return stored;
-                        }
-                    }
-                } else {
-                    return 0L;
-                }
-            } catch (Exception ignored) {}
+        if (meta == null) {
+            throw new com.aitutor.controller.ApiException(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                "AI_QUOTA_STORAGE_UNAVAILABLE",
+                "Database storage is unavailable for global quota tracking."
+            );
         }
-        return todayRequests.sum();
+
+        String todayKey = "ai_daily_usage_" + todayDate;
+        com.aitutor.config.AppMeta row;
+        try {
+            var currentOpt = meta.findById(todayKey);
+            if (currentOpt.isEmpty()) {
+                // Database read succeeded, and no requests have been recorded yet today
+                return 0L;
+            }
+            row = currentOpt.get();
+        } catch (com.aitutor.controller.ApiException e) {
+            throw e;
+        } catch (Exception ex) {
+            throw new com.aitutor.controller.ApiException(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                "AI_QUOTA_STORAGE_UNAVAILABLE",
+                "Failed to read persisted quota usage from database: " + ex.getMessage()
+            );
+        }
+
+        String raw = row.getValue();
+        if (raw == null || raw.isBlank()) {
+            throw new com.aitutor.controller.ApiException(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                "AI_QUOTA_COUNTER_INVALID",
+                "Persisted daily quota counter is blank or invalid."
+            );
+        }
+
+        long stored;
+        try {
+            stored = Long.parseLong(raw.trim());
+        } catch (NumberFormatException nfe) {
+            throw new com.aitutor.controller.ApiException(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                "AI_QUOTA_COUNTER_INVALID",
+                "Persisted daily quota counter is malformed: " + raw.trim()
+            );
+        }
+
+        if (stored < 0) {
+            throw new com.aitutor.controller.ApiException(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                "AI_QUOTA_COUNTER_INVALID",
+                "Persisted daily quota counter cannot be negative (" + stored + ")."
+            );
+        }
+
+        return stored;
     }
 
     public int getDailyLimit() {
@@ -314,22 +367,37 @@ public class AiMetrics {
         out.put("tasks", rows);
 
         checkDateRoll();
-        long today = getTodayRequests();
-        long remaining = Math.max(0, dailyLimit - today);
-        double pctConsumed = round(dailyLimit <= 0 ? 0.0 : ((double) today / dailyLimit) * 100.0);
-        double pctRemaining = round(Math.max(0.0, 100.0 - pctConsumed));
-        String status = today >= dailyLimit ? "EXHAUSTED" : (today >= (dailyLimit * 0.8) ? "APPROACHING_LIMIT" : "NORMAL");
-        java.time.ZonedDateTime nextMidnight = java.time.LocalDate.now(java.time.ZoneOffset.UTC).plusDays(1).atStartOfDay(java.time.ZoneOffset.UTC);
-
         Map<String, Object> dailyQuota = new LinkedHashMap<>();
-        dailyQuota.put("todayRequests", today);
-        dailyQuota.put("dailyLimit", dailyLimit);
-        dailyQuota.put("remainingQuota", remaining);
-        dailyQuota.put("percentConsumed", pctConsumed);
-        dailyQuota.put("percentRemaining", pctRemaining);
-        dailyQuota.put("limitStatus", status);
-        dailyQuota.put("resetAt", nextMidnight.toInstant().toString());
-        dailyQuota.put("resetSchedule", "Resets daily at 00:00 UTC (05:30 IST)");
+        java.time.ZonedDateTime nextMidnight = java.time.LocalDate.now(java.time.ZoneOffset.UTC).plusDays(1).atStartOfDay(java.time.ZoneOffset.UTC);
+        try {
+            long today = getTodayRequests();
+            long remaining = Math.max(0, dailyLimit - today);
+            double pctConsumed = round(dailyLimit <= 0 ? 0.0 : ((double) today / dailyLimit) * 100.0);
+            double pctRemaining = round(Math.max(0.0, 100.0 - pctConsumed));
+            String status = today >= dailyLimit ? "EXHAUSTED" : (today >= (dailyLimit * 0.8) ? "APPROACHING_LIMIT" : "NORMAL");
+
+            dailyQuota.put("todayRequests", today);
+            dailyQuota.put("dailyLimit", dailyLimit);
+            dailyQuota.put("remainingQuota", remaining);
+            dailyQuota.put("percentConsumed", pctConsumed);
+            dailyQuota.put("percentRemaining", pctRemaining);
+            dailyQuota.put("limitStatus", status);
+            dailyQuota.put("resetAt", nextMidnight.toInstant().toString());
+            dailyQuota.put("resetSchedule", "Resets daily at 00:00 UTC (05:30 IST)");
+            dailyQuota.put("available", true);
+        } catch (com.aitutor.controller.ApiException ex) {
+            dailyQuota.put("todayRequests", null);
+            dailyQuota.put("dailyLimit", dailyLimit);
+            dailyQuota.put("remainingQuota", null);
+            dailyQuota.put("percentConsumed", null);
+            dailyQuota.put("percentRemaining", null);
+            dailyQuota.put("limitStatus", "UNAVAILABLE");
+            dailyQuota.put("resetAt", nextMidnight.toInstant().toString());
+            dailyQuota.put("resetSchedule", "Resets daily at 00:00 UTC (05:30 IST)");
+            dailyQuota.put("available", false);
+            dailyQuota.put("errorCode", ex.code());
+            dailyQuota.put("errorMessage", ex.getMessage());
+        }
         out.put("dailyQuota", dailyQuota);
 
         return out;
