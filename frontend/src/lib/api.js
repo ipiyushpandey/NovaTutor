@@ -423,5 +423,19 @@ async function recordLearningHistory({ itemType, itemKey, title, category, targe
  }
 }
 
+export function isVerifiedHealthy(res) {
+  if (!res || typeof res !== 'object' || Array.isArray(res)) return false;
+  // NovaTutor dedicated /api/health endpoint
+  if (res.status === 'UP' && res.app === 'NovaTutor') return true;
+  // Spring Boot actuator health endpoint with verified components
+  if (res.status === 'UP' && typeof res.components === 'object' && res.components !== null) {
+    const c = res.components;
+    if (c.db?.status === 'UP' || c.diskSpace?.status === 'UP' || c.readinessState?.status === 'UP' || c.ping?.status === 'UP') {
+      return true;
+    }
+  }
+  return false;
+}
+
 export {api,apiStream,readUser,isJwtExpired,refreshSessionToken,refreshSessionTokenWithStatus,invalidatePendingSessionRefresh,recordLearningHistory,API};
 

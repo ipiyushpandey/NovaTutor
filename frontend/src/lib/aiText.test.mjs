@@ -9,7 +9,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeAiText } from './aiText.js';
+import { normalizeAiText, cleanMath } from './aiText.js';
 
 test('is a function', () => {
   assert.equal(typeof normalizeAiText, 'function');
@@ -72,10 +72,21 @@ test('normalizes malformed Big-O and mathematical artifacts like $)(n/log n)**',
   assert.equal(normalizeAiText('Best case is $)(1)** and worst case is $)(n)**'), 'Best case is O(1) and worst case is O(n)');
 });
 
-test('normalizes LaTeX Big-O and complexity expressions', () => {
-  assert.equal(normalizeAiText('Runs in $\\mathcal{O}(n \\log n)$ time'), 'Runs in O(n log n) time');
-  assert.equal(normalizeAiText('Takes $O(\\log n)$ operations'), 'Takes O(log n) operations');
-  assert.equal(normalizeAiText('Bound is $n \\le 10^5$ and $a \\times b$'), 'Bound is $n ≤ 10^5$ and $a × b$');
+test('preserves valid math delimiters and cleans mathematical expressions', () => {
+  // normalizeAiText preserves math intact so downstream MathML rendering can process it
+  assert.equal(normalizeAiText('Runs in $\\mathcal{O}(n \\log n)$ time'), 'Runs in $\\mathcal{O}(n \\log n)$ time');
+  assert.equal(normalizeAiText('Takes $O(\\log n)$ operations'), 'Takes $O(\\log n)$ operations');
+  assert.equal(normalizeAiText('Bound is $n \\le 10^5$ and $a \\times b$'), 'Bound is $n \\le 10^5$ and $a \\times b$');
+  assert.equal(normalizeAiText('$$T(n) = 2T(n/2) + O(n)$$'), '$$T(n) = 2T(n/2) + O(n)$$');
+
+  // cleanMath produces clean Unicode representation preserving mathematical semantics
+  assert.equal(cleanMath('\\mathcal{O}(n \\log n)'), 'O(n log n)');
+  assert.equal(cleanMath('n \\le 10^5'), 'n ≤ 10^5');
+  assert.equal(cleanMath('a \\times b'), 'a × b');
+  assert.equal(cleanMath('\\frac{a}{b}'), '(a)/(b)');
+  assert.equal(cleanMath('\\sqrt{x}'), '√(x)');
+  assert.equal(cleanMath('\\frac{n(n+1)}{2}'), '(n(n+1))/(2)');
+  assert.equal(cleanMath('\\sum_{i=1}^n i = \\frac{n(n+1)}{2}'), '∑_{i=1}^n i = (n(n+1))/(2)');
 });
 
 test('getCompactLessonOverview extracts concise topics without lengthy sections', async () => {

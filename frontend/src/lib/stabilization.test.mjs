@@ -801,6 +801,61 @@ test('AI Stream Completion & Safe Recovery Semantics', async () => {
   assert.match(stylesCss, /\.ai-stream-status-banner/, 'CSS styles for .ai-stream-status-banner must exist');
 });
 
+test('isVerifiedHealthy strictly validates backend readiness and rejects truthy errors', async () => {
+  const { isVerifiedHealthy } = await import('./api.js');
+  assert.equal(typeof isVerifiedHealthy, 'function');
+
+  // Explicit positive health responses
+  assert.equal(isVerifiedHealthy({ status: 'UP', app: 'NovaTutor' }), true);
+  assert.equal(isVerifiedHealthy({ status: 'UP', components: { db: { status: 'UP' } } }), true);
+  assert.equal(isVerifiedHealthy({ status: 'UP', components: { diskSpace: { status: 'UP' } } }), true);
+  assert.equal(isVerifiedHealthy({ status: 'UP', components: { readinessState: { status: 'UP' } } }), true);
+  assert.equal(isVerifiedHealthy({ status: 'UP', components: { ping: { status: 'UP' } } }), true);
+
+  // Negative / ambiguous / error responses
+  assert.equal(isVerifiedHealthy({ status: 'DOWN', app: 'NovaTutor' }), false);
+  assert.equal(isVerifiedHealthy({ status: 'OUT_OF_SERVICE', app: 'NovaTutor' }), false);
+  assert.equal(isVerifiedHealthy({ message: 'Service Unavailable' }), false);
+  assert.equal(isVerifiedHealthy({ error: 'Gateway Timeout' }), false);
+  assert.equal(isVerifiedHealthy({ status: 'UP' }), false); // Missing app or verified components
+  assert.equal(isVerifiedHealthy(null), false);
+  assert.equal(isVerifiedHealthy(undefined), false);
+  assert.equal(isVerifiedHealthy('<html>error</html>'), false);
+  assert.equal(isVerifiedHealthy(123), false);
+  assert.equal(isVerifiedHealthy({}), false);
+});
+
+test('LoginWakeUp enforces 300-second window, single-submission guard, and strict health check', () => {
+  const mainJsx = fs.readFileSync(path.join(SRC_DIR, 'main.jsx'), 'utf8');
+  assert.match(mainJsx, /elapsed\s*>=\s*300/, 'LoginWakeUp must use 300s window before timing out');
+  assert.match(mainJsx, /elapsedSeconds\s*\/\s*300/, 'Progress percentage must scale against 300s');
+  assert.match(mainJsx, /window:\s*up to 300s/i, 'UI label must honestly disclose 300s window');
+  assert.match(mainJsx, /submittedRef\.current/, 'Must guard against duplicate login submission with submittedRef');
+  assert.match(mainJsx, /isVerifiedHealthy/, 'Must verify health using strict isVerifiedHealthy validator');
+});
+
+test('AiMarkdown renders standard MathML, supports multiline block math, and has zero external dependencies', () => {
+  const aiMarkdownJsx = fs.readFileSync(path.join(SRC_DIR, 'AiMarkdown.jsx'), 'utf8');
+  assert.match(aiMarkdownJsx, /export function renderMath/, 'renderMath must be exported');
+  assert.match(aiMarkdownJsx, /function parseLatexToMathML/, 'parseLatexToMathML must exist');
+  assert.match(aiMarkdownJsx, /xmlns:\s*['"]http:\/\/www\.w3\.org\/1998\/Math\/MathML['"]/, 'Must declare MathML namespace');
+  assert.match(aiMarkdownJsx, /'mfrac'/, 'Must support fractions via <mfrac>');
+  assert.match(aiMarkdownJsx, /'msqrt'/, 'Must support square roots via <msqrt>');
+  assert.match(aiMarkdownJsx, /'msup'/, 'Must support superscripts via <msup>');
+  assert.match(aiMarkdownJsx, /'msub'/, 'Must support subscripts via <msub>');
+  assert.match(aiMarkdownJsx, /'msubsup'/, 'Must support sub-superscripts via <msubsup>');
+  assert.ok(!aiMarkdownJsx.includes('katex'), 'Must not require external KaTeX library');
+
+  // Verify multiline block math scanning logic exists
+  assert.match(aiMarkdownJsx, /t\.startsWith\('\$\$'/, 'Must detect block math delimiters');
+  assert.match(aiMarkdownJsx, /mathLines/, 'Must accumulate multiline block math lines');
+
+  const stylesCss = fs.readFileSync(path.join(SRC_DIR, 'styles.css'), 'utf8');
+  assert.match(stylesCss, /\.ai-md-math\s*math/, 'CSS must style MathML math elements');
+  assert.match(stylesCss, /\.ai-md-math-block\s*math/, 'CSS must style block MathML elements');
+});
+
+
 
 
 

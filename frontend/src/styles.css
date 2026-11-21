@@ -3010,6 +3010,9 @@ nav button.active .nova-icon{filter:none}
   color:#e2e8f0;
   background:rgba(255,255,255,0.08);
 }
+.ai-md-math math{
+  font-family:inherit;
+}
 .ai-md-math-block{
   font-family:'KaTeX_Math','Cambria Math','STIX Two Math','Times New Roman',serif;
   font-size:1.08em;
@@ -3026,6 +3029,10 @@ nav button.active .nova-icon{filter:none}
   background:#141a24;
   border-color:#243042;
   color:#f1f5f9;
+}
+.ai-md-math-block math{
+  font-family:inherit;
+  margin:0 auto;
 }
 
 @media(max-width:900px){

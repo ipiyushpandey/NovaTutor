@@ -25,9 +25,8 @@ public class AiService {
         if (r == null || r.task() == null) {
             throw new com.aitutor.controller.ApiException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_AI_REQUEST", "AI task is required.");
         }
-        if (metrics.isQuotaExceeded()) {
-            throw new com.aitutor.controller.ApiException(org.springframework.http.HttpStatus.TOO_MANY_REQUESTS, "AI_QUOTA_EXHAUSTED", "Daily AI quota has been reached (" + metrics.getTodayRequests() + "/" + metrics.getDailyLimit() + "). Quota resets daily at 00:00 UTC.");
-        }
+        // Atomically reserve exactly one quota slot before invoking any AI provider
+        metrics.reserveDailyQuota();
         long started = System.nanoTime();
         boolean success = false;
         try {
@@ -50,9 +49,8 @@ public class AiService {
         if (r == null || r.task() == null) {
             throw new com.aitutor.controller.ApiException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_AI_REQUEST", "AI task is required.");
         }
-        if (metrics.isQuotaExceeded()) {
-            throw new com.aitutor.controller.ApiException(org.springframework.http.HttpStatus.TOO_MANY_REQUESTS, "AI_QUOTA_EXHAUSTED", "Daily AI quota has been reached (" + metrics.getTodayRequests() + "/" + metrics.getDailyLimit() + "). Quota resets daily at 00:00 UTC.");
-        }
+        // Atomically reserve exactly one quota slot before invoking any AI provider
+        metrics.reserveDailyQuota();
         long started = System.nanoTime();
         java.util.concurrent.atomic.AtomicLong firstToken = new java.util.concurrent.atomic.AtomicLong(-1);
         Consumer<String> wrapped = chunk -> {

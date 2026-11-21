@@ -44,7 +44,23 @@ class AiMetricsTest {
     @Test
     void tracksDailyUsageAndQuotaLimitsAccurately() {
         AiMetrics metrics = new AiMetrics(100);
+        com.aitutor.config.AppMetaRepository mockMeta = org.mockito.Mockito.mock(com.aitutor.config.AppMetaRepository.class);
+        org.mockito.Mockito.when(mockMeta.findByKeyForUpdate(org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(java.util.Optional.of(new com.aitutor.config.AppMeta(AiMetrics.QUOTA_MUTEX_KEY, "0")));
+        java.util.concurrent.atomic.AtomicLong counter = new java.util.concurrent.atomic.AtomicLong(0);
+        org.mockito.Mockito.when(mockMeta.findById(org.mockito.ArgumentMatchers.contains("ai_daily_usage_")))
+                .thenAnswer(inv -> java.util.Optional.of(new com.aitutor.config.AppMeta(inv.getArgument(0), String.valueOf(counter.get()))));
+        org.mockito.Mockito.when(mockMeta.save(org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(inv -> {
+                    com.aitutor.config.AppMeta m = inv.getArgument(0);
+                    if (m.getKey().contains("ai_daily_usage_")) counter.set(Long.parseLong(m.getValue()));
+                    return m;
+                });
+        metrics.setMetaRepository(mockMeta);
+
+        metrics.reserveDailyQuota();
         metrics.record("TUTOR", 500, true);
+        metrics.reserveDailyQuota();
         metrics.record("QA", 400, true);
 
         Map<String, Object> snapshot = metrics.snapshot();

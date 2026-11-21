@@ -49,8 +49,9 @@ public class DatabaseMigrationRunner implements InitializingBean {
             String dbProduct = meta.getDatabaseProductName();
             log.info("DatabaseMigrationRunner: Connected to {} ({})", dbProduct, meta.getDatabaseProductVersion());
 
-            // 1. Ensure version tracking table exists
+            // 1. Ensure version tracking table and metadata mutex table exist
             initSchemaVersionTable(conn);
+            initAppMetadataTable(conn);
 
             // 2. Load and sort migration scripts from classpath
             List<MigrationScript> scripts = discoverMigrationScripts();
@@ -102,6 +103,29 @@ public class DatabaseMigrationRunner implements InitializingBean {
         """;
         try (Statement stmt = conn.createStatement()) {
             stmt.execute(sql);
+        }
+    }
+
+    private void initAppMetadataTable(Connection conn) throws SQLException {
+        String sql = """
+            CREATE TABLE IF NOT EXISTS app_metadata (
+                meta_key VARCHAR(80) NOT NULL PRIMARY KEY,
+                meta_value VARCHAR(500) NOT NULL
+            )
+        """;
+        try (Statement stmt = conn.createStatement()) {
+            stmt.execute(sql);
+            try {
+                stmt.execute("INSERT INTO app_metadata (meta_key, meta_value) VALUES ('ai_quota_mutex', '0') ON DUPLICATE KEY UPDATE meta_key = meta_key");
+            } catch (SQLException e) {
+                String checkSql = "SELECT 1 FROM app_metadata WHERE meta_key = 'ai_quota_mutex'";
+                try (PreparedStatement ps = conn.prepareStatement(checkSql);
+                     ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        stmt.execute("INSERT INTO app_metadata (meta_key, meta_value) VALUES ('ai_quota_mutex', '0')");
+                    }
+                }
+            }
         }
     }
 

@@ -22,7 +22,7 @@ import {readWorkspace,writeWorkspace,workspaceKey,subscribeWorkspace,migrateWork
 import AiMarkdown, {normalizeAiText, mdInlineText, getCompactLessonOverview} from './AiMarkdown.jsx';
 import {registerWorkspaceFlusher,beginNavigationPersistence} from './persistence/appWorkspace.js';
 import {readRuntimeState,writeRuntimeState,subscribeRuntimeState,getRuntimeModuleSnapshot,updateRuntimeState,removeRuntimeState,clearRuntimeUser} from './persistence/runtimeStore.js';
-import {api,apiStream,readUser,refreshSessionToken,refreshSessionTokenWithStatus,invalidatePendingSessionRefresh,recordLearningHistory} from './lib/api.js';
+import {api,apiStream,readUser,refreshSessionToken,refreshSessionTokenWithStatus,invalidatePendingSessionRefresh,recordLearningHistory,isVerifiedHealthy} from './lib/api.js';
 import {isMeaningfulText} from './lib/validation.js';
 /* V69 FOUNDATION REPAIR — production curriculum + stable learning foundation */
 /* V51 VOICE SPEED + CHAT CONTROLS */
@@ -1580,18 +1580,11 @@ function LoginWakeUp({onRetry,onCancel,mode='login'}){
    if(!cancelled){
     const elapsed=Math.floor((Date.now()-startTimeRef.current)/1000);
     setElapsedSeconds(elapsed);
-    if(elapsed>=120&&status!=='ready'&&status!=='timeout'){
+    if(elapsed>=300&&status!=='ready'&&status!=='timeout'){
      setStatus('timeout');
     }
    }
   },1000);
-
-  function isVerifiedHealthy(res){
-   if(!res||typeof res!=='object')return false;
-   if(res.status==='UP'&&res.app==='NovaTutor')return true;
-   if(res.status==='UP'&&(res.components||res.groups||res.details||Object.keys(res).length<=2))return true;
-   return false;
-  }
 
   async function checkHealth(){
    if(cancelled||submittedRef.current)return;
@@ -1640,7 +1633,7 @@ function LoginWakeUp({onRetry,onCancel,mode='login'}){
   };
  },[]);
 
- const progressPct = status==='ready' ? 100 : status==='timeout' ? 95 : Math.min(94, Math.round((1 - Math.exp(-elapsedSeconds / 45)) * 100));
+ const progressPct = status==='ready' ? 100 : status==='timeout' ? 100 : Math.min(99, Math.round((elapsedSeconds / 300) * 100));
 
  const handleManualRetry=()=>{
   if(status==='ready'||submittedRef.current)return;
@@ -1672,8 +1665,8 @@ function LoginWakeUp({onRetry,onCancel,mode='login'}){
      {status==='ready'
       ?'Connection established. Completing your request…'
       :status==='timeout'
-      ?'The server is taking longer than 120s to complete startup. You can retry now or cancel to re-enter credentials.'
-      :'Render free-tier instances sleep when idle. Cold start typically takes 40–90s while the JVM and database start.'}
+      ?'The server is taking longer than 300s to complete startup. You can retry now or cancel to re-enter credentials.'
+      :'Render free-tier instances sleep when idle. Cold start typically takes 40–90s while the JVM and database start (timeout: 300s).'}
     </p>
    </div>
   </div>
@@ -1683,8 +1676,8 @@ function LoginWakeUp({onRetry,onCancel,mode='login'}){
     <div className={'auth-wakeup-bar-fill '+(status==='ready'?'ready':status==='timeout'?'timeout':'')} style={{width:`${progressPct}%`}}/>
    </div>
    <div className="auth-wakeup-timer-row">
-    <span>{elapsedSeconds}s elapsed · estimated 40–90s</span>
-    <span>{status==='ready'?'100%':`${progressPct}%`}</span>
+    <span>{elapsedSeconds}s elapsed · window: up to 300s</span>
+    <span>{status==='ready'?'100% · Connected!':status==='timeout'?'Timeout (300s)':`${elapsedSeconds}s / 300s`}</span>
    </div>
   </div>
 

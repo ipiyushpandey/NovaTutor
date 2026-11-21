@@ -37,28 +37,12 @@ export function normalizeAiText(input){
     // unicode dash/bullet runs) — never meaningful content.
     if(/^[\s\-*•·▪▫◆◇—_=]{1,8}$/.test(line)){line=''}
 
-    // Normalize malformed Big-O and mathematical artifacts outside code blocks
-    // Fixes broken patterns like "$)(n/log n)**" -> "O(log n)"
+    // Normalize malformed Big-O artifacts outside code blocks
+    // Fixes broken model patterns like "$)(n/log n)**" -> "O(log n)"
     line = line.replace(/\$\)\s*\(?\s*(?:n\s*\/\s*)?log\s*n\s*\)?\s*\*+/gi, 'O(log n)');
     line = line.replace(/\$\)\s*\(?([a-zA-Z0-9_\^/\s*+.-]+)\)?\s*\*+/g, 'O($1)');
 
-    // Normalize LaTeX Big-O, Theta, Omega syntax: $\mathcal{O}(...)$ -> O(...)
-    line = line.replace(/\$\s*\\mathcal\{O\}\s*\(([^$]+)\)\s*\$/g, 'O($1)');
-    line = line.replace(/\\mathcal\{O\}\s*\(([^)]+)\)/g, 'O($1)');
-    line = line.replace(/\$\s*\\mathcal\{Theta\}\s*\(([^$]+)\)\s*\$/g, 'Θ($1)');
-    line = line.replace(/\$\s*\\mathcal\{Omega\}\s*\(([^$]+)\)\s*\$/g, 'Ω($1)');
-    line = line.replace(/\$\s*O\s*\(([^$]+)\)\s*\$/g, 'O($1)');
-
-    // Clean common LaTeX symbols in prose
-    line = line.replace(/\\log\b/g, 'log')
-      .replace(/\\le\b|\\leq\b/g, '≤')
-      .replace(/\\ge\b|\\geq\b/g, '≥')
-      .replace(/\\ne\b|\\neq\b/g, '≠')
-      .replace(/\\times\b|\\cdot\b/g, '×')
-      .replace(/\\infty\b/g, '∞')
-      .replace(/\\approx\b/g, '≈');
-
-    // Strip stray unclosed trailing ** immediately following a closing parenthesis
+    // Strip stray unclosed trailing ** immediately following a closing parenthesis on Big-O
     const asterisks = (line.match(/\*\*/g) || []).length;
     if (asterisks % 2 !== 0 && /(?<=\))\s*\*\*$/.test(line)) {
       line = line.replace(/(?<=\))\s*\*\*$/, '');
@@ -147,4 +131,43 @@ export function getCompactLessonOverview(lesson) {
   }
 
   return { summary, topics: bullets };
+}
+
+/**
+ * Normalizes mathematical expressions to clean Unicode notation for text contexts
+ * while strictly preserving mathematical semantics (fractions, square roots, exponents).
+ */
+export function cleanMath(text) {
+  let s = String(text || '').trim();
+  // Preserve mathematical meaning for fractions: \frac{a}{b} -> (a)/(b)
+  while (/\\frac\{([^{}]+)\}\{([^{}]+)\}/.test(s)) {
+    s = s.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '($1)/($2)');
+  }
+  // Preserve mathematical meaning for square roots: \sqrt{x} -> √(x)
+  while (/\\sqrt\{([^{}]+)\}/.test(s)) {
+    s = s.replace(/\\sqrt\{([^{}]+)\}/g, '√($1)');
+  }
+  return s
+    .replace(/\\mathcal\{O\}|\\mathcal\{o\}/g, 'O')
+    .replace(/\\Theta(?![a-zA-Z])|\\theta(?![a-zA-Z])/g, 'Θ')
+    .replace(/\\Omega(?![a-zA-Z])|\\omega(?![a-zA-Z])/g, 'Ω')
+    .replace(/\\log(?![a-zA-Z])/g, 'log')
+    .replace(/\\ln(?![a-zA-Z])/g, 'ln')
+    .replace(/\\times(?![a-zA-Z])/g, '×')
+    .replace(/\\cdot(?![a-zA-Z])/g, '·')
+    .replace(/\\le(?![a-zA-Z])|\\leq(?![a-zA-Z])/g, '≤')
+    .replace(/\\ge(?![a-zA-Z])|\\geq(?![a-zA-Z])/g, '≥')
+    .replace(/\\ne(?![a-zA-Z])|\\neq(?![a-zA-Z])/g, '≠')
+    .replace(/\\approx(?![a-zA-Z])/g, '≈')
+    .replace(/\\to(?![a-zA-Z])|\\rightarrow(?![a-zA-Z])/g, '→')
+    .replace(/\\in(?![a-zA-Z])/g, '∈')
+    .replace(/\\notin(?![a-zA-Z])/g, '∉')
+    .replace(/\\infty(?![a-zA-Z])/g, '∞')
+    .replace(/\\pm(?![a-zA-Z])/g, '±')
+    .replace(/\\sum(?![a-zA-Z])/g, '∑')
+    .replace(/\\prod(?![a-zA-Z])/g, '∏')
+    .replace(/\\int(?![a-zA-Z])/g, '∫')
+    .replace(/\\text\{([^}]+)\}/g, '$1')
+    .replace(/\\left|\\right/g, '')
+    .trim();
 }
