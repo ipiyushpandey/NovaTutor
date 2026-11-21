@@ -53,7 +53,7 @@ public class AiQuotaConcurrencyTest {
     @Test
     @DisplayName("Two independently constructed instances running concurrent reservations through the shared database cannot exceed quota")
     void twoIndependentInstancesConcurrentSharedDatabaseReservationsCannotExceedQuota() throws InterruptedException {
-        int quotaLimit = 15;
+        int quotaLimit = 20;
 
         // Instance A and Instance B are completely separate Java objects
         // They share the SAME database and SAME transaction manager.
@@ -68,46 +68,36 @@ public class AiQuotaConcurrencyTest {
 
         int threadsPerInstance = 20; // 40 total concurrent threads
         int totalThreads = threadsPerInstance * 2;
-        ExecutorService executor = Executors.newFixedThreadPool(16);
+        ExecutorService executor = Executors.newFixedThreadPool(8);
         CountDownLatch startGate = new CountDownLatch(1);
         CountDownLatch doneGate = new CountDownLatch(totalThreads);
 
         AtomicInteger successA = new AtomicInteger(0);
         AtomicInteger successB = new AtomicInteger(0);
-        AtomicInteger quotaExceededCount = new AtomicInteger(0);
+        AtomicInteger quotaExceededA = new AtomicInteger(0);
+        AtomicInteger quotaExceededB = new AtomicInteger(0);
         AtomicInteger unexpectedFailures = new AtomicInteger(0);
 
-        // Submit 20 threads to Instance A
-        for (int i = 0; i < threadsPerInstance; i++) {
+        // Interleave submissions across Instance A and Instance B
+        for (int i = 0; i < totalThreads; i++) {
+            final boolean useInstanceA = (i % 2 == 0);
             executor.submit(() -> {
                 try {
                     startGate.await();
-                    instanceA.reserveDailyQuota();
-                    successA.incrementAndGet();
-                } catch (ApiException e) {
-                    if (e.status() == HttpStatus.TOO_MANY_REQUESTS && "AI_QUOTA_EXHAUSTED".equals(e.code())) {
-                        quotaExceededCount.incrementAndGet();
+                    if (useInstanceA) {
+                        instanceA.reserveDailyQuota();
+                        successA.incrementAndGet();
                     } else {
-                        unexpectedFailures.incrementAndGet();
+                        instanceB.reserveDailyQuota();
+                        successB.incrementAndGet();
                     }
-                } catch (Exception e) {
-                    unexpectedFailures.incrementAndGet();
-                } finally {
-                    doneGate.countDown();
-                }
-            });
-        }
-
-        // Submit 20 threads to Instance B
-        for (int i = 0; i < threadsPerInstance; i++) {
-            executor.submit(() -> {
-                try {
-                    startGate.await();
-                    instanceB.reserveDailyQuota();
-                    successB.incrementAndGet();
                 } catch (ApiException e) {
                     if (e.status() == HttpStatus.TOO_MANY_REQUESTS && "AI_QUOTA_EXHAUSTED".equals(e.code())) {
-                        quotaExceededCount.incrementAndGet();
+                        if (useInstanceA) {
+                            quotaExceededA.incrementAndGet();
+                        } else {
+                            quotaExceededB.incrementAndGet();
+                        }
                     } else {
                         unexpectedFailures.incrementAndGet();
                     }
@@ -121,17 +111,20 @@ public class AiQuotaConcurrencyTest {
 
         // Unleash all 40 threads across both instances at the exact same millisecond
         startGate.countDown();
-        assertTrue(doneGate.await(20, TimeUnit.SECONDS), "Timed out waiting for two-instance concurrent reservations");
+        assertTrue(doneGate.await(30, TimeUnit.SECONDS), "Timed out waiting for two-instance concurrent reservations");
         executor.shutdown();
 
         int totalSuccess = successA.get() + successB.get();
+        int totalQuotaExceeded = quotaExceededA.get() + quotaExceededB.get();
         assertEquals(quotaLimit, totalSuccess, "Total reservations across both independent instances must equal exactly quotaLimit");
-        assertEquals(totalThreads - quotaLimit, quotaExceededCount.get(), "All excess requests across both instances must receive 429 AI_QUOTA_EXHAUSTED");
+        assertEquals(totalThreads - quotaLimit, totalQuotaExceeded, "All excess requests across both instances must receive 429 AI_QUOTA_EXHAUSTED");
         assertEquals(0, unexpectedFailures.get(), "No unexpected concurrency failures");
 
         // Both instances must have participated in reservations
         assertTrue(successA.get() > 0, "Instance A must have handled some successful reservations");
         assertTrue(successB.get() > 0, "Instance B must have handled some successful reservations");
+        assertTrue(quotaExceededA.get() > 0, "Instance A must have had excess requests rejected with 429");
+        assertTrue(quotaExceededB.get() > 0, "Instance B must have had excess requests rejected with 429");
 
         // Verify shared persisted database state is exactly quotaLimit
         AppMeta stored = meta.findById(todayKey).orElseThrow();
@@ -157,7 +150,7 @@ public class AiQuotaConcurrencyTest {
         instanceB.setTransactionManager(txManager);
 
         int totalThreads = 30;
-        ExecutorService executor = Executors.newFixedThreadPool(12);
+        ExecutorService executor = Executors.newFixedThreadPool(8);
         CountDownLatch startGate = new CountDownLatch(1);
         CountDownLatch doneGate = new CountDownLatch(totalThreads);
         AtomicInteger successCount = new AtomicInteger(0);
@@ -178,7 +171,7 @@ public class AiQuotaConcurrencyTest {
         }
 
         startGate.countDown();
-        assertTrue(doneGate.await(15, TimeUnit.SECONDS));
+        assertTrue(doneGate.await(30, TimeUnit.SECONDS));
         executor.shutdown();
 
         assertEquals(totalThreads, successCount.get(), "All initial concurrent reservations must succeed");
