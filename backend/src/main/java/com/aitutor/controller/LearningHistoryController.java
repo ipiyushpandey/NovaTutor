@@ -66,10 +66,12 @@ public class LearningHistoryController {
         }
     }
 
+    private static final java.util.Set<String> ALLOWED_HISTORY_TYPES = java.util.Set.of("AI_TEACHER");
+
     @GetMapping
     public List<HistoryItemDto> list(Authentication authentication) {
         User user = authenticatedUser.require(authentication);
-        return historyRepository.findTop50ByUserIdOrderByUpdatedAtDesc(user.getId())
+        return historyRepository.findTop50ByUserIdAndItemTypeInOrderByUpdatedAtDesc(user.getId(), ALLOWED_HISTORY_TYPES)
                 .stream()
                 .map(HistoryItemDto::from)
                 .toList();
@@ -87,11 +89,21 @@ public class LearningHistoryController {
         }
 
         String safeType = req.itemType().trim().toUpperCase(java.util.Locale.ROOT);
+        if (!ALLOWED_HISTORY_TYPES.contains(safeType)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "UNSUPPORTED_HISTORY_TYPE",
+                    "Only AI Teacher interactions may be recorded in learning history");
+        }
+
+        if (req.contentSnapshot() == null || req.contentSnapshot().isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_HISTORY_ITEM",
+                    "Meaningful content snapshot is required for learning history");
+        }
+
         String safeKey = req.itemKey().trim();
         String safeTitle = req.title().trim();
         String safeCategory = req.category() != null ? req.category().trim() : "";
-        String safeRoute = req.targetRoute() != null ? req.targetRoute().trim() : "";
-        String safeSnapshot = req.contentSnapshot();
+        String safeRoute = req.targetRoute() != null ? req.targetRoute().trim() : "learning-studio";
+        String safeSnapshot = req.contentSnapshot().trim();
 
         Optional<LearningHistory> existing = historyRepository.findByUserIdAndItemTypeAndItemKey(
                 user.getId(), safeType, safeKey);
@@ -114,14 +126,14 @@ public class LearningHistoryController {
     public Map<String, Object> deleteItem(@PathVariable Long id, Authentication authentication) {
         User user = authenticatedUser.require(authentication);
         int deleted = historyRepository.deleteByUserIdAndId(user.getId(), id);
-        return Map.of("success", deleted > 0, "id", id);
+        return Map.of("success", true, "id", id, "deleted", deleted > 0);
     }
 
     @DeleteMapping
     @Transactional
     public Map<String, Object> clear(Authentication authentication) {
         User user = authenticatedUser.require(authentication);
-        int deleted = historyRepository.deleteByUserId(user.getId());
+        int deleted = historyRepository.deleteByUserIdAndItemTypeIn(user.getId(), ALLOWED_HISTORY_TYPES);
         return Map.of("success", true, "count", deleted);
     }
 }

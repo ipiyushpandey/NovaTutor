@@ -316,11 +316,45 @@ function cleanSpokenText(raw){
   .replace(/`([^`]+)`/g,'$1')
   .replace(/\[([^\]]+)\]\([^\)]+\)/g,'$1')
   .replace(/https?:\/\/\S+/gi,'')
+  .replace(/\\(?:frac|dfrac|tfrac)\s*\{([^}]+)\}\s*\{([^}]+)\}/gi,' $1 over $2 ')
+  .replace(/\\sqrt\[([^\]]+)\]\{([^}]+)\}/gi,' $1th root of $2 ')
+  .replace(/\\sqrt\{([^}]+)\}/gi,' square root of $1 ')
+  .replace(/\\(?:sum|prod|int)(?:_[^{\s]+|\_\{[^}]+\})?(?:\^[^{\s]+|\^\{[^}]+\})?/gi,' ')
+  .replace(/\\times|\\cdot/gi,' times ')
+  .replace(/\\div/gi,' divided by ')
+  .replace(/\\pm/gi,' plus or minus ')
+  .replace(/\\(?:le|leq)/gi,' less than or equal to ')
+  .replace(/\\(?:ge|geq)/gi,' greater than or equal to ')
+  .replace(/\\(?:ne|neq)/gi,' not equal to ')
+  .replace(/\\approx/gi,' approximately ')
+  .replace(/\\infty/gi,' infinity ')
+  .replace(/\\pi/gi,' pi ')
+  .replace(/\\theta/gi,' theta ')
+  .replace(/\\alpha/gi,' alpha ')
+  .replace(/\\beta/gi,' beta ')
+  .replace(/\\lambda/gi,' lambda ')
+  .replace(/\\sigma/gi,' sigma ')
+  .replace(/\\in/gi,' in ')
+  .replace(/\\notin/gi,' not in ')
+  .replace(/\\(?:subset|subseteq)/gi,' subset of ')
+  .replace(/\\(?:to|rightarrow)/gi,' approaches ')
+  .replace(/\\(?:text|mathbf|mathrm|mathit)\{([^}]+)\}/gi,' $1 ')
   .replace(/O\(\s*1\s*\)/gi,'O of 1')
   .replace(/O\(\s*n\s*\)/gi,'O of n')
   .replace(/O\(\s*log\s*n\s*\)/gi,'O of log n')
   .replace(/O\(\s*n\s*log\s*n\s*\)/gi,'O of n log n')
   .replace(/O\(\s*n\^?2\s*\)/gi,'O of n squared')
+  .replace(/O\(\s*2\^?n\s*\)/gi,'O of 2 to the n')
+  .replace(/\^2\b|\^\{2\}/g,' squared ')
+  .replace(/\^3\b|\^\{3\}/g,' cubed ')
+  .replace(/\^\{([^}]+)\}/g,' to the power of $1 ')
+  .replace(/\^([0-9a-zA-Z])/g,' to the power of $1 ')
+  .replace(/_\{([^}]+)\}/g,' sub $1 ')
+  .replace(/_([0-9a-zA-Z])/g,' sub $1 ')
+  .replace(/\$\$([\s\S]*?)\$\$/g,' $1 ')
+  .replace(/\$([^\$]+)\$/g,' $1 ')
+  .replace(/\\\(|\x5C\)|\x5C\[|\x5C\]/g,' ')
+  .replace(/\\([a-zA-Z]+)/g,' $1 ')
   .replace(/===?/g,' equals ')
   .replace(/!==?/g,' does not equal ')
   .replace(/<=/g,' less than or equal to ')
@@ -330,6 +364,7 @@ function cleanSpokenText(raw){
   .replace(/->|=>/g,' arrow ')
   .replace(/[*_#~>]/g,'')
   .replace(/\{[^{}]*\}/g,'')
+  .replace(/[\$\\]/g,'')
   .replace(/\s+/g,' ')
   .trim();
 }
@@ -2056,7 +2091,7 @@ function CourseDppIde({user,courses}){
  function resumeQuestion(n){if(submitted)return;setSkipped(prev=>{const next={...prev};delete next[n];return next})}
  function answerWords(value){return String(value||'').toLowerCase().replace(/[^a-z0-9+#.\s]/g,' ').split(/\s+/).filter(w=>w.length>2&&!['the','and','for','with','that','this','from','into','are','was','has','have','your','you','not','can','use','using','what','when','where','how','why','then','than','its','their'].includes(w))}
  function textAnswerCorrect(expected,actual){const a=String(actual||'').trim().toLowerCase(),e=String(expected||'').trim().toLowerCase();if(!a||!e)return false;if(a===e||a.includes(e)||e.includes(a))return true;const keys=[...new Set(answerWords(e))];if(!keys.length)return false;const got=new Set(answerWords(a));const hits=keys.filter(k=>got.has(k)).length;return hits>=Math.max(1,Math.ceil(keys.length*.4))}
- async function submitDpp(){if(!dpp?.length)return;const incomplete=dpp.some((_,i)=>!String(answers[i+1]||'').trim()&&!skipped[i+1]);if(incomplete){setError('Answer or skip every task before submitting.');return}setError('');setSubmitted(true);const earned=resultItems.filter(Boolean).length;const percent=Math.round((earned/dpp.length)*100);try{await api('/intelligence/'+user.id+'/events',{method:'POST',body:JSON.stringify({type:'DPP_COMPLETED',subject:selected?.title||'Course Practice',topic:'Daily Practice Problems',score:percent,durationSeconds:0,details:`Completed DPP: ${earned}/${dpp.length} tasks.`})});window.dispatchEvent(new Event('nova:learning-updated'));recordLearningHistory({itemType:'DPP',itemKey:`dpp_${courseId}_${Date.now()}`,title:`DPP: ${selected?.title||'Daily Practice'} (${earned}/${dpp.length} solved)`,category:selected?.title||'Course Practice',targetRoute:'dpp',contentSnapshot:JSON.stringify({courseId,earned,total:dpp.length,percent})}).catch(()=>{});}catch{}}
+ async function submitDpp(){if(!dpp?.length)return;const incomplete=dpp.some((_,i)=>!String(answers[i+1]||'').trim()&&!skipped[i+1]);if(incomplete){setError('Answer or skip every task before submitting.');return}setError('');setSubmitted(true);const earned=resultItems.filter(Boolean).length;const percent=Math.round((earned/dpp.length)*100);try{await api('/intelligence/'+user.id+'/events',{method:'POST',body:JSON.stringify({type:'DPP_COMPLETED',subject:selected?.title||'Course Practice',topic:'Daily Practice Problems',score:percent,durationSeconds:0,details:`Completed DPP: ${earned}/${dpp.length} tasks.`})});window.dispatchEvent(new Event('nova:learning-updated'));}catch{}}
  function scoreTask(t,i){if(skipped[i+1])return false;return textAnswerCorrect(t.answer,answers[i+1])}
  const resultItems=dpp?.map((t,i)=>scoreTask(t,i))||[];
  const totalMarks=dpp?.length||0;
@@ -2141,11 +2176,12 @@ function GlobalSearch({courses,go}){
 
 function HomeFeatureStrip({go}){
  const features=[
-  {id:'gatecse',label:'GATE CSE Prep',icon:GraduationCap,tag:'PYQs & Mocks'},
+  {id:'gatecse/syllabus',label:'GATE Syllabus',icon:GraduationCap,tag:'Exam Blueprint'},
   {id:'dsa',label:'DSA Practice',icon:Code2,tag:'Judge Arena'},
   {id:'learning-studio',label:'AI Teacher',icon:BrainCircuit,tag:'Streaming AI'},
   {id:'quiz',label:'Smart Quizzes',icon:Target,tag:'Adaptive XP'},
   {id:'dpp',label:'Daily DPP & IDE',icon:Sparkles,tag:'Code Runner'},
+  {id:'gatecse',label:'GATE CSE Prep',icon:GraduationCap,tag:'PYQs & Mocks'},
   {id:'planner',label:'AI Study Planner',icon:CalendarDays,tag:'Personalized'},
   {id:'nova-brain',label:'NovaBrain Memory',icon:Brain,tag:'Knowledge Graph'},
   {id:'interview',label:'AI Interviewer',icon:UserRound,tag:'Voice & Mock'},
@@ -2291,7 +2327,7 @@ function MasterySnapshot({user,go,sharedIntel}){
  useEffect(()=>{if(usesShared||!user?.id)return;const load=()=>api('/intelligence/'+user.id).then(setOwnData).catch(()=>{});load();window.addEventListener('nova:learning-updated',load);return()=>window.removeEventListener('nova:learning-updated',load)},[user?.id,usesShared]);
  const data=usesShared?sharedIntel:ownData;
  const items=(data?.mastery||[]).slice(0,5);
- return <section className="mastery-snapshot panel"><div className="panel-head"><div><span className="eyebrow">NOVA BRAIN • MASTERY</span><h3>Know what to improve next</h3><small>Mastery is based on your recent quiz performance and changes as you practice.</small></div><Brain size={20}/></div>{items.length?<div className="mastery-list">{items.map((x,i)=><div className="mastery-row" key={x.subject+i}><div className="mastery-label"><b>{x.subject}</b><small>{x.state} • {x.trend}</small></div><div className="mastery-track"><span style={{width:Math.max(2,Math.min(100,Number(x.accuracy)||0))+'%'}}/></div><strong>{x.accuracy}%</strong></div>)}</div>:<div className="mastery-empty"><Brain size={25}/><div><b>Nova is still learning your pattern.</b><span>Complete a quiz or practice session and your mastery map will appear here.</span></div><button className="secondary" onClick={()=>go('quiz')}>Start a quiz <ChevronRight size={13}/></button></div>}<div className="mastery-footer"><span><CheckCircle2 size={13}/> <b>85%+</b> mastered</span><span><Lightbulb size={13}/> <b>65–84%</b> learning</span><span><Target size={13}/> <b>&lt;65%</b> needs work</span><button className="text-btn" onClick={()=>go('mentor')}>Open adaptive mentor <ChevronRight size={13}/></button></div></section>}
+ return <section className="mastery-snapshot panel"><div className="panel-head"><div><span className="eyebrow">NOVA BRAIN • MASTERY</span><h3>Know what to improve next</h3><small>Mastery is based on your recent quiz performance and changes as you practice.</small></div><Brain size={20}/></div>{items.length?<div className="mastery-list">{items.map((x,i)=><div className="mastery-row clickable-card" key={x.subject+i} onClick={()=>go('quiz')} role="button" tabIndex={0} onKeyDown={e=>{if(e.key==='Enter'||e.key===' ')go('quiz')}}><div className="mastery-label"><b>{x.subject}</b><small>{x.state} • {x.trend}</small></div><div className="mastery-track"><span style={{width:Math.max(2,Math.min(100,Number(x.accuracy)||0))+'%'}}/></div><strong>{x.accuracy}%</strong></div>)}</div>:<div className="mastery-empty"><Brain size={25}/><div><b>Nova is still learning your pattern.</b><span>Complete a quiz or practice session and your mastery map will appear here.</span></div><button className="secondary" onClick={()=>go('quiz')}>Start a quiz <ChevronRight size={13}/></button></div>}<div className="mastery-footer"><span><CheckCircle2 size={13}/> <b>85%+</b> mastered</span><span><Lightbulb size={13}/> <b>65–84%</b> learning</span><span><Target size={13}/> <b>&lt;65%</b> needs work</span><button className="text-btn" onClick={()=>go('quiz')}>Take Smart Quiz <ChevronRight size={13}/></button></div></section>}
 
 
 function Stat({n,t}){return <div className="stat"><b>{n}</b><span>{t}</span></div>}
@@ -2558,8 +2594,19 @@ const lessonBg=internalContextRef.current?`\n\nLESSON CONTEXT:\n${internalContex
    if(summary?.truncated){
     setStreamTruncated(true);
    }else{
-    saveTutorMemory(user?.id,{topic:lastAskRef.current?.topic||topic,message:lastAskRef.current?.message||message,answer:accumulated,feedback:'',studentAnswer:'',answerSubmitted:false,contextKey:lastAskRef.current?.contextKey||contextKey});
-    appendTutorTurn(user?.id,'ASSISTANT',accumulated,{topic:lastAskRef.current?.topic||topic,source:'ai-teacher',contextKey:lastAskRef.current?.contextKey||contextKey});
+    const activeTopic=lastAskRef.current?.topic||topic||'general';
+    const activeMessage=lastAskRef.current?.message||message||'';
+    const activeContextKey=lastAskRef.current?.contextKey||contextKey;
+    saveTutorMemory(user?.id,{topic:activeTopic,message:activeMessage,answer:accumulated,feedback:'',studentAnswer:'',answerSubmitted:false,contextKey:activeContextKey});
+    appendTutorTurn(user?.id,'ASSISTANT',accumulated,{topic:activeTopic,source:'ai-teacher',contextKey:activeContextKey});
+    recordLearningHistory({
+     itemType:'AI_TEACHER',
+     itemKey:'tutor_'+activeTopic.toLowerCase().replace(/\s+/g,'_'),
+     title:activeTopic||(activeMessage.slice(0,40)+'...'),
+     category:'AI Teacher Studio',
+     targetRoute:'learning-studio',
+     contentSnapshot:JSON.stringify({topic:activeTopic,message:activeMessage,answer:accumulated,contextKey:activeContextKey})
+    }).catch(()=>{});
    }
   }catch(err){
    if(err?.name==='AbortError'||requestId!==requestSeqRef.current)return;
@@ -2727,7 +2774,7 @@ function Quiz({courses,refresh,user}){
   if(!selected.length)setError('No new quiz questions are available for this course yet.');
  }
  setQuestions(selected);}catch(e){setQuestions([]);setError(e.message||'Quiz could not load.')}finally{setLoading(false)}};
- const submit=async()=>{if(!questions.length)return;const unanswered=questions.filter(q=>answers[q.id]===undefined);if(unanswered.length){setError(`Please answer all ${unanswered.length} remaining question${unanswered.length===1?'':'s'} before submitting.`);return}setLoading(true);setError('');try{const r=await api('/quizzes/course/'+courseId+'/submit',{method:'POST',body:JSON.stringify({userId:user.id,answers:Object.entries(answers).map(([questionId,selectedOption])=>({questionId:Number(questionId),selectedOption:Number(selectedOption)}))})});setResult(r);refresh?.();window.dispatchEvent(new Event('nova:learning-updated'));recordLearningHistory({itemType:'QUIZ',itemKey:'quiz_'+courseId+'_'+Date.now(),title:'Quiz: '+(courses.find(c=>String(c.id)===String(courseId))?.title||'Knowledge Check'),category:'Smart Quiz',targetRoute:'quiz',contentSnapshot:JSON.stringify({score:r.score,correct:r.correct,total:r.total})}).catch(()=>{});}catch(e){setError(e.message||'Quiz submission failed.')}finally{setLoading(false)}};
+ const submit=async()=>{if(!questions.length)return;const unanswered=questions.filter(q=>answers[q.id]===undefined);if(unanswered.length){setError(`Please answer all ${unanswered.length} remaining question${unanswered.length===1?'':'s'} before submitting.`);return}setLoading(true);setError('');try{const r=await api('/quizzes/course/'+courseId+'/submit',{method:'POST',body:JSON.stringify({userId:user.id,answers:Object.entries(answers).map(([questionId,selectedOption])=>({questionId:Number(questionId),selectedOption:Number(selectedOption)}))})});setResult(r);refresh?.();window.dispatchEvent(new Event('nova:learning-updated'));}catch(e){setError(e.message||'Quiz submission failed.')}finally{setLoading(false)}};
  const reset=()=>{setQuestions([]);setAnswers({});setResult(null);setError('')};
  return <><div className="page-title"><span className="eyebrow">ASSESSMENT</span><h1>Smart <span>Quiz.</span></h1><p>Test your understanding, get a score and use mistakes as your revision map.</p></div>
   <div className="quiz-toolbar"><select aria-label="Course" value={courseId} onChange={e=>{setCourseId(e.target.value);reset()}} disabled={!courses.length||loading}><option value="">Select a course</option>{courses.map(c=><option key={c.id} value={c.id}>{c.title}</option>)}</select><button className="primary" onClick={()=>start('fresh')} disabled={!courseId||loading}>{loading?'Loading…':questions.length?'Reload quiz':'Start quiz'} <PlayCircle size={15}/></button><button className="secondary" onClick={()=>start('revision')} disabled={!courseId||loading}>Revise mistakes</button></div>
@@ -3022,7 +3069,7 @@ I can study ${requestedHours} hours per day at ${level} level. Output clean Mark
   clearVisiblePlan();
   setSaved(null);
  }
- return <><div className="page-title"><span className="eyebrow">PERSONAL LEARNING ENGINE</span><h1>AI Study <span>Planner.</span></h1><p>Turn a goal into a realistic daily roadmap with revision, practice and checkpoints.</p></div><div className="planner-grid"><div className="planner-form"><div className="title-icon"><CalendarDays/></div><h3>Build your roadmap</h3><p>Tell Nova AI what you want to master. Your latest plan is saved in this browser.</p><label>LEARNING GOAL</label><input value={goal} onChange={e=>setGoal(e.target.value)} placeholder="e.g. Java Spring Boot for placements"/><div className="planner-fields"><div><label>DAYS (1–60)</label><input type="number" min="1" max="60" aria-label="Days" value={days} onChange={e=>{setDays(e.target.value);setInputError('');}}/><div className="preset-chips" role="group" aria-label="Day presets">{[7,14,21,30].map(d=><button key={d} type="button" className={'preset-chip '+(Number(days)===d?'active':'')} onClick={()=>{setDays(String(d));setInputError('');}}>{d}d</button>)}</div></div><div><label>HOURS / DAY (0.5–16)</label><input type="number" min="0.5" max="16" step="0.5" aria-label="Hours per day" value={hours} onChange={e=>{setHours(e.target.value);setInputError('');}}/><div className="preset-chips" role="group" aria-label="Hour presets">{[1,2,4,6].map(h=><button key={h} type="button" className={'preset-chip '+(Number(hours)===h?'active':'')} onClick={()=>{setHours(String(h));setInputError('');}}>{h}h</button>)}</div></div></div>{inputError&&<div className="error-banner" role="alert" style={{margin:'8px 0'}}>{inputError}</div>}<label>YOUR LEVEL</label><select aria-label="Level" value={level} onChange={e=>setLevel(e.target.value)}><option value="beginner">Beginner</option><option value="intermediate">Intermediate</option><option value="advanced">Advanced</option></select><button className="primary full" onClick={generate} disabled={loading||!goal.trim()}>{loading?'Designing your roadmap…':'Generate roadmap'} <WandSparkles size={15}/></button>{saved&&<button className="text-btn planner-clear" onClick={clearSavedPlan}>Clear saved plan</button>}</div><div className="planner-result"><div className="answer-head"><div className="ai-avatar"><Sparkles size={17}/></div><div><b>Nova Roadmap</b><small>{saved?'Saved locally • ready to revise':'AI-generated study strategy'}</small></div>{Boolean(plan||loading)&&<button type="button" className="ai-clear-action" onClick={clearVisiblePlan} title="Clear visible roadmap" aria-label="Clear visible roadmap"><RotateCcw size={12}/> Clear</button>}</div>{saved&&!plan&&<button type="button" className="secondary compact" style={{margin:'8px 0'}} onClick={()=>setPlan(saved.plan)}>Restore saved plan</button>}{plan?<div className="answer planner-answer"><AiMarkdown content={plan}/></div>:<div className="empty"><CalendarDays size={44}/><b>Your roadmap will appear here</b><span>Choose a goal and let AI break it into focused daily actions.</span></div>}</div></div></>;
+ return <><div className="page-title"><span className="eyebrow">PERSONAL LEARNING ENGINE</span><h1>AI Study <span>Planner.</span></h1><p>Turn a goal into a realistic daily roadmap with revision, practice and checkpoints.</p></div><div className="planner-grid"><div className="planner-form"><div className="title-icon"><CalendarDays/></div><h3>Build your roadmap</h3><p>Tell Nova AI what you want to master. Your latest plan is saved in this browser.</p><label>LEARNING GOAL</label><input value={goal} onChange={e=>setGoal(e.target.value)} placeholder="e.g. Java Spring Boot for placements"/><div className="planner-fields"><div><label>DAYS (1–60)</label><input type="number" min="1" max="60" aria-label="Days" value={days} onChange={e=>{setDays(e.target.value);setInputError('');}}/><div className="preset-chips" role="group" aria-label="Day presets">{[1,7,14,17,30,60].map(d=><button key={d} type="button" className={'preset-chip '+(Number(days)===d?'active':'')} onClick={()=>{setDays(String(d));setInputError('');}}>{d}d</button>)}</div></div><div><label>HOURS / DAY (0.5–16)</label><input type="number" min="0.5" max="16" step="0.5" aria-label="Hours per day" value={hours} onChange={e=>{setHours(e.target.value);setInputError('');}}/><div className="preset-chips" role="group" aria-label="Hour presets">{[1,2,4,6].map(h=><button key={h} type="button" className={'preset-chip '+(Number(hours)===h?'active':'')} onClick={()=>{setHours(String(h));setInputError('');}}>{h}h</button>)}</div></div></div>{inputError&&<div className="error-banner" role="alert" style={{margin:'8px 0'}}>{inputError}</div>}<label>YOUR LEVEL</label><select aria-label="Level" value={level} onChange={e=>setLevel(e.target.value)}><option value="beginner">Beginner</option><option value="intermediate">Intermediate</option><option value="advanced">Advanced</option></select><button className="primary full" onClick={generate} disabled={loading||!goal.trim()}>{loading?'Designing your roadmap…':'Generate roadmap'} <WandSparkles size={15}/></button>{saved&&<button className="text-btn planner-clear" onClick={clearSavedPlan}>Clear saved plan</button>}</div><div className="planner-result"><div className="answer-head"><div className="ai-avatar"><Sparkles size={17}/></div><div><b>Nova Roadmap</b><small>{saved?'Saved locally • ready to revise':'AI-generated study strategy'}</small></div>{Boolean(plan||loading)&&<button type="button" className="ai-clear-action" onClick={clearVisiblePlan} title="Clear visible roadmap" aria-label="Clear visible roadmap"><RotateCcw size={12}/> Clear</button>}</div>{saved&&!plan&&<button type="button" className="secondary compact" style={{margin:'8px 0'}} onClick={()=>setPlan(saved.plan)}>Restore saved plan</button>}{plan?<div className="answer planner-answer"><AiMarkdown content={plan}/></div>:<div className="empty"><CalendarDays size={44}/><b>Your roadmap will appear here</b><span>Choose a goal and let AI break it into focused daily actions.</span></div>}</div></div></>;
 }
 function Flashcards({user}){
  const [topic,setTopic]=useState(''); const [count,setCount]=useState('8'); const [cards,setCards]=useState([]); const [index,setIndex]=useState(0); const [flipped,setFlipped]=useState(false); const [loading,setLoading]=useState(false);

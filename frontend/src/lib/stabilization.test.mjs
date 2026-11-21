@@ -624,31 +624,45 @@ test('Upgrade Invariants: Learning History, Quiz Review, and Composable Navigati
   setupBrowserGlobals();
   const { recordLearningHistory, readUser } = await import('./api.js?t=' + Date.now());
 
-  // 1. Guest user recordLearningHistory stores in localStorage
+  // 1. Guest user recordLearningHistory ignores non-AI_TEACHER types (e.g. LESSON, QUIZ, DPP)
   localStorage.setItem('ai_user', JSON.stringify({ id: 'guest-123', role: 'GUEST' }));
   await recordLearningHistory({
     itemType: 'LESSON',
     itemKey: 'course_1_lesson_5',
     title: 'Lecture 5 — Pointers and Arrays',
     category: 'C Programming',
-    targetRoute: 'course/1/lesson/5'
+    targetRoute: 'course/1/lesson/5',
+    contentSnapshot: '{"topic":"Pointers"}'
+  });
+  const ignoredHistory = JSON.parse(localStorage.getItem('nova_guest_history_guest-123') || '[]');
+  assert.equal(ignoredHistory.length, 0, 'Non-AI_TEACHER history items must not be recorded');
+
+  // AI_TEACHER with meaningful snapshot is saved
+  await recordLearningHistory({
+    itemType: 'AI_TEACHER',
+    itemKey: 'tutor_binary_search',
+    title: 'Binary Search Concept',
+    category: 'AI Teacher Studio',
+    targetRoute: 'learning-studio',
+    contentSnapshot: '{"topic":"Binary Search","answer":"O(log n) time"}'
   });
   const guestHistory = JSON.parse(localStorage.getItem('nova_guest_history_guest-123') || '[]');
   assert.equal(guestHistory.length, 1);
-  assert.equal(guestHistory[0].itemKey, 'course_1_lesson_5');
-  assert.equal(guestHistory[0].title, 'Lecture 5 — Pointers and Arrays');
+  assert.equal(guestHistory[0].itemKey, 'tutor_binary_search');
+  assert.equal(guestHistory[0].title, 'Binary Search Concept');
 
   // Upsert updates existing entry and brings it to the top
   await recordLearningHistory({
-    itemType: 'LESSON',
-    itemKey: 'course_1_lesson_5',
-    title: 'Lecture 5 — Pointers and Arrays (Updated)',
-    category: 'C Programming',
-    targetRoute: 'course/1/lesson/5'
+    itemType: 'AI_TEACHER',
+    itemKey: 'tutor_binary_search',
+    title: 'Binary Search Concept (Updated)',
+    category: 'AI Teacher Studio',
+    targetRoute: 'learning-studio',
+    contentSnapshot: '{"topic":"Binary Search","answer":"Updated answer"}'
   });
   const updatedHistory = JSON.parse(localStorage.getItem('nova_guest_history_guest-123') || '[]');
   assert.equal(updatedHistory.length, 1);
-  assert.equal(updatedHistory[0].title, 'Lecture 5 — Pointers and Arrays (Updated)');
+  assert.equal(updatedHistory[0].title, 'Binary Search Concept (Updated)');
 
   // 2. main.jsx structure and invariants
   const mainJsx = fs.readFileSync(path.join(SRC_DIR, 'main.jsx'), 'utf8');

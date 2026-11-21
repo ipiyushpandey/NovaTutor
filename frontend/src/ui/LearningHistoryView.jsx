@@ -33,7 +33,9 @@ export default function LearningHistoryView({ user, go, onReopenTopic }) {
       try {
         const guestKey = `nova_guest_history_${user?.id || 'guest'}`;
         const raw = localStorage.getItem(guestKey);
-        setItems(raw ? JSON.parse(raw) : []);
+        const parsed = raw ? JSON.parse(raw) : [];
+        const aiOnly = Array.isArray(parsed) ? parsed.filter(x => x.itemType === 'AI_TEACHER') : [];
+        setItems(aiOnly);
       } catch {
         setItems([]);
       } finally {
@@ -45,9 +47,10 @@ export default function LearningHistoryView({ user, go, onReopenTopic }) {
     try {
       const data = await api('/history');
       if (Array.isArray(data)) {
-        setItems(data);
+        const aiOnly = data.filter(x => x.itemType === 'AI_TEACHER');
+        setItems(aiOnly);
         try {
-          localStorage.setItem(`nova_user_history_${user.id}`, JSON.stringify(data));
+          localStorage.setItem(`nova_user_history_${user.id}`, JSON.stringify(aiOnly));
         } catch {}
       } else {
         setItems([]);
@@ -57,7 +60,9 @@ export default function LearningHistoryView({ user, go, onReopenTopic }) {
       const localKey = `nova_user_history_${user.id}`;
       try {
         const raw = localStorage.getItem(localKey);
-        setItems(raw ? JSON.parse(raw) : []);
+        const parsed = raw ? JSON.parse(raw) : [];
+        const aiOnly = Array.isArray(parsed) ? parsed.filter(x => x.itemType === 'AI_TEACHER') : [];
+        setItems(aiOnly);
       } catch {
         setItems([]);
       }
@@ -139,62 +144,18 @@ export default function LearningHistoryView({ user, go, onReopenTopic }) {
 
   const filteredItems = useMemo(() => {
     return items.filter(item => {
-      const matchesFilter =
-        filter === 'ALL' ||
-        (filter === 'LESSON' && item.itemType === 'LESSON') ||
-        (filter === 'DSA' && item.itemType === 'DSA') ||
-        (filter === 'GATE_CSE' && item.itemType === 'GATE_CSE') ||
-        (filter === 'AI_TEACHER' && item.itemType === 'AI_TEACHER') ||
-        (filter === 'QUIZ' && item.itemType === 'QUIZ') ||
-        (filter === 'DPP' && item.itemType === 'DPP');
-
+      if (item.itemType !== 'AI_TEACHER') return false;
       const q = search.trim().toLowerCase();
-      const matchesSearch =
-        !q ||
+      if (!q) return true;
+      return (
         (item.title && item.title.toLowerCase().includes(q)) ||
-        (item.category && item.category.toLowerCase().includes(q));
-
-      return matchesFilter && matchesSearch;
+        (item.category && item.category.toLowerCase().includes(q))
+      );
     });
-  }, [items, filter, search]);
+  }, [items, search]);
 
-  const getTypeIcon = type => {
-    switch (type) {
-      case 'LESSON':
-        return <BookOpen size={16} />;
-      case 'DSA':
-        return <Code2 size={16} />;
-      case 'GATE_CSE':
-        return <GraduationCap size={16} />;
-      case 'AI_TEACHER':
-        return <BrainCircuit size={16} />;
-      case 'QUIZ':
-        return <Target size={16} />;
-      case 'DPP':
-        return <BrainCircuit size={16} />;
-      default:
-        return <History size={16} />;
-    }
-  };
-
-  const getTypeLabel = type => {
-    switch (type) {
-      case 'LESSON':
-        return 'Course Lesson';
-      case 'DSA':
-        return 'DSA Problem';
-      case 'GATE_CSE':
-        return 'GATE CSE';
-      case 'AI_TEACHER':
-        return 'AI Teacher';
-      case 'QUIZ':
-        return 'Smart Quiz';
-      case 'DPP':
-        return 'Daily Practice (DPP)';
-      default:
-        return 'Learning Topic';
-    }
-  };
+  const getTypeIcon = () => <BrainCircuit size={16} />;
+  const getTypeLabel = () => 'AI Teacher';
 
   return (
     <div className="learning-history-page">
@@ -204,8 +165,8 @@ export default function LearningHistoryView({ user, go, onReopenTopic }) {
           Learning <span>History.</span>
         </h1>
         <p>
-          Pick up right where you left off. Every lesson, problem, exam topic, and AI tutor session you study is
-          saved here so you can revisit and master it.
+          Pick up right where you left off. Every completed AI Teacher session and conceptual deep dive is
+          saved here so you can revisit and master it anytime.
         </p>
       </div>
 
@@ -215,7 +176,7 @@ export default function LearningHistoryView({ user, go, onReopenTopic }) {
           <input
             type="text"
             className="history-search-input"
-            placeholder="Search studied topics or courses…"
+            placeholder="Search AI Teacher sessions or concepts…"
             value={search}
             onChange={e => setSearch(e.target.value)}
             aria-label="Search learning history"
@@ -227,25 +188,9 @@ export default function LearningHistoryView({ user, go, onReopenTopic }) {
           )}
         </div>
 
-        <div className="history-filter-pills">
-          {[
-            ['ALL', 'All Topics'],
-            ['LESSON', 'Courses & Lessons'],
-            ['DSA', 'DSA Practice'],
-            ['GATE_CSE', 'GATE CSE'],
-            ['AI_TEACHER', 'AI Teacher'],
-            ['QUIZ', 'Quizzes'],
-            ['DPP', 'DPP Practice'],
-          ].map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              className={`pill-btn ${filter === key ? 'active' : ''}`}
-              onClick={() => setFilter(key)}
-            >
-              {label}
-            </button>
-          ))}
+        <div className="history-count-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12px', fontWeight: 700, color: 'var(--muted)', padding: '6px 12px', background: 'var(--surface-2)', borderRadius: '99px', border: '1px solid var(--border)' }}>
+          <BrainCircuit size={14} style={{ color: 'var(--accent)' }} />
+          <span>{filteredItems.length} AI Session{filteredItems.length === 1 ? '' : 's'}</span>
         </div>
 
         {items.length > 0 && (
@@ -291,15 +236,15 @@ export default function LearningHistoryView({ user, go, onReopenTopic }) {
       {!loading && filteredItems.length === 0 && (
         <div className="panel empty history-empty">
           <History size={48} />
-          <b>{search ? 'No matching topics found.' : 'No learning history yet.'}</b>
+          <b>{search ? 'No matching AI sessions found.' : 'No AI Teacher sessions yet.'}</b>
           <span>
             {search
-              ? 'Try a different search keyword or filter.'
-              : 'As you open lessons, solve DSA challenges, or ask questions in AI Teacher, your studied topics will appear here.'}
+              ? 'Try a different search keyword.'
+              : 'As you ask questions and study concepts with Nova in the AI Teacher Studio, your sessions will appear here.'}
           </span>
           {!search && (
-            <button type="button" className="primary" onClick={() => go('courses')}>
-              Explore Courses <ChevronRight size={14} />
+            <button type="button" className="primary" onClick={() => go('learning-studio')}>
+              Open AI Teacher Studio <ChevronRight size={14} />
             </button>
           )}
         </div>

@@ -373,21 +373,22 @@ async function apiStream(path,opt={},onChunk,_retry=false){
 }
 
 async function recordLearningHistory({ itemType, itemKey, title, category, targetRoute, contentSnapshot }) {
- if (!itemType || !itemKey || !title) return;
+ const safeType = String(itemType || '').trim().toUpperCase();
+ if (safeType !== 'AI_TEACHER' || !itemKey || !title || !contentSnapshot) return;
  const user = readUser() || readJSON('ai_user', null);
  const isGuest = String(user?.role || '').toUpperCase() === 'GUEST';
  if (isGuest || !user?.token) {
   try {
    const guestKey = `nova_guest_history_${user?.id || 'guest'}`;
    const existing = JSON.parse(localStorage.getItem(guestKey) || '[]');
-   const filtered = existing.filter(x => !(x.itemType === itemType && x.itemKey === itemKey));
+   const filtered = existing.filter(x => x.itemType === 'AI_TEACHER' && !(x.itemType === safeType && x.itemKey === itemKey));
    const updated = [{
     id: Date.now(),
-    itemType,
+    itemType: 'AI_TEACHER',
     itemKey,
     title,
-    category: category || '',
-    targetRoute: targetRoute || '',
+    category: category || 'AI Teacher Studio',
+    targetRoute: targetRoute || 'learning-studio',
     contentSnapshot: contentSnapshot || null,
     updatedAt: new Date().toISOString()
    }, ...filtered].slice(0, 50);
@@ -399,7 +400,7 @@ async function recordLearningHistory({ itemType, itemKey, title, category, targe
  try {
   await api('/history/record', {
    method: 'POST',
-   body: JSON.stringify({ itemType, itemKey, title, category, targetRoute, contentSnapshot }),
+   body: JSON.stringify({ itemType: 'AI_TEACHER', itemKey, title, category: category || 'AI Teacher Studio', targetRoute: targetRoute || 'learning-studio', contentSnapshot }),
    silentUpdate: true
   });
   window.dispatchEvent(new CustomEvent('nova:history-updated'));
@@ -407,14 +408,14 @@ async function recordLearningHistory({ itemType, itemKey, title, category, targe
   try {
    const localKey = `nova_user_history_${user.id}`;
    const existing = JSON.parse(localStorage.getItem(localKey) || '[]');
-   const filtered = existing.filter(x => !(x.itemType === itemType && x.itemKey === itemKey));
+   const filtered = existing.filter(x => x.itemType === 'AI_TEACHER' && !(x.itemType === safeType && x.itemKey === itemKey));
    const updated = [{
     id: Date.now(),
-    itemType,
+    itemType: 'AI_TEACHER',
     itemKey,
     title,
-    category: category || '',
-    targetRoute: targetRoute || '',
+    category: category || 'AI Teacher Studio',
+    targetRoute: targetRoute || 'learning-studio',
     contentSnapshot: contentSnapshot || null,
     updatedAt: new Date().toISOString()
    }, ...filtered].slice(0, 50);

@@ -59,6 +59,7 @@ class SseAsyncSecurityTomcatTest {
                     if (r == null || r.task() == null) {
                         throw new ApiException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_AI_REQUEST", "AI task is required.");
                     }
+                    Thread.sleep(50);
                     onChunk.accept("Hello ");
                     Thread.sleep(25);
                     onChunk.accept("from real Tomcat!");
@@ -76,12 +77,14 @@ class SseAsyncSecurityTomcatTest {
     @Autowired LessonRepository lessons;
     @Autowired JwtService jwt;
 
-    @Test
-    void realTomcatSseEndpointsCompleteCleanlyAndStillBlockUnauthenticatedRequests() throws Exception {
-        HttpClient client = HttpClient.newBuilder()
+    private HttpClient newClient() {
+        return HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
                 .build();
+    }
 
+    @Test
+    void realTomcatSseEndpointsCompleteCleanlyAndStillBlockUnauthenticatedRequests() throws Exception {
         // 1. Ordinary unauthenticated REQUEST must STILL be rejected with HTTP 401
         HttpRequest unauthReq = HttpRequest.newBuilder()
                 .uri(URI.create("http://127.0.0.1:" + port + "/api/ai/ask/stream"))
@@ -89,7 +92,7 @@ class SseAsyncSecurityTomcatTest {
                 .header("Accept", "text/event-stream")
                 .POST(HttpRequest.BodyPublishers.ofString("{\"task\":\"CODING\",\"message\":\"hi\"}"))
                 .build();
-        HttpResponse<String> unauthResp = client.send(unauthReq, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> unauthResp = newClient().send(unauthReq, HttpResponse.BodyHandlers.ofString());
         assertEquals(401, unauthResp.statusCode(), "Unauthenticated SSE request must still return 401");
 
         // Create real authenticated user + published course + lesson
@@ -120,7 +123,7 @@ class SseAsyncSecurityTomcatTest {
                 .header("Accept", "text/event-stream")
                 .POST(HttpRequest.BodyPublishers.ofString("{\"task\":\"CODING\",\"topic\":\"SSE\",\"message\":\"Explain SSE\"}"))
                 .build();
-        HttpResponse<String> aiStreamResp = client.send(aiStreamReq, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> aiStreamResp = newClient().send(aiStreamReq, HttpResponse.BodyHandlers.ofString());
         assertEquals(200, aiStreamResp.statusCode(), "Authenticated /api/ai/ask/stream must return 200");
         assertTrue(aiStreamResp.headers().firstValue("content-type").orElse("").contains("text/event-stream"),
                 "Expected text/event-stream content-type");
@@ -138,7 +141,7 @@ class SseAsyncSecurityTomcatTest {
                 .POST(HttpRequest.BodyPublishers.ofString(
                         "{\"userId\":" + student.getId() + ",\"courseId\":" + pub.getId() + ",\"lessonId\":" + lesson.getId() + ",\"mode\":\"TEACH\",\"message\":\"Explain\"}"))
                 .build();
-        HttpResponse<String> mentorStreamResp = client.send(mentorStreamReq, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> mentorStreamResp = newClient().send(mentorStreamReq, HttpResponse.BodyHandlers.ofString());
         assertEquals(200, mentorStreamResp.statusCode(), "Authenticated /api/mentor/ask/stream must return 200");
         assertTrue(mentorStreamResp.body().contains("from real Tomcat!"), "Missing mentor SSE chunk: " + mentorStreamResp.body());
         assertTrue(mentorStreamResp.body().contains("event:done"), "Missing mentor SSE done event: " + mentorStreamResp.body());
