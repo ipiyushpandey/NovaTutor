@@ -56,6 +56,10 @@ class AiMetricsTest {
                     if (m.getKey().contains("ai_daily_usage_")) counter.set(Long.parseLong(m.getValue()));
                     return m;
                 });
+        org.springframework.transaction.PlatformTransactionManager mockTx = org.mockito.Mockito.mock(org.springframework.transaction.PlatformTransactionManager.class);
+        org.mockito.Mockito.when(mockTx.getTransaction(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(org.mockito.Mockito.mock(org.springframework.transaction.TransactionStatus.class));
+        metrics.setTransactionManager(mockTx);
         metrics.setMetaRepository(mockMeta);
 
         metrics.reserveDailyQuota();

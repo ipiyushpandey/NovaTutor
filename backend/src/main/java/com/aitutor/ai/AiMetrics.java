@@ -43,6 +43,9 @@ public class AiMetrics {
     public void initFromDb() {
         if (meta == null) return;
         try {
+            if (!meta.existsById(QUOTA_MUTEX_KEY)) {
+                meta.saveAndFlush(new com.aitutor.config.AppMeta(QUOTA_MUTEX_KEY, "0"));
+            }
             String todayKey = "ai_daily_usage_" + todayDate;
             meta.findById(todayKey).ifPresent(m -> {
                 try {
@@ -69,11 +72,8 @@ public class AiMetrics {
 
     @jakarta.annotation.PreDestroy
     public void persistOnShutdown() {
-        if (meta == null) return;
-        try {
-            String todayKey = "ai_daily_usage_" + todayDate;
-            meta.save(new com.aitutor.config.AppMeta(todayKey, String.valueOf(todayRequests.sum())));
-        } catch (Exception ignored) {}
+        // Every reservation is immediately persisted and flushed atomically in reserveDailyQuota.
+        // Never overwrite the shared database count on shutdown with an instance-local sum.
     }
 
     public void setDailyLimit(int limit) {
@@ -94,10 +94,10 @@ public class AiMetrics {
 
     public void setTodayBase(long base) {
         checkDateRoll();
-        if (base > todayRequests.sum()) {
-            synchronized (this) {
-                long diff = base - todayRequests.sum();
-                if (diff > 0) todayRequests.add(diff);
+        synchronized (this) {
+            long currentSum = todayRequests.sum();
+            if (base > currentSum) {
+                todayRequests.add(base - currentSum);
             }
         }
     }
@@ -124,70 +124,109 @@ public class AiMetrics {
     }
 
     public long reserveDailyQuota() {
-        if (transactionManager != null) {
-            org.springframework.transaction.support.TransactionTemplate tt =
-                    new org.springframework.transaction.support.TransactionTemplate(transactionManager);
-            tt.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
-            return tt.execute(status -> doReserveDailyQuota());
+        if (transactionManager == null) {
+            throw new com.aitutor.controller.ApiException(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                "AI_QUOTA_TRANSACTION_UNAVAILABLE",
+                "Transaction manager is unavailable. Quota cannot be safely reserved."
+            );
         }
-        return doReserveDailyQuota();
-    }
-
-    private synchronized long doReserveDailyQuota() {
-        checkDateRoll();
         if (meta == null) {
             throw new com.aitutor.controller.ApiException(
                 org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
                 "AI_QUOTA_STORAGE_UNAVAILABLE",
-                "AI quota reservation cannot be verified. Persistence service is unavailable."
+                "Persistence service is unavailable. Quota cannot be safely reserved."
             );
         }
 
-        String todayKey = "ai_daily_usage_" + todayDate;
+        org.springframework.transaction.support.TransactionTemplate tt =
+                new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        tt.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+
+        Long reserved;
         try {
-            // Guarantee that the global mutex row is locked across all application instances
-            var mutexOpt = meta.findByKeyForUpdate(QUOTA_MUTEX_KEY);
-            if (mutexOpt.isEmpty()) {
-                meta.saveAndFlush(new com.aitutor.config.AppMeta(QUOTA_MUTEX_KEY, "0"));
-                meta.findByKeyForUpdate(QUOTA_MUTEX_KEY);
-            }
-
-            // Read the current global usage for today
-            long currentCount = 0L;
-            var currentOpt = meta.findById(todayKey);
-            if (currentOpt.isPresent()) {
-                try {
-                    currentCount = Long.parseLong(currentOpt.get().getValue().trim());
-                } catch (Exception ignored) {
-                    currentCount = 0L;
-                }
-            }
-
-            int limit = getDailyLimit();
-            if (currentCount >= limit) {
-                setTodayBase(currentCount);
-                throw new com.aitutor.controller.ApiException(
-                    org.springframework.http.HttpStatus.TOO_MANY_REQUESTS,
-                    "AI_QUOTA_EXHAUSTED",
-                    "Daily AI quota has been reached (" + currentCount + "/" + limit + "). Quota resets daily at 00:00 UTC."
-                );
-            }
-
-            long newCount = currentCount + 1;
-            meta.save(new com.aitutor.config.AppMeta(todayKey, String.valueOf(newCount)));
-            meta.flush();
-            setTodayBase(newCount);
-            return newCount;
+            reserved = tt.execute(status -> doReserveDailyQuota());
         } catch (com.aitutor.controller.ApiException e) {
             throw e;
         } catch (Exception ex) {
-            // Fail closed! Never allow silent bypass when persistence fails
             throw new com.aitutor.controller.ApiException(
                 org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
                 "AI_QUOTA_UNAVAILABLE",
-                "AI quota reservation failed due to database error: " + ex.getMessage()
+                "AI quota reservation failed: " + ex.getMessage()
             );
         }
+
+        if (reserved == null) {
+            throw new com.aitutor.controller.ApiException(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                "AI_QUOTA_RESERVATION_FAILED",
+                "Transaction completed without reserving quota slot."
+            );
+        }
+
+        // ONLY update in-memory state after transaction has committed successfully!
+        setTodayBase(reserved);
+        return reserved;
+    }
+
+    private synchronized long doReserveDailyQuota() {
+        checkDateRoll();
+        String todayKey = "ai_daily_usage_" + todayDate;
+
+        // Guarantee that the global mutex row is locked across all application instances
+        var mutexOpt = meta.findByKeyForUpdate(QUOTA_MUTEX_KEY);
+        if (mutexOpt.isEmpty()) {
+            throw new com.aitutor.controller.ApiException(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                "AI_QUOTA_MUTEX_MISSING",
+                "AI quota synchronization mutex row ('" + QUOTA_MUTEX_KEY + "') does not exist."
+            );
+        }
+
+        // Read the current global usage for today
+        long currentCount = 0L;
+        var currentOpt = meta.findById(todayKey);
+        if (currentOpt.isPresent()) {
+            String raw = currentOpt.get().getValue();
+            if (raw == null || raw.isBlank()) {
+                throw new com.aitutor.controller.ApiException(
+                    org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                    "AI_QUOTA_COUNTER_INVALID",
+                    "Persisted daily quota counter is blank or invalid."
+                );
+            }
+            try {
+                currentCount = Long.parseLong(raw.trim());
+                if (currentCount < 0) {
+                    throw new com.aitutor.controller.ApiException(
+                        org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                        "AI_QUOTA_COUNTER_INVALID",
+                        "Persisted daily quota counter cannot be negative (" + currentCount + ")."
+                    );
+                }
+            } catch (NumberFormatException nfe) {
+                throw new com.aitutor.controller.ApiException(
+                    org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                    "AI_QUOTA_COUNTER_INVALID",
+                    "Persisted daily quota counter is malformed: " + raw.trim()
+                );
+            }
+        }
+
+        int limit = getDailyLimit();
+        if (currentCount >= limit) {
+            throw new com.aitutor.controller.ApiException(
+                org.springframework.http.HttpStatus.TOO_MANY_REQUESTS,
+                "AI_QUOTA_EXHAUSTED",
+                "Daily AI quota has been reached (" + currentCount + "/" + limit + "). Quota resets daily at 00:00 UTC."
+            );
+        }
+
+        long newCount = currentCount + 1;
+        meta.save(new com.aitutor.config.AppMeta(todayKey, String.valueOf(newCount)));
+        meta.flush();
+        // Do NOT update in-memory state here! Return newCount so caller updates it only after commit.
+        return newCount;
     }
 
     public boolean isQuotaExceeded() {
@@ -202,9 +241,15 @@ public class AiMetrics {
                 String todayKey = "ai_daily_usage_" + todayDate;
                 var currentOpt = meta.findById(todayKey);
                 if (currentOpt.isPresent()) {
-                    long stored = Long.parseLong(currentOpt.get().getValue().trim());
-                    setTodayBase(stored);
-                    return Math.max(stored, todayRequests.sum());
+                    String raw = currentOpt.get().getValue();
+                    if (raw != null && !raw.isBlank()) {
+                        long stored = Long.parseLong(raw.trim());
+                        if (stored >= 0) {
+                            return stored;
+                        }
+                    }
+                } else {
+                    return 0L;
                 }
             } catch (Exception ignored) {}
         }

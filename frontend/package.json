@@ -7,7 +7,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "node --test src/lib/aiText.test.mjs src/lib/stabilization.test.mjs"
+    "test": "node --test src/lib/aiText.test.mjs src/lib/aiMath.test.mjs src/lib/stabilization.test.mjs"
   },
   "dependencies": {
     "lottie-web": "^5.13.0",

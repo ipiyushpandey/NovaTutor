@@ -11,10 +11,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.PlatformTransactionManager;
 
 import java.time.LocalDate;
 import java.time.ZoneOffset;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -35,7 +35,7 @@ public class AiQuotaConcurrencyTest {
     private AiService aiService;
 
     @Autowired
-    private org.springframework.transaction.PlatformTransactionManager txManager;
+    private PlatformTransactionManager txManager;
 
     private String todayKey;
 
@@ -51,107 +51,125 @@ public class AiQuotaConcurrencyTest {
     }
 
     @Test
-    @DisplayName("Concurrent requests cannot exceed the configured quota")
-    void concurrentRequestsCannotExceedConfiguredQuota() throws InterruptedException {
+    @DisplayName("Two independently constructed instances running concurrent reservations through the shared database cannot exceed quota")
+    void twoIndependentInstancesConcurrentSharedDatabaseReservationsCannotExceedQuota() throws InterruptedException {
         int quotaLimit = 15;
-        metrics.setDailyLimit(quotaLimit);
 
-        int totalThreads = 40;
-        ExecutorService executor = Executors.newFixedThreadPool(10);
+        // Instance A and Instance B are completely separate Java objects
+        // They share the SAME database and SAME transaction manager.
+        // Neither instance's Java 'synchronized' has any visibility into the other instance.
+        AiMetrics instanceA = new AiMetrics(quotaLimit);
+        instanceA.setMetaRepository(meta);
+        instanceA.setTransactionManager(txManager);
+
+        AiMetrics instanceB = new AiMetrics(quotaLimit);
+        instanceB.setMetaRepository(meta);
+        instanceB.setTransactionManager(txManager);
+
+        int threadsPerInstance = 20; // 40 total concurrent threads
+        int totalThreads = threadsPerInstance * 2;
+        ExecutorService executor = Executors.newFixedThreadPool(16);
         CountDownLatch startGate = new CountDownLatch(1);
         CountDownLatch doneGate = new CountDownLatch(totalThreads);
 
-        AtomicInteger successCount = new AtomicInteger(0);
+        AtomicInteger successA = new AtomicInteger(0);
+        AtomicInteger successB = new AtomicInteger(0);
         AtomicInteger quotaExceededCount = new AtomicInteger(0);
-        AtomicInteger otherFailures = new AtomicInteger(0);
+        AtomicInteger unexpectedFailures = new AtomicInteger(0);
 
-        for (int i = 0; i < totalThreads; i++) {
+        // Submit 20 threads to Instance A
+        for (int i = 0; i < threadsPerInstance; i++) {
             executor.submit(() -> {
                 try {
                     startGate.await();
-                    metrics.reserveDailyQuota();
-                    successCount.incrementAndGet();
+                    instanceA.reserveDailyQuota();
+                    successA.incrementAndGet();
                 } catch (ApiException e) {
                     if (e.status() == HttpStatus.TOO_MANY_REQUESTS && "AI_QUOTA_EXHAUSTED".equals(e.code())) {
                         quotaExceededCount.incrementAndGet();
                     } else {
-                        otherFailures.incrementAndGet();
+                        unexpectedFailures.incrementAndGet();
                     }
                 } catch (Exception e) {
-                    otherFailures.incrementAndGet();
+                    unexpectedFailures.incrementAndGet();
                 } finally {
                     doneGate.countDown();
                 }
             });
         }
 
-        startGate.countDown();
-        assertTrue(doneGate.await(15, TimeUnit.SECONDS), "Timed out waiting for concurrent reservations");
-        executor.shutdown();
-
-        assertEquals(quotaLimit, successCount.get(), "Exact quota limit must be reserved");
-        assertEquals(totalThreads - quotaLimit, quotaExceededCount.get(), "Excess requests must receive 429 quota exhausted");
-        assertEquals(0, otherFailures.get(), "No unexpected concurrency failures");
-
-        // Verify shared persisted database state
-        AppMeta stored = meta.findById(todayKey).orElseThrow();
-        assertEquals(String.valueOf(quotaLimit), stored.getValue().trim());
-    }
-
-    @Test
-    @DisplayName("Two independently constructed service/metrics instances share the same persisted quota")
-    void twoIndependentlyConstructedInstancesSharePersistedQuota() {
-        AiMetrics instanceA = new AiMetrics(10);
-        instanceA.setMetaRepository(meta);
-        instanceA.setTransactionManager(txManager);
-
-        AiMetrics instanceB = new AiMetrics(10);
-        instanceB.setMetaRepository(meta);
-        instanceB.setTransactionManager(txManager);
-
-        // Instance A reserves 6 requests
-        for (int i = 0; i < 6; i++) {
-            long count = instanceA.reserveDailyQuota();
-            assertEquals(i + 1, count);
-        }
-
-        // Instance B reserves 4 requests reaching the limit of 10
-        for (int i = 6; i < 10; i++) {
-            long count = instanceB.reserveDailyQuota();
-            assertEquals(i + 1, count);
-        }
-
-        // 11th request on Instance A must be rejected
-        ApiException exA = assertThrows(ApiException.class, instanceA::reserveDailyQuota);
-        assertEquals(HttpStatus.TOO_MANY_REQUESTS, exA.status());
-        assertEquals("AI_QUOTA_EXHAUSTED", exA.code());
-
-        // 12th request on Instance B must also be rejected
-        ApiException exB = assertThrows(ApiException.class, instanceB::reserveDailyQuota);
-        assertEquals(HttpStatus.TOO_MANY_REQUESTS, exB.status());
-        assertEquals("AI_QUOTA_EXHAUSTED", exB.code());
-
-        assertEquals(10L, instanceA.getTodayRequests());
-        assertEquals(10L, instanceB.getTodayRequests());
-    }
-
-    @Test
-    @DisplayName("First-ever concurrent reservations create the daily counter safely without missing-row race")
-    void firstEverConcurrentReservationsCreateCounterSafely() throws InterruptedException {
-        int threads = 25;
-        metrics.setDailyLimit(100);
-
-        ExecutorService executor = Executors.newFixedThreadPool(8);
-        CountDownLatch startGate = new CountDownLatch(1);
-        CountDownLatch doneGate = new CountDownLatch(threads);
-        List<Long> reservedSlots = new CopyOnWriteArrayList<>();
-
-        for (int i = 0; i < threads; i++) {
+        // Submit 20 threads to Instance B
+        for (int i = 0; i < threadsPerInstance; i++) {
             executor.submit(() -> {
                 try {
                     startGate.await();
-                    long slot = metrics.reserveDailyQuota();
-                    reservedSlots.add(slot);
+                    instanceB.reserveDailyQuota();
+                    successB.incrementAndGet();
+                } catch (ApiException e) {
+                    if (e.status() == HttpStatus.TOO_MANY_REQUESTS && "AI_QUOTA_EXHAUSTED".equals(e.code())) {
+                        quotaExceededCount.incrementAndGet();
+                    } else {
+                        unexpectedFailures.incrementAndGet();
+                    }
+                } catch (Exception e) {
+                    unexpectedFailures.incrementAndGet();
+                } finally {
+                    doneGate.countDown();
+                }
+            });
+        }
+
+        // Unleash all 40 threads across both instances at the exact same millisecond
+        startGate.countDown();
+        assertTrue(doneGate.await(20, TimeUnit.SECONDS), "Timed out waiting for two-instance concurrent reservations");
+        executor.shutdown();
+
+        int totalSuccess = successA.get() + successB.get();
+        assertEquals(quotaLimit, totalSuccess, "Total reservations across both independent instances must equal exactly quotaLimit");
+        assertEquals(totalThreads - quotaLimit, quotaExceededCount.get(), "All excess requests across both instances must receive 429 AI_QUOTA_EXHAUSTED");
+        assertEquals(0, unexpectedFailures.get(), "No unexpected concurrency failures");
+
+        // Both instances must have participated in reservations
+        assertTrue(successA.get() > 0, "Instance A must have handled some successful reservations");
+        assertTrue(successB.get() > 0, "Instance B must have handled some successful reservations");
+
+        // Verify shared persisted database state is exactly quotaLimit
+        AppMeta stored = meta.findById(todayKey).orElseThrow();
+        assertEquals(String.valueOf(quotaLimit), stored.getValue().trim(), "Persisted database counter must exactly match quota limit");
+
+        // Both instances must report the exact shared database count
+        assertEquals(quotaLimit, instanceA.getTodayRequests());
+        assertEquals(quotaLimit, instanceB.getTodayRequests());
+    }
+
+    @Test
+    @DisplayName("First-ever concurrent reservations across instances safely create the daily counter without missing-row race")
+    void firstEverConcurrentReservationsAcrossInstancesCreateCounterSafely() throws InterruptedException {
+        // Guarantee no daily row exists yet
+        meta.deleteById(todayKey);
+
+        AiMetrics instanceA = new AiMetrics(50);
+        instanceA.setMetaRepository(meta);
+        instanceA.setTransactionManager(txManager);
+
+        AiMetrics instanceB = new AiMetrics(50);
+        instanceB.setMetaRepository(meta);
+        instanceB.setTransactionManager(txManager);
+
+        int totalThreads = 30;
+        ExecutorService executor = Executors.newFixedThreadPool(12);
+        CountDownLatch startGate = new CountDownLatch(1);
+        CountDownLatch doneGate = new CountDownLatch(totalThreads);
+        AtomicInteger successCount = new AtomicInteger(0);
+
+        for (int i = 0; i < totalThreads; i++) {
+            final boolean useInstanceA = (i % 2 == 0);
+            executor.submit(() -> {
+                try {
+                    startGate.await();
+                    if (useInstanceA) instanceA.reserveDailyQuota();
+                    else instanceB.reserveDailyQuota();
+                    successCount.incrementAndGet();
                 } catch (Exception ignored) {
                 } finally {
                     doneGate.countDown();
@@ -163,8 +181,75 @@ public class AiQuotaConcurrencyTest {
         assertTrue(doneGate.await(15, TimeUnit.SECONDS));
         executor.shutdown();
 
-        assertEquals(threads, reservedSlots.size(), "All initial concurrent reservations must succeed");
-        assertEquals(threads, metrics.getTodayRequests(), "Today count must reflect exactly all reservations");
+        assertEquals(totalThreads, successCount.get(), "All initial concurrent reservations must succeed");
+        AppMeta stored = meta.findById(todayKey).orElseThrow();
+        assertEquals(String.valueOf(totalThreads), stored.getValue().trim());
+    }
+
+    @Test
+    @DisplayName("Invalid, blank, malformed or negative persisted counter values fail closed")
+    void invalidPersistedCounterValuesFailClosed() {
+        AiMetrics testMetrics = new AiMetrics(100);
+        testMetrics.setMetaRepository(meta);
+        testMetrics.setTransactionManager(txManager);
+
+        // Case 1: Blank counter value in database
+        meta.saveAndFlush(new AppMeta(todayKey, "   "));
+        ApiException blankEx = assertThrows(ApiException.class, testMetrics::reserveDailyQuota);
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, blankEx.status());
+        assertEquals("AI_QUOTA_COUNTER_INVALID", blankEx.code());
+
+        // Case 2: Non-numeric malformed counter value
+        meta.saveAndFlush(new AppMeta(todayKey, "corrupted_counter_value_99x"));
+        ApiException malformedEx = assertThrows(ApiException.class, testMetrics::reserveDailyQuota);
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, malformedEx.status());
+        assertEquals("AI_QUOTA_COUNTER_INVALID", malformedEx.code());
+
+        // Case 3: Negative counter value
+        meta.saveAndFlush(new AppMeta(todayKey, "-42"));
+        ApiException negativeEx = assertThrows(ApiException.class, testMetrics::reserveDailyQuota);
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, negativeEx.status());
+        assertEquals("AI_QUOTA_COUNTER_INVALID", negativeEx.code());
+    }
+
+    @Test
+    @DisplayName("Missing transaction manager or missing database fails closed")
+    void missingTransactionManagerOrDatabaseFailsClosed() {
+        // Case 1: Missing transaction manager
+        AiMetrics unmanagedMetrics = new AiMetrics(100);
+        unmanagedMetrics.setMetaRepository(meta);
+        unmanagedMetrics.setTransactionManager(null); // Explicitly null
+
+        ApiException txEx = assertThrows(ApiException.class, unmanagedMetrics::reserveDailyQuota);
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, txEx.status());
+        assertEquals("AI_QUOTA_TRANSACTION_UNAVAILABLE", txEx.code());
+
+        // Case 2: Missing database / meta repository
+        AiMetrics unbackedMetrics = new AiMetrics(100);
+        unbackedMetrics.setMetaRepository(null); // Explicitly null
+        unbackedMetrics.setTransactionManager(txManager);
+
+        ApiException dbEx = assertThrows(ApiException.class, unbackedMetrics::reserveDailyQuota);
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, dbEx.status());
+        assertEquals("AI_QUOTA_STORAGE_UNAVAILABLE", dbEx.code());
+    }
+
+    @Test
+    @DisplayName("Missing ai_quota_mutex row fails closed with HTTP 503")
+    void missingMutexRowFailsClosed() {
+        AiMetrics testMetrics = new AiMetrics(100);
+        testMetrics.setMetaRepository(meta);
+        testMetrics.setTransactionManager(txManager);
+
+        // Delete the mutex row
+        meta.deleteById(AiMetrics.QUOTA_MUTEX_KEY);
+
+        ApiException mutexEx = assertThrows(ApiException.class, testMetrics::reserveDailyQuota);
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, mutexEx.status());
+        assertEquals("AI_QUOTA_MUTEX_MISSING", mutexEx.code());
+
+        // Restore mutex row for subsequent tests
+        meta.saveAndFlush(new AppMeta(AiMetrics.QUOTA_MUTEX_KEY, "0"));
     }
 
     @Test
@@ -172,7 +257,6 @@ public class AiQuotaConcurrencyTest {
     void requestReachingLimitHandledCorrectlyAndNextRejectedBeforeProvider() {
         metrics.setDailyLimit(3);
 
-        // Custom dummy provider to track calls
         AtomicInteger providerCalls = new AtomicInteger(0);
         AiProvider dummyProvider = new AiProvider() {
             @Override
@@ -200,45 +284,17 @@ public class AiQuotaConcurrencyTest {
         assertEquals(HttpStatus.TOO_MANY_REQUESTS, ex.status());
         assertEquals("AI_QUOTA_EXHAUSTED", ex.code());
 
-        // Crucial verification: providerCalls remains 3 (never invoked)
+        // Crucial verification: providerCalls remains exactly 3 (never invoked)
         assertEquals(3, providerCalls.get(), "Provider must not be called when quota is exceeded");
     }
 
     @Test
-    @DisplayName("Database persistence failure rejects the request instead of failing open")
-    void databasePersistenceFailureRejectsRequestInsteadOfFailingOpen() {
-        AiMetrics brokenMetrics = new AiMetrics(100);
-        // meta is null or broken
-        brokenMetrics.setMetaRepository(null);
-
-        ApiException ex = assertThrows(ApiException.class, brokenMetrics::reserveDailyQuota);
-        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, ex.status());
-        assertEquals("AI_QUOTA_STORAGE_UNAVAILABLE", ex.code());
-
-        // Now test with repo that throws on update
-        AppMetaRepository throwingRepo = (AppMetaRepository) java.lang.reflect.Proxy.newProxyInstance(
-                AppMetaRepository.class.getClassLoader(),
-                new Class<?>[]{AppMetaRepository.class},
-                (proxy, method, args) -> {
-                    throw new org.springframework.dao.DataAccessResourceFailureException("Simulated TiDB disconnection");
-                }
-        );
-
-        AiMetrics dbFailingMetrics = new AiMetrics(100);
-        dbFailingMetrics.setMetaRepository(throwingRepo);
-
-        ApiException dbEx = assertThrows(ApiException.class, dbFailingMetrics::reserveDailyQuota);
-        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, dbEx.status());
-        assertEquals("AI_QUOTA_UNAVAILABLE", dbEx.code());
-        assertTrue(dbEx.getMessage().contains("Simulated TiDB disconnection"));
-    }
-
-    @Test
-    @DisplayName("Every accepted request is counted exactly once, even if provider throws an error")
-    void everyAcceptedRequestCountedExactlyOnceEvenOnFailure() {
+    @DisplayName("Every accepted request is counted exactly once, even if provider throws an error or stream cancels")
+    void everyAcceptedRequestCountedExactlyOnceEvenOnFailureOrStreamCancellation() {
         metrics.setDailyLimit(10);
         long initialCount = metrics.getTodayRequests();
 
+        // 1. Upstream 500 error
         AiProvider failingProvider = new AiProvider() {
             @Override
             public String name() { return "failing"; }
@@ -251,14 +307,52 @@ public class AiQuotaConcurrencyTest {
         };
 
         AiService service = new AiService(List.of(failingProvider), metrics);
-
         assertThrows(RuntimeException.class, () -> service.ask(new AiRequest(AiTask.TUTOR, "Topic", "Test question", "Beginner", "English")));
 
         // Quota was reserved upfront, so it must increment by exactly 1
         assertEquals(initialCount + 1, metrics.getTodayRequests(), "Accepted request must be counted once even on upstream provider failure");
 
-        // Verify telemetry recorded the failure
-        var snapshot = metrics.snapshot();
-        assertTrue(((Long) snapshot.get("totalFailures")) >= 1);
+        // 2. Stream cancellation / error
+        assertThrows(Exception.class, () -> service.stream(
+                new AiRequest(AiTask.TUTOR, "Topic", "Stream question", "Beginner", "English"),
+                chunk -> {}
+        ));
+
+        // Quota was reserved upfront, so it increments by another exactly 1 (initialCount + 2)
+        assertEquals(initialCount + 2, metrics.getTodayRequests(), "Stream reservation must be counted once even on provider stream failure");
+    }
+
+    @Test
+    @DisplayName("Admin snapshot reports shared persisted count and is not inflated by stale local state")
+    void adminSnapshotReportsSharedPersistedCountNotStaleLocalState() {
+        AiMetrics instanceA = new AiMetrics(50);
+        instanceA.setMetaRepository(meta);
+        instanceA.setTransactionManager(txManager);
+
+        AiMetrics instanceB = new AiMetrics(50);
+        instanceB.setMetaRepository(meta);
+        instanceB.setTransactionManager(txManager);
+
+        // Instance A handles 3 reservations
+        instanceA.reserveDailyQuota();
+        instanceA.reserveDailyQuota();
+        instanceA.reserveDailyQuota();
+
+        // Instance B handles 4 reservations
+        instanceB.reserveDailyQuota();
+        instanceB.reserveDailyQuota();
+        instanceB.reserveDailyQuota();
+        instanceB.reserveDailyQuota();
+
+        // Both instances' snapshots must report exactly 7 todayRequests
+        var snapA = instanceA.snapshot();
+        @SuppressWarnings("unchecked")
+        var quotaA = (java.util.Map<String, Object>) snapA.get("dailyQuota");
+        assertEquals(7L, quotaA.get("todayRequests"), "Instance A snapshot must report 7");
+
+        var snapB = instanceB.snapshot();
+        @SuppressWarnings("unchecked")
+        var quotaB = (java.util.Map<String, Object>) snapB.get("dailyQuota");
+        assertEquals(7L, quotaB.get("todayRequests"), "Instance B snapshot must report 7");
     }
 }

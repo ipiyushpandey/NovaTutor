@@ -836,15 +836,16 @@ test('LoginWakeUp enforces 300-second window, single-submission guard, and stric
 
 test('AiMarkdown renders standard MathML, supports multiline block math, and has zero external dependencies', () => {
   const aiMarkdownJsx = fs.readFileSync(path.join(SRC_DIR, 'AiMarkdown.jsx'), 'utf8');
+  const aiMathJs = fs.readFileSync(path.join(SRC_DIR, 'lib/aiMath.js'), 'utf8');
   assert.match(aiMarkdownJsx, /export function renderMath/, 'renderMath must be exported');
-  assert.match(aiMarkdownJsx, /function parseLatexToMathML/, 'parseLatexToMathML must exist');
-  assert.match(aiMarkdownJsx, /xmlns:\s*['"]http:\/\/www\.w3\.org\/1998\/Math\/MathML['"]/, 'Must declare MathML namespace');
-  assert.match(aiMarkdownJsx, /'mfrac'/, 'Must support fractions via <mfrac>');
-  assert.match(aiMarkdownJsx, /'msqrt'/, 'Must support square roots via <msqrt>');
-  assert.match(aiMarkdownJsx, /'msup'/, 'Must support superscripts via <msup>');
-  assert.match(aiMarkdownJsx, /'msub'/, 'Must support subscripts via <msub>');
-  assert.match(aiMarkdownJsx, /'msubsup'/, 'Must support sub-superscripts via <msubsup>');
-  assert.ok(!aiMarkdownJsx.includes('katex'), 'Must not require external KaTeX library');
+  assert.match(aiMathJs, /export function parseLatexToMathML/, 'parseLatexToMathML must exist in aiMath.js');
+  assert.match(aiMathJs, /xmlns:\s*['"]http:\/\/www\.w3\.org\/1998\/Math\/MathML['"]/, 'Must declare MathML namespace');
+  assert.match(aiMathJs, /'mfrac'/, 'Must support fractions via <mfrac>');
+  assert.match(aiMathJs, /'msqrt'/, 'Must support square roots via <msqrt>');
+  assert.match(aiMathJs, /'msup'/, 'Must support superscripts via <msup>');
+  assert.match(aiMathJs, /'msub'/, 'Must support subscripts via <msub>');
+  assert.match(aiMathJs, /'msubsup'/, 'Must support sub-superscripts via <msubsup>');
+  assert.ok(!aiMarkdownJsx.includes('katex') && !aiMathJs.includes('katex'), 'Must not require external KaTeX library');
 
   // Verify multiline block math scanning logic exists
   assert.match(aiMarkdownJsx, /t\.startsWith\('\$\$'/, 'Must detect block math delimiters');
