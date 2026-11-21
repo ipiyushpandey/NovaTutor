@@ -138,7 +138,8 @@ async function api(path,opt={},_retry=false){
   try{
    const session=readUser();
    const headers={...(opt.body instanceof FormData?{}:{'Content-Type':'application/json'}),...(session?.token?{'Authorization':`Bearer ${session.token}`} : {}),...(opt.headers||{})};
-   const r=await fetch(API+path,{...fetchOptions,headers,signal:controller.signal});
+   const cleanPath=path.startsWith('/api/')?path.slice(4):path;
+   const r=await fetch(API+cleanPath,{...fetchOptions,headers,signal:controller.signal});
    const raw=await r.text();
    if(!r.ok){
     if(isIdempotent&&isTransientStatus(r.status)&&attempt<maxRetries){
@@ -229,7 +230,8 @@ async function apiStream(path,opt={},onChunk,_retry=false){
  let idleTimer=setTimeout(()=>{timedOut=true;controller.abort();},STREAM_IDLE_TIMEOUT_MS);
  const resetIdleTimer=()=>{clearTimeout(idleTimer);idleTimer=setTimeout(()=>{timedOut=true;controller.abort();},STREAM_IDLE_TIMEOUT_MS);};
  try{
-  const r=await fetch(API+path,{...fetchOptions,headers,signal:controller.signal});
+  const cleanPath=path.startsWith('/api/')?path.slice(4):path;
+  const r=await fetch(API+cleanPath,{...fetchOptions,headers,signal:controller.signal});
   resetIdleTimer();
   if(!r.ok){
    let refreshStatus='unauthorized';
@@ -320,7 +322,7 @@ async function apiStream(path,opt={},onChunk,_retry=false){
       err.status=400;
       throw err;
     }
-    if(!data)return;
+    if(dataLines.length===0)return;
     if(eventName==='error'||data==='AI request failed. Please try again.'){
       let msg=data;
       try{

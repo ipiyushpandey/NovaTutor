@@ -28,12 +28,52 @@ public class AiMetrics {
     private volatile java.time.LocalDate todayDate = java.time.LocalDate.now(java.time.ZoneOffset.UTC);
     private final LongAdder todayRequests = new LongAdder();
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.aitutor.config.AppMetaRepository meta;
+
     public AiMetrics() {
         this(1500);
     }
 
     public AiMetrics(@org.springframework.beans.factory.annotation.Value("${ai.gemini.daily-limit:1500}") int dailyLimit) {
         this.dailyLimit = Math.max(10, dailyLimit);
+    }
+
+    @jakarta.annotation.PostConstruct
+    public void initFromDb() {
+        if (meta == null) return;
+        try {
+            String todayKey = "ai_daily_usage_" + todayDate;
+            meta.findById(todayKey).ifPresent(m -> {
+                try {
+                    long stored = Long.parseLong(m.getValue().trim());
+                    if (stored > 0) setTodayBase(stored);
+                } catch (Exception ignored) {}
+            });
+            meta.findById("ai.dailyLimit").ifPresent(m -> {
+                try {
+                    int lim = Integer.parseInt(m.getValue().trim());
+                    if (lim > 0) setDailyLimit(lim);
+                } catch (Exception ignored) {}
+            });
+        } catch (Exception ignored) {}
+    }
+
+    private void persistIfMeta(long count) {
+        if (meta == null) return;
+        try {
+            String todayKey = "ai_daily_usage_" + todayDate;
+            meta.save(new com.aitutor.config.AppMeta(todayKey, String.valueOf(count)));
+        } catch (Exception ignored) {}
+    }
+
+    @jakarta.annotation.PreDestroy
+    public void persistOnShutdown() {
+        if (meta == null) return;
+        try {
+            String todayKey = "ai_daily_usage_" + todayDate;
+            meta.save(new com.aitutor.config.AppMeta(todayKey, String.valueOf(todayRequests.sum())));
+        } catch (Exception ignored) {}
     }
 
     public void setDailyLimit(int limit) {
@@ -62,8 +102,50 @@ public class AiMetrics {
         }
     }
 
+    @org.springframework.transaction.annotation.Transactional
+    public synchronized long incrementDailyUsage() {
+        checkDateRoll();
+        todayRequests.increment();
+        if (meta != null) {
+            String todayKey = "ai_daily_usage_" + todayDate;
+            try {
+                var rowOpt = meta.findByKeyForUpdate(todayKey);
+                long currentVal = 0L;
+                if (rowOpt.isPresent()) {
+                    try { currentVal = Long.parseLong(rowOpt.get().getValue().trim()); } catch (Exception ignored) {}
+                }
+                long nextVal = Math.max(currentVal + 1, todayRequests.sum());
+                meta.save(new com.aitutor.config.AppMeta(todayKey, String.valueOf(nextVal)));
+                setTodayBase(nextVal);
+                return nextVal;
+            } catch (Exception ex) {
+                try {
+                    long fallback = todayRequests.sum();
+                    meta.save(new com.aitutor.config.AppMeta(todayKey, String.valueOf(fallback)));
+                } catch (Exception ignored) {}
+            }
+        }
+        return todayRequests.sum();
+    }
+
+    public boolean isQuotaExceeded() {
+        checkDateRoll();
+        return getTodayRequests() >= dailyLimit;
+    }
+
     public long getTodayRequests() {
         checkDateRoll();
+        if (meta != null) {
+            try {
+                String todayKey = "ai_daily_usage_" + todayDate;
+                var currentOpt = meta.findById(todayKey);
+                if (currentOpt.isPresent()) {
+                    long stored = Long.parseLong(currentOpt.get().getValue().trim());
+                    setTodayBase(stored);
+                    return Math.max(stored, todayRequests.sum());
+                }
+            } catch (Exception ignored) {}
+        }
         return todayRequests.sum();
     }
 
@@ -76,8 +158,7 @@ public class AiMetrics {
     }
 
     public void record(String task, long durationMs, boolean success, long firstTokenMs) {
-        checkDateRoll();
-        todayRequests.increment();
+        incrementDailyUsage();
         String key = task == null || task.isBlank() ? "UNKNOWN" : task.toUpperCase();
         TaskStat stat = tasks.computeIfAbsent(key, k -> new TaskStat());
         stat.count.increment();

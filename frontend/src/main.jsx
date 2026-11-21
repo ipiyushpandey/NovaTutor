@@ -19,7 +19,7 @@ import LearningHistoryView from './ui/LearningHistoryView.jsx';
 import './ui/books-scene.css';
 import './ui/premium.css';
 import {readWorkspace,writeWorkspace,workspaceKey,subscribeWorkspace,migrateWorkspaceIfNeeded,removeWorkspace} from './persistence/workspaceStore.js';
-import AiMarkdown, {normalizeAiText, mdInlineText} from './AiMarkdown.jsx';
+import AiMarkdown, {normalizeAiText, mdInlineText, getCompactLessonOverview} from './AiMarkdown.jsx';
 import {registerWorkspaceFlusher,beginNavigationPersistence} from './persistence/appWorkspace.js';
 import {readRuntimeState,writeRuntimeState,subscribeRuntimeState,getRuntimeModuleSnapshot,updateRuntimeState,removeRuntimeState,clearRuntimeUser} from './persistence/runtimeStore.js';
 import {api,apiStream,readUser,refreshSessionToken,refreshSessionTokenWithStatus,invalidatePendingSessionRefresh,recordLearningHistory} from './lib/api.js';
@@ -1570,6 +1570,7 @@ function LoginWakeUp({onRetry,onCancel,mode='login'}){
  onRetryRef.current=onRetry;
  const startTimeRef=useRef(null);
  if(!startTimeRef.current)startTimeRef.current=Date.now();
+ const submittedRef=useRef(false);
 
  useEffect(()=>{
   let cancelled=false;
@@ -1577,40 +1578,60 @@ function LoginWakeUp({onRetry,onCancel,mode='login'}){
 
   const secTimer=setInterval(()=>{
    if(!cancelled){
-    setElapsedSeconds(Math.floor((Date.now()-startTimeRef.current)/1000));
+    const elapsed=Math.floor((Date.now()-startTimeRef.current)/1000);
+    setElapsedSeconds(elapsed);
+    if(elapsed>=120&&status!=='ready'&&status!=='timeout'){
+     setStatus('timeout');
+    }
    }
   },1000);
 
+  function isVerifiedHealthy(res){
+   if(!res||typeof res!=='object')return false;
+   if(res.status==='UP'&&res.app==='NovaTutor')return true;
+   if(res.status==='UP'&&(res.components||res.groups||res.details||Object.keys(res).length<=2))return true;
+   return false;
+  }
+
   async function checkHealth(){
-   if(cancelled)return;
+   if(cancelled||submittedRef.current)return;
    try{
     let healthy=false;
     try{
-     const res=await api('/api/health',{timeoutMs:3500});
-     if(res?.status==='UP')healthy=true;
+     // Probe genuine backend health endpoint with verified status check
+     const res=await api('/health',{timeoutMs:6000});
+     if(isVerifiedHealthy(res))healthy=true;
     }catch{
      try{
-      const res=await api('/actuator/health/readiness',{timeoutMs:3500});
-      if(res?.status==='UP')healthy=true;
+      const res=await api('/actuator/health/readiness',{timeoutMs:6000});
+      if(isVerifiedHealthy(res))healthy=true;
      }catch{}
     }
 
-    if(cancelled)return;
+    if(cancelled||submittedRef.current)return;
     if(healthy){
+     submittedRef.current=true;
      setStatus('ready');
      clearInterval(secTimer);
-     setTimeout(()=>{if(!cancelled&&typeof onRetryRef.current==='function')onRetryRef.current()},600);
+     if(pollTimer)clearTimeout(pollTimer);
+     setTimeout(()=>{
+      if(!cancelled&&typeof onRetryRef.current==='function'){
+       onRetryRef.current();
+      }
+     },400);
      return;
     }
    }catch{}
 
-   if(!cancelled){
+   if(!cancelled&&!submittedRef.current){
     setAttemptCount(c=>c+1);
-    pollTimer=setTimeout(checkHealth,28000);
+    // Probe every 4 seconds during cold start
+    pollTimer=setTimeout(checkHealth,4000);
    }
   }
 
-  pollTimer=setTimeout(checkHealth,1500);
+  // Initial probe after 800ms
+  pollTimer=setTimeout(checkHealth,800);
 
   return()=>{
    cancelled=true;
@@ -1619,7 +1640,16 @@ function LoginWakeUp({onRetry,onCancel,mode='login'}){
   };
  },[]);
 
- const progressPct = status==='ready' ? 100 : Math.min(94, Math.round((1 - Math.exp(-elapsedSeconds / 50)) * 100));
+ const progressPct = status==='ready' ? 100 : status==='timeout' ? 95 : Math.min(94, Math.round((1 - Math.exp(-elapsedSeconds / 45)) * 100));
+
+ const handleManualRetry=()=>{
+  if(status==='ready'||submittedRef.current)return;
+  setStatus('waking');
+  startTimeRef.current=Date.now();
+  setElapsedSeconds(0);
+  submittedRef.current=true;
+  if(typeof onRetryRef.current==='function')onRetryRef.current();
+ };
 
  return <div className="auth-wakeup-box" role="status" aria-live="polite">
   <div className="auth-wakeup-header">
@@ -1635,28 +1665,38 @@ function LoginWakeUp({onRetry,onCancel,mode='login'}){
     </div>
    </div>
    <div>
-    <h4 className="auth-wakeup-title">{status==='ready'?'Backend is ready!':'Server is waking up (cold start)'}</h4>
-    <p className="auth-wakeup-desc">{status==='ready'?'Connection established. Completing your request…':'Render free-tier instances sleep when idle. Cold start typically takes 60–120s while the JVM and database start.'}</p>
+    <h4 className="auth-wakeup-title">
+     {status==='ready'?'Backend is ready!':status==='timeout'?'Server start is taking longer than usual':'Server is waking up (cold start)'}
+    </h4>
+    <p className="auth-wakeup-desc">
+     {status==='ready'
+      ?'Connection established. Completing your request…'
+      :status==='timeout'
+      ?'The server is taking longer than 120s to complete startup. You can retry now or cancel to re-enter credentials.'
+      :'Render free-tier instances sleep when idle. Cold start typically takes 40–90s while the JVM and database start.'}
+    </p>
    </div>
   </div>
 
   <div className="auth-wakeup-progress-wrap">
    <div className="auth-wakeup-bar">
-    <div className={'auth-wakeup-bar-fill '+(status==='ready'?'ready':'')} style={{width:`${progressPct}%`}}/>
+    <div className={'auth-wakeup-bar-fill '+(status==='ready'?'ready':status==='timeout'?'timeout':'')} style={{width:`${progressPct}%`}}/>
    </div>
    <div className="auth-wakeup-timer-row">
-    <span>{elapsedSeconds}s elapsed · estimated 60–120s</span>
+    <span>{elapsedSeconds}s elapsed · estimated 40–90s</span>
     <span>{status==='ready'?'100%':`${progressPct}%`}</span>
    </div>
   </div>
 
   <div className="auth-wakeup-meta">
    <span className="auth-wakeup-badge">
-    <span className={'status-indicator '+(status==='ready'?'ready':'waking')}/>
-    {status==='ready'?'Backend online':`Checking every ~30s (attempt ${attemptCount})`}
+    <span className={'status-indicator '+(status==='ready'?'ready':status==='timeout'?'timeout':'waking')}/>
+    {status==='ready'?'Backend online':status==='timeout'?'Waiting on server':'Probing server (attempt '+(attemptCount+1)+')'}
    </span>
    <div className="auth-wakeup-actions">
-    <button type="button" className="auth-wakeup-retry-btn" onClick={onRetry} disabled={status==='ready'}>Retry now</button>
+    <button type="button" className="auth-wakeup-retry-btn" onClick={handleManualRetry} disabled={status==='ready'}>
+     {status==='timeout'?'Retry wake-up':'Retry now'}
+    </button>
     <button type="button" className="auth-wakeup-dismiss-btn" onClick={onCancel}>Cancel</button>
    </div>
   </div>
@@ -2023,7 +2063,7 @@ function CourseDppIde({user,courses}){
  function resumeQuestion(n){if(submitted)return;setSkipped(prev=>{const next={...prev};delete next[n];return next})}
  function answerWords(value){return String(value||'').toLowerCase().replace(/[^a-z0-9+#.\s]/g,' ').split(/\s+/).filter(w=>w.length>2&&!['the','and','for','with','that','this','from','into','are','was','has','have','your','you','not','can','use','using','what','when','where','how','why','then','than','its','their'].includes(w))}
  function textAnswerCorrect(expected,actual){const a=String(actual||'').trim().toLowerCase(),e=String(expected||'').trim().toLowerCase();if(!a||!e)return false;if(a===e||a.includes(e)||e.includes(a))return true;const keys=[...new Set(answerWords(e))];if(!keys.length)return false;const got=new Set(answerWords(a));const hits=keys.filter(k=>got.has(k)).length;return hits>=Math.max(1,Math.ceil(keys.length*.4))}
- async function submitDpp(){if(!dpp?.length)return;const incomplete=dpp.some((_,i)=>!String(answers[i+1]||'').trim()&&!skipped[i+1]);if(incomplete){setError('Answer or skip every task before submitting.');return}setError('');setSubmitted(true);const earned=resultItems.filter(Boolean).length;const percent=Math.round((earned/dpp.length)*100);try{await api('/intelligence/'+user.id+'/events',{method:'POST',body:JSON.stringify({type:'DPP_COMPLETED',subject:selected?.title||'Course Practice',topic:'Daily Practice Problems',score:percent,durationSeconds:0,details:`Completed DPP: ${earned}/${dpp.length} tasks.`})});window.dispatchEvent(new Event('nova:learning-updated'))}catch{}}
+ async function submitDpp(){if(!dpp?.length)return;const incomplete=dpp.some((_,i)=>!String(answers[i+1]||'').trim()&&!skipped[i+1]);if(incomplete){setError('Answer or skip every task before submitting.');return}setError('');setSubmitted(true);const earned=resultItems.filter(Boolean).length;const percent=Math.round((earned/dpp.length)*100);try{await api('/intelligence/'+user.id+'/events',{method:'POST',body:JSON.stringify({type:'DPP_COMPLETED',subject:selected?.title||'Course Practice',topic:'Daily Practice Problems',score:percent,durationSeconds:0,details:`Completed DPP: ${earned}/${dpp.length} tasks.`})});window.dispatchEvent(new Event('nova:learning-updated'));recordLearningHistory({itemType:'DPP',itemKey:`dpp_${courseId}_${Date.now()}`,title:`DPP: ${selected?.title||'Daily Practice'} (${earned}/${dpp.length} solved)`,category:selected?.title||'Course Practice',targetRoute:'dpp',contentSnapshot:JSON.stringify({courseId,earned,total:dpp.length,percent})}).catch(()=>{});}catch{}}
  function scoreTask(t,i){if(skipped[i+1])return false;return textAnswerCorrect(t.answer,answers[i+1])}
  const resultItems=dpp?.map((t,i)=>scoreTask(t,i))||[];
  const totalMarks=dpp?.length||0;
@@ -2311,11 +2351,14 @@ function CourseDetail({detail,routeLessonId,onSelectLesson,progress,refresh,back
  const orderedLessons=groupedLessons.flatMap(([,items])=>items);
  const findInitialLesson=()=>{if(routeLessonId){const hit=(detail.lessons||[]).find(l=>String(l.id)===String(routeLessonId));if(hit)return hit;}return orderedLessons[0]||detail.lessons?.[0]||null;};
  const [working,setWorking]=useState(false),[selectedLesson,setSelectedLesson]=useState(findInitialLesson),[localProgress,setLocalProgress]=useState(progress||null),[error,setError]=useState('');
+ const [expandedLessonId,setExpandedLessonId]=useState(null);
+ const [mobileReading,setMobileReading]=useState(Boolean(routeLessonId));
  const prevRouteLessonIdRef=useRef(routeLessonId);
  useEffect(()=>{
   const prev=prevRouteLessonIdRef.current;
   prevRouteLessonIdRef.current=routeLessonId;
   if(routeLessonId){
+   setMobileReading(true);
    const hit=(detail.lessons||[]).find(l=>String(l.id)===String(routeLessonId));
    if(hit&&String(hit.id)!==String(selectedLesson?.id))setSelectedLesson(hit);
   }else if(prev){
@@ -2332,18 +2375,18 @@ function CourseDetail({detail,routeLessonId,onSelectLesson,progress,refresh,back
  const c=detail.course;
  useEffect(()=>{setLocalProgress(progress||null)},[progress]);
  useEffect(()=>{setBookmarked(readBookmarks().includes(selectedLesson?.id))},[selectedLesson]);
- useEffect(()=>{
-  if(selectedLesson&&c){
-   recordLearningHistory({
-    itemType:'LESSON',
-    itemKey:`course_${c.id}_lesson_${selectedLesson.id}`,
-    title:lectureLabel(selectedLesson,Math.max(0,lectureNumberFor(selectedLesson)-1)),
-    category:c.title,
-    targetRoute:`course/${c.id}/lesson/${selectedLesson.id}`
-   }).catch(()=>{});
-  }
- },[selectedLesson?.id,c?.id]);
- async function complete(id){if(working)return null;setWorking(true);setError('');try{const user=readUser();if(!user)throw new Error('Please sign in again.');const result=await api(`/progress/${user.id}/course/${c.id}/lesson/${id}/complete`,{method:'POST',body:'{}'});setLocalProgress(result);if(refresh)refresh();window.dispatchEvent(new Event('nova:learning-updated'));return result}catch(e){setError(e.message||'Could not save progress.');return null}finally{setWorking(false)}}
+ async function complete(id){
+  if(working)return null;setWorking(true);setError('');
+  try{
+   const user=readUser();
+   if(!user)throw new Error('Please sign in again.');
+   const result=await api(`/progress/${user.id}/course/${c.id}/lesson/${id}/complete`,{method:'POST',body:'{}'});
+   setLocalProgress(result);
+   if(refresh)refresh();
+   window.dispatchEvent(new Event('nova:learning-updated'));
+   return result;
+  }catch(e){setError(e.message||'Could not save progress.');return null}finally{setWorking(false)}
+ }
  function toggleBookmark(){if(!selectedLesson)return;const list=readBookmarks();const next=list.includes(selectedLesson.id)?list.filter(x=>x!==selectedLesson.id):[...list,selectedLesson.id];localStorage.setItem(bookmarkKey,JSON.stringify(next));setBookmarked(!bookmarked)}
  async function launchTeacher(lesson){
   if(!lesson||working)return;
@@ -2375,8 +2418,8 @@ ${lessonContext}`;
  const nextLesson=lessonIndex>=0&&lessonIndex<flatLessons.length-1?flatLessons[lessonIndex+1]:null;
  const isDone=selectedLesson?sequenceFor(selectedLesson)<=completed:false;
  const [chaptersOpen,setChaptersOpen]=useState(false);
- const gotoLesson=l=>{if(l){setSelectedLesson(l);setChaptersOpen(false);if(onSelectLesson){onSelectLesson(l.id)}else{window.scrollTo({top:0})}}};
- return <><div className="page-title">{back&&<div style={{marginBottom:6}}><button type="button" className="text-btn course-back-btn" onClick={back}>← Back</button></div>}<span className="eyebrow">{c.level} • {c.totalLessons} THEORY LESSONS</span><h1>{c.title}</h1><p>{c.description}</p><div className="course-meta"><span>📚 {detail.lessons?.length||0} lessons</span><span>⏱️ ~{Math.max(5,(selectedLesson?.content||'').split(/\s+/).length/160|0)} min reading</span></div></div>{error&&<div className="error-banner">{error}</div>}<div className={'lesson-layout'+(chaptersOpen?' chapters-open':'')}><div className="lesson-list"><button className="chapters-toggle" onClick={()=>setChaptersOpen(o=>!o)} aria-expanded={chaptersOpen}>{chaptersOpen?'Hide chapters':'Chapters'} <ChevronRight size={14}/></button><div className="lesson-chapters"><div className="lesson-summary"><b>{Math.round(localProgress?.percent||0)}%</b><span>course progress • {detail.lessons?.length||0} lessons</span><div className="progress"><span style={{width:(localProgress?.percent||0)+'%'}}/></div></div>{groupedLessons.map(([topic,items],groupIndex)=><section className="lesson-topic-group" key={topic}><div className="lesson-topic-head"><span>{String(groupIndex+1).padStart(2,'0')}</span><div><b>{topic}</b><small>{items.length} lectures</small></div></div>{items.map((l,lectureIndex)=>{const lDone=sequenceFor(l)<=completed;return <div className={'lesson-item '+(selectedLesson?.id===l.id?'selected':'')+(lDone?' done':'')} key={l.id} onClick={()=>gotoLesson(l)}><div className="lesson-number">{lDone?'✓':lectureIndex+1}</div><div><b>{lectureLabel(l,lectureIndex)}</b><small>{lDone?'Completed • review anytime':'Theory ready • open anytime'}</small></div><button className="icon-btn" disabled={working} onClick={e=>{e.stopPropagation();launchTeacher(l)}} title="Open AI Teacher & learn"><PlayCircle size={18}/></button></div>})}</section>)}</div></div><div className="lesson-ai">{selectedLesson?<><div className="lesson-top-actions"><span className="eyebrow">LECTURE {lectureNumberFor(selectedLesson)} OF {flatLessons.length}</span><button className={'round-btn '+(bookmarked?'saved':'')} onClick={toggleBookmark} title="Bookmark lesson">★</button></div><h3>{lectureLabel(selectedLesson,lectureNumberFor(selectedLesson)-1)}</h3><div className="lesson-reading"><div className="lesson-content">{selectedLesson.content?<TheoryContent content={cleanLessonContent(selectedLesson.content)}/>:<div className="empty"><BookOpen/><b>No lesson content yet</b><span>Ask the AI teacher to explain the topic.</span></div>}</div></div><div className="lesson-bottombar"><button className="nv-icon-btn" disabled={!prevLesson} onClick={()=>gotoLesson(prevLesson)} aria-label="Previous lesson">←</button><button className={'primary '+(isDone?'ghosted':'')} disabled={working} onClick={()=>complete(selectedLesson.id)}>{working?'Saving…':isDone?'✓ Completed':'Mark lesson complete'}</button><button className="nv-icon-btn" disabled={!nextLesson} onClick={()=>gotoLesson(nextLesson)} aria-label="Next lesson">→</button></div><div className="lesson-actions"><button className="secondary" disabled={working} onClick={askAI}><Sparkles size={15}/> {working?'Opening AI Teacher…':'Explain with AI'}</button></div></>:<><BrainCircuit size={28}/><h3>Select a lesson</h3><p>Choose a theory lesson from the list.</p></>}</div></div></>;
+ const gotoLesson=l=>{if(l){setSelectedLesson(l);setChaptersOpen(false);setMobileReading(true);if(onSelectLesson){onSelectLesson(l.id)}else{window.scrollTo({top:0})}}};
+ return <><div className="page-title">{back&&<div style={{marginBottom:6}}><button type="button" className="text-btn course-back-btn" onClick={back}>← Back</button></div>}<span className="eyebrow">{c.level} • {c.totalLessons} THEORY LESSONS</span><h1>{c.title}</h1><p>{c.description}</p><div className="course-meta"><span>📚 {detail.lessons?.length||0} lessons</span><span>⏱️ ~{Math.max(5,(selectedLesson?.content||'').split(/\s+/).length/160|0)} min reading</span></div></div>{error&&<div className="error-banner">{error}</div>}<div className={'lesson-layout'+(chaptersOpen?' chapters-open':'')+(mobileReading?' mobile-reading':'')}><div className="lesson-list"><button className="chapters-toggle" onClick={()=>setChaptersOpen(o=>!o)} aria-expanded={chaptersOpen}>{chaptersOpen?'Hide chapters':'Chapters'} <ChevronRight size={14}/></button><div className="lesson-chapters"><div className="lesson-summary"><b>{Math.round(localProgress?.percent||0)}%</b><span>course progress • {detail.lessons?.length||0} lessons</span><div className="progress"><span style={{width:(localProgress?.percent||0)+'%'}}/></div></div>{groupedLessons.map(([topic,items],groupIndex)=><section className="lesson-topic-group" key={topic}><div className="lesson-topic-head"><span>{String(groupIndex+1).padStart(2,'0')}</span><div><b>{topic}</b><small>{items.length} lectures</small></div></div>{items.map((l,lectureIndex)=>{const lDone=sequenceFor(l)<=completed;const isExpanded=expandedLessonId===l.id;const overview=isExpanded?getCompactLessonOverview(l):null;return <React.Fragment key={l.id}><div className={'lesson-item '+(selectedLesson?.id===l.id?'selected':'')+(lDone?' done':'')+(isExpanded?' expanded':'')} onClick={()=>{setSelectedLesson(l);setExpandedLessonId(prev=>prev===l.id?null:l.id);}}><div className="lesson-number">{lDone?'✓':lectureIndex+1}</div><div><b>{lectureLabel(l,lectureIndex)}</b><small>{lDone?'Completed • review anytime':'Theory ready • open anytime'}</small></div><button className="icon-btn" disabled={working} onClick={e=>{e.stopPropagation();launchTeacher(l)}} title="Open AI Teacher & learn"><PlayCircle size={18}/></button></div>{isExpanded&&overview&&<div className="lesson-compact-overview" role="region" aria-label={`Overview for ${lectureLabel(l,lectureIndex)}`}><div className="lesson-compact-meta"><span className="lesson-compact-badge">KEY TOPICS</span><p className="lesson-compact-desc">{overview.summary}</p></div>{overview.topics?.length>0&&<ul className="lesson-compact-bullets">{overview.topics.map((t,idx)=><li key={idx}>{t}</li>)}</ul>}<div className="lesson-compact-actions"><button type="button" className="primary compact-open-btn" onClick={()=>{setSelectedLesson(l);setMobileReading(true);if(onSelectLesson)onSelectLesson(l.id);window.scrollTo({top:0,behavior:'smooth'});}}>Read full lecture →</button><button type="button" className="secondary compact-ai-btn" disabled={working} onClick={e=>{e.stopPropagation();launchTeacher(l)}} title="Explain with AI Teacher"><Sparkles size={13}/> Ask AI</button>{lDone?<span className="compact-done-tag">✓ Completed</span>:<button type="button" className="text-btn compact-done-btn" disabled={working} onClick={e=>{e.stopPropagation();complete(l.id)}}>Mark complete</button>}</div></div>}</React.Fragment>;})}</section>)}</div></div><div className="lesson-ai">{selectedLesson?<><button type="button" className="course-back-to-chapters-btn" onClick={()=>{setMobileReading(false);window.scrollTo({top:0,behavior:'smooth'});}}>← Back to chapter list</button><div className="lesson-top-actions"><span className="eyebrow">LECTURE {lectureNumberFor(selectedLesson)} OF {flatLessons.length}</span><button className={'round-btn '+(bookmarked?'saved':'')} onClick={toggleBookmark} title="Bookmark lesson">★</button></div><h3>{lectureLabel(selectedLesson,lectureNumberFor(selectedLesson)-1)}</h3><div className="lesson-reading"><div className="lesson-content">{selectedLesson.content?<TheoryContent content={cleanLessonContent(selectedLesson.content)}/>:<div className="empty"><BookOpen/><b>No lesson content yet</b><span>Ask the AI teacher to explain the topic.</span></div>}</div></div><div className="lesson-bottombar"><button className="nv-icon-btn" disabled={!prevLesson} onClick={()=>gotoLesson(prevLesson)} aria-label="Previous lesson">←</button><button className={'primary '+(isDone?'ghosted':'')} disabled={working} onClick={()=>complete(selectedLesson.id)}>{working?'Saving…':isDone?'✓ Completed':'Mark lesson complete'}</button><button className="nv-icon-btn" disabled={!nextLesson} onClick={()=>gotoLesson(nextLesson)} aria-label="Next lesson">→</button></div><div className="lesson-actions"><button className="secondary" disabled={working} onClick={askAI}><Sparkles size={15}/> {working?'Opening AI Teacher…':'Explain with AI'}</button></div></>:<><BrainCircuit size={28}/><h3>Select a lesson</h3><p>Choose a theory lesson from the list.</p></>}</div></div></>;
 }
 function CodeLab({user}){
  const codeInitial=React.useMemo(()=>({language:'Java',mode:'EXPLAIN',hintLevel:1,code:'public class Main {\n    public static void main(String[] args) {\n        int[] nums = {2, 4, 6, 8};\n        int sum = 0;\n        for (int n : nums) sum += n;\n        System.out.println(sum);\n    }\n}',question:'',level:'beginner',answer:'',runResult:null}),[]);

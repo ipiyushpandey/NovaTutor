@@ -54,11 +54,7 @@ public class AiController {
         if (r == null || r.task() == null) {
             throw new ApiException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_AI_REQUEST", "AI task is required.");
         }
-        long started = System.nanoTime();
-        AiResponse response = ai.ask(r);
-        metrics.record(r.task().name(),
-                (System.nanoTime() - started) / 1_000_000, succeeded(response));
-        return response;
+        return ai.ask(r);
     }
 
     @PostMapping(value = "/ask/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -71,23 +67,18 @@ public class AiController {
         emitter.onTimeout(() -> { cancellation.cancel(); emitter.complete(); });
         emitter.onCompletion(cancellation::cancel);
         emitter.onError(ex -> { cancellation.cancel(); emitter.complete(); });
-        String task = r.task().name();
         try {
             streamExecutor.execute(() -> {
                 if (cancellation.isCancelled()) return;
                 cancellation.attachThread(Thread.currentThread());
-                long started = System.nanoTime();
-                AtomicLong firstChunk = new AtomicLong(-1);
-                AtomicBoolean failed = new AtomicBoolean(false);
                 try {
                     StreamCompletion completion = ai.stream(r, chunk -> {
                         if (cancellation.isCancelled()) throw new IllegalStateException("Client disconnected");
-                        if (firstChunk.get() < 0) firstChunk.set((System.nanoTime() - started) / 1_000_000);
-                        try { emitter.send(SseEmitter.event().data(chunk)); }
+                        try { emitter.send(SseEmitter.event().data(MentorController.formatSseChunk(chunk))); }
                         catch (java.io.IOException e) { cancellation.cancel(); throw new IllegalStateException(e); }
                     }, cancellation);
                     if (!cancellation.isCancelled()) {
-                        long durationMs = (System.nanoTime() - started) / 1_000_000;
+                        long durationMs = completion != null ? completion.durationMs() : 0L;
                         Map<String, Object> payload = new java.util.LinkedHashMap<>();
                         payload.put("status", completion.status());
                         payload.put("finishReason", completion.finishReason());
@@ -106,7 +97,6 @@ public class AiController {
                         emitter.complete();
                     }
                 } catch (Exception e) {
-                    failed.set(true);
                     if (!cancellation.isCancelled()) {
                         try {
                             Map<String, Object> errPayload = Map.of(
@@ -120,8 +110,6 @@ public class AiController {
                 } finally {
                     cancellation.clearThread();
                     Thread.interrupted(); // clear interrupt status before returning thread to pool
-                    metrics.record(task, (System.nanoTime() - started) / 1_000_000,
-                            !failed.get(), firstChunk.get());
                 }
             });
         } catch (RejectedExecutionException full) {

@@ -201,45 +201,50 @@ public class DatabaseMigrationRunner implements InitializingBean {
             }
         }
 
-        // Verify all required columns
-        Set<String> columns = getColumnNames(conn, "learning_history");
+        // Verify all required columns: fast check with 0-row query prevents slow JDBC DatabaseMetaData calls
+        boolean columnsComplete = false;
         try (Statement stmt = conn.createStatement()) {
-            if (!columns.contains("category")) {
-                stmt.execute("ALTER TABLE learning_history ADD COLUMN category VARCHAR(120) NULL");
-                log.info("DatabaseMigrationRunner: Added missing column 'category' to learning_history.");
-            }
-            if (!columns.contains("target_route")) {
-                stmt.execute("ALTER TABLE learning_history ADD COLUMN target_route VARCHAR(200) NULL");
-                log.info("DatabaseMigrationRunner: Added missing column 'target_route' to learning_history.");
-            }
-            if (!columns.contains("content_snapshot")) {
-                stmt.execute("ALTER TABLE learning_history ADD COLUMN content_snapshot LONGTEXT NULL");
-                log.info("DatabaseMigrationRunner: Added missing column 'content_snapshot' to learning_history.");
-            }
-            if (!columns.contains("created_at")) {
-                stmt.execute("ALTER TABLE learning_history ADD COLUMN created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)");
-                log.info("DatabaseMigrationRunner: Added missing column 'created_at' to learning_history.");
-            }
-            if (!columns.contains("updated_at")) {
-                stmt.execute("ALTER TABLE learning_history ADD COLUMN updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)");
-                log.info("DatabaseMigrationRunner: Added missing column 'updated_at' to learning_history.");
+            stmt.execute("SELECT id, user_id, item_type, item_key, title, category, target_route, content_snapshot, created_at, updated_at FROM learning_history WHERE 1=0");
+            columnsComplete = true;
+        } catch (SQLException ignored) {}
+
+        if (!columnsComplete) {
+            Set<String> columns = getColumnNames(conn, "learning_history");
+            try (Statement stmt = conn.createStatement()) {
+                if (!columns.contains("category")) {
+                    stmt.execute("ALTER TABLE learning_history ADD COLUMN category VARCHAR(120) NULL");
+                    log.info("DatabaseMigrationRunner: Added missing column 'category' to learning_history.");
+                }
+                if (!columns.contains("target_route")) {
+                    stmt.execute("ALTER TABLE learning_history ADD COLUMN target_route VARCHAR(200) NULL");
+                    log.info("DatabaseMigrationRunner: Added missing column 'target_route' to learning_history.");
+                }
+                if (!columns.contains("content_snapshot")) {
+                    stmt.execute("ALTER TABLE learning_history ADD COLUMN content_snapshot LONGTEXT NULL");
+                    log.info("DatabaseMigrationRunner: Added missing column 'content_snapshot' to learning_history.");
+                }
+                if (!columns.contains("created_at")) {
+                    stmt.execute("ALTER TABLE learning_history ADD COLUMN created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)");
+                    log.info("DatabaseMigrationRunner: Added missing column 'created_at' to learning_history.");
+                }
+                if (!columns.contains("updated_at")) {
+                    stmt.execute("ALTER TABLE learning_history ADD COLUMN updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)");
+                    log.info("DatabaseMigrationRunner: Added missing column 'updated_at' to learning_history.");
+                }
             }
         }
 
         // Check foreign key: ensure referenced 'users' table exists before adding foreign key
         if (tableExists(conn, "users")) {
-            if (!hasForeignKey(conn, "learning_history", "fk_history_user")) {
-                log.info("DatabaseMigrationRunner: Referenced table 'users' exists; adding fk_history_user constraint...");
-                try (Statement stmt = conn.createStatement()) {
-                    stmt.execute("ALTER TABLE learning_history ADD CONSTRAINT fk_history_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE");
-                    log.info("DatabaseMigrationRunner: Added fk_history_user constraint to learning_history.");
-                } catch (SQLException ex) {
-                    String msg = ex.getMessage().toLowerCase();
-                    if (msg.contains("duplicate") || msg.contains("already exists")) {
-                        log.info("DatabaseMigrationRunner: Foreign key fk_history_user already present.");
-                    } else {
-                        log.warn("DatabaseMigrationRunner: Could not add fk_history_user constraint: {}", ex.getMessage());
-                    }
+            try (Statement stmt = conn.createStatement()) {
+                stmt.execute("ALTER TABLE learning_history ADD CONSTRAINT fk_history_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE");
+                log.info("DatabaseMigrationRunner: Added fk_history_user constraint to learning_history.");
+            } catch (SQLException ex) {
+                String msg = ex.getMessage() != null ? ex.getMessage().toLowerCase() : "";
+                if (msg.contains("duplicate") || msg.contains("already exists") || msg.contains("errno: 121") || ex.getErrorCode() == 1826 || ex.getErrorCode() == 1022) {
+                    log.debug("DatabaseMigrationRunner: Foreign key fk_history_user already present.");
+                } else {
+                    log.warn("DatabaseMigrationRunner: Could not add fk_history_user constraint: {}", ex.getMessage());
                 }
             }
         } else {

@@ -1,6 +1,6 @@
 import React,{useEffect,useRef,useState} from 'react';
 import {BookOpen,CheckCircle2,ChevronRight,ChevronLeft,FileText,GraduationCap,Target,Trophy,UploadCloud,Clock3} from './icons.jsx';
-import {API,readUser,recordLearningHistory} from './lib/api.js';
+import {API,readUser} from './lib/api.js';
 const Download=UploadCloud;
 const ExternalLink=ChevronRight;
 const API_ORIGIN=API.replace(/\/api\/?$/,'');
@@ -79,15 +79,7 @@ export default function GateCse({routeTab=null,onRouteTab=null}){
  const [selectedSubject,setSelectedSubject]=useState('');
  const [quiz,setQuiz]=useState([]); const [loading,setLoading]=useState(true);
  useEffect(()=>{if(!onRouteTab&&routeTab)setLocalTab(routeTab)},[routeTab,onRouteTab]);
- useEffect(()=>{
-  recordLearningHistory({
-   itemType:'GATE_CSE',
-   itemKey:'gatecse_'+(tab||'overview'),
-   title:'GATE CSE — '+(tab?tab.charAt(0).toUpperCase()+tab.slice(1):'Command Center'),
-   category:'GATE CSE Command Center',
-   targetRoute:tab&&tab!=='overview'?`gatecse/${tab}`:'gatecse'
-  }).catch(()=>{});
- },[tab]);
+
  useEffect(()=>{
   let alive=true;
   fetch(QUIZ_URL)

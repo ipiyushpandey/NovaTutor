@@ -36,6 +36,34 @@ export function normalizeAiText(input){
     // Decorative separator lines that are only list markers (and common
     // unicode dash/bullet runs) — never meaningful content.
     if(/^[\s\-*•·▪▫◆◇—_=]{1,8}$/.test(line)){line=''}
+
+    // Normalize malformed Big-O and mathematical artifacts outside code blocks
+    // Fixes broken patterns like "$)(n/log n)**" -> "O(log n)"
+    line = line.replace(/\$\)\s*\(?\s*(?:n\s*\/\s*)?log\s*n\s*\)?\s*\*+/gi, 'O(log n)');
+    line = line.replace(/\$\)\s*\(?([a-zA-Z0-9_\^/\s*+.-]+)\)?\s*\*+/g, 'O($1)');
+
+    // Normalize LaTeX Big-O, Theta, Omega syntax: $\mathcal{O}(...)$ -> O(...)
+    line = line.replace(/\$\s*\\mathcal\{O\}\s*\(([^$]+)\)\s*\$/g, 'O($1)');
+    line = line.replace(/\\mathcal\{O\}\s*\(([^)]+)\)/g, 'O($1)');
+    line = line.replace(/\$\s*\\mathcal\{Theta\}\s*\(([^$]+)\)\s*\$/g, 'Θ($1)');
+    line = line.replace(/\$\s*\\mathcal\{Omega\}\s*\(([^$]+)\)\s*\$/g, 'Ω($1)');
+    line = line.replace(/\$\s*O\s*\(([^$]+)\)\s*\$/g, 'O($1)');
+
+    // Clean common LaTeX symbols in prose
+    line = line.replace(/\\log\b/g, 'log')
+      .replace(/\\le\b|\\leq\b/g, '≤')
+      .replace(/\\ge\b|\\geq\b/g, '≥')
+      .replace(/\\ne\b|\\neq\b/g, '≠')
+      .replace(/\\times\b|\\cdot\b/g, '×')
+      .replace(/\\infty\b/g, '∞')
+      .replace(/\\approx\b/g, '≈');
+
+    // Strip stray unclosed trailing ** immediately following a closing parenthesis
+    const asterisks = (line.match(/\*\*/g) || []).length;
+    if (asterisks % 2 !== 0 && /(?<=\))\s*\*\*$/.test(line)) {
+      line = line.replace(/(?<=\))\s*\*\*$/, '');
+    }
+
     if(line===''){
       blankRun++;
       if(blankRun<=1)out.push('');
@@ -45,4 +73,78 @@ export function normalizeAiText(input){
     out.push(line);
   }
   return out.join('\n').replace(/^\n+|\n+$/g,'');
+}
+
+/**
+ * Extracts a concise summary and key topic bullet points from a lesson.
+ * Deliberately excludes lengthy sections such as About, Common Mistakes,
+ * Worked Examples, and Self-checks for a lightweight mobile overview.
+ */
+export function getCompactLessonOverview(lesson) {
+  if (!lesson) return { summary: '', topics: [] };
+  const topic = lesson.topic || '';
+  const rawContent = String(lesson.content || '').trim();
+  if (!rawContent) {
+    return {
+      summary: topic ? `Core concepts in ${topic}.` : 'Core concepts and lecture walkthrough.',
+      topics: []
+    };
+  }
+
+  const lines = rawContent.split('\n').map(l => l.trim());
+  let summary = '';
+  const bullets = [];
+  let inSkippedSection = false;
+  let inCode = false;
+
+  const skipSectionRegex = /^#{1,4}\s*(about|mistake|common mistake|worked example|lab|practice|self-check|exercise|pitfall)/i;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    if (line.startsWith('```')) {
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode) continue;
+
+    if (/^#{1,4}\s+/.test(line)) {
+      if (skipSectionRegex.test(line)) {
+        inSkippedSection = true;
+        continue;
+      } else {
+        inSkippedSection = false;
+        if (/^#{1,4}\s*(lesson|lecture)\s+\d+/i.test(line)) continue;
+      }
+    }
+
+    if (inSkippedSection) continue;
+
+    // Bullet items
+    if (/^[-*•]\s+/.test(line)) {
+      if (bullets.length < 3) {
+        bullets.push(line.replace(/^[-*•]\s+/, '').replace(/\*\*/g, '').slice(0, 90));
+      }
+      continue;
+    }
+
+    // First substantive paragraph for summary
+    if (!summary && !line.startsWith('#') && line.length > 20) {
+      summary = line.replace(/\*\*/g, '').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+    }
+
+    if (summary && bullets.length >= 2) break;
+  }
+
+  if (!summary && topic) {
+    summary = `Key lecture on ${topic}. Covers essential principles and concepts.`;
+  } else if (!summary) {
+    summary = 'Explores fundamental lecture concepts and theory.';
+  }
+
+  if (summary.length > 180) {
+    summary = summary.slice(0, 177).replace(/\s+\S*$/, '') + '…';
+  }
+
+  return { summary, topics: bullets };
 }

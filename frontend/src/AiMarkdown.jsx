@@ -1,26 +1,48 @@
 import React,{useEffect,useRef,useState} from 'react';
-import {normalizeAiText} from './lib/aiText.js';
+import {normalizeAiText, getCompactLessonOverview} from './lib/aiText.js';
 
 /* NovaTutor shared AI markdown renderer.
    Pure-React, zero dependencies. Every AI answer surface renders through this
    component (AI Teacher, Chat, DSA hints, Code Lab, Knowledge Hub, Interview,
    exam strategy). It renders the markdown the AI actually produces — headings,
    bold/italic, inline code, fenced code with copy, bullets, numbered lists,
-   blockquotes, horizontal rules — as clean premium typography, and normalizes
-   pathological model whitespace (runaway blank lines) without destroying
-   intentional paragraph spacing or code formatting. */
+   blockquotes, horizontal rules, mathematical expressions and Big-O notation —
+   as clean premium typography, and normalizes pathological model whitespace
+   without destroying intentional paragraph spacing or code formatting. */
 
-export {normalizeAiText};
+export {normalizeAiText, getCompactLessonOverview};
+
+export function cleanMath(text){
+  return String(text||'')
+    .replace(/\\log\b/g,'log')
+    .replace(/\\times\b|\\cdot\b/g,'×')
+    .replace(/\\le\b|\\leq\b/g,'≤')
+    .replace(/\\ge\b|\\geq\b/g,'≥')
+    .replace(/\\ne\b|\\neq\b/g,'≠')
+    .replace(/\\approx\b/g,'≈')
+    .replace(/\\to\b|\\rightarrow\b/g,'→')
+    .replace(/\\in\b/g,'∈')
+    .replace(/\\infty\b/g,'∞')
+    .replace(/\\mathcal\{O\}|\\mathcal\{o\}/g,'O')
+    .replace(/\\Theta\b|\\theta\b/g,'Θ')
+    .replace(/\\Omega\b|\\omega\b/g,'Ω')
+    .replace(/\\text\{([^}]+)\}/g,'$1')
+    .replace(/\\(?:sqrt|frac)\{([^}]+)\}/g,'$1')
+    .trim();
+}
 
 const mdInline=(text)=>{
   const src=String(text).replace(/^#{1,6}\s*/, '');
-  // Split on ***bold-italic***, **bold**, __bold__, `code`, *italic*, _italic_
-  const parts=src.split(/(\*\*\*[^*]+\*\*\*|\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_)/g);
+  // Split on ***bold-italic***, **bold**, __bold__, `code`, $math$, \(math\), *italic*, _italic_
+  const parts=src.split(/(\*\*\*[^\n]+?\*\*\*|\*\*[^\n]+?\*\*|__[^_\n]+?__|`[^`\n]+`|\$(?!\s)[^$\n]+?(?<!\s)\$|\\\([^\n]+?\\\)|(?<!\*)\*[^*\n]+?\*(?!\*)|(?<!_)_[^_\n]+?_(?!_))/g);
   return parts.map((x,i)=>{
+    if(!x)return null;
     if(x.startsWith('***')&&x.endsWith('***')&&x.length>6)return <strong key={i}><em>{x.slice(3,-3)}</em></strong>;
     if(x.startsWith('**')&&x.endsWith('**')&&x.length>4)return <strong key={i}>{x.slice(2,-2)}</strong>;
     if(x.startsWith('__')&&x.endsWith('__')&&x.length>4)return <strong key={i}>{x.slice(2,-2)}</strong>;
     if(x.startsWith('`')&&x.endsWith('`')&&x.length>2)return <code key={i}>{x.slice(1,-1)}</code>;
+    if(x.startsWith('$')&&x.endsWith('$')&&x.length>2)return <span className="ai-md-math" key={i}>{cleanMath(x.slice(1,-1))}</span>;
+    if(x.startsWith('\\(')&&x.endsWith('\\)')&&x.length>4)return <span className="ai-md-math" key={i}>{cleanMath(x.slice(2,-2))}</span>;
     if(/^\*[^*\n]+\*$/.test(x))return <em key={i}>{x.slice(1,-1)}</em>;
     if(/^_[^_\n]+_$/.test(x))return <em key={i}>{x.slice(1,-1)}</em>;
     return x;
@@ -28,15 +50,18 @@ const mdInline=(text)=>{
 };
 
 /* Non-React twin of mdInline for renderers that build plain strings/arrays
-   (lesson TheoryContent). Preserves bold/italic/inline code as inline markup. */
+   (lesson TheoryContent). Preserves bold/italic/inline code and math markup. */
 export function mdInlineText(text){
   const src=String(text).replace(/^#{1,6}\s*/, '');
-  const parts=src.split(/(\*\*\*[^*]+\*\*\*|\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_)/g);
+  const parts=src.split(/(\*\*\*[^\n]+?\*\*\*|\*\*[^\n]+?\*\*|__[^_\n]+?__|`[^`\n]+`|\$(?!\s)[^$\n]+?(?<!\s)\$|\\\([^\n]+?\\\)|(?<!\*)\*[^*\n]+?\*(?!\*)|(?<!_)_[^_\n]+?_(?!_))/g);
   return parts.map((x,i)=>{
+    if(!x)return null;
     if(x.startsWith('***')&&x.endsWith('***')&&x.length>6)return <strong key={i}><em>{x.slice(3,-3)}</em></strong>;
     if(x.startsWith('**')&&x.endsWith('**')&&x.length>4)return <strong key={i}>{x.slice(2,-2)}</strong>;
     if(x.startsWith('__')&&x.endsWith('__')&&x.length>4)return <strong key={i}>{x.slice(2,-2)}</strong>;
     if(x.startsWith('`')&&x.endsWith('`')&&x.length>2)return <code key={i}>{x.slice(1,-1)}</code>;
+    if(x.startsWith('$')&&x.endsWith('$')&&x.length>2)return <span className="ai-md-math" key={i}>{cleanMath(x.slice(1,-1))}</span>;
+    if(x.startsWith('\\(')&&x.endsWith('\\)')&&x.length>4)return <span className="ai-md-math" key={i}>{cleanMath(x.slice(2,-2))}</span>;
     if(/^\*[^*\n]+\*$/.test(x))return <em key={i}>{x.slice(1,-1)}</em>;
     if(/^_[^_\n]+_$/.test(x))return <em key={i}>{x.slice(1,-1)}</em>;
     return x;
@@ -152,8 +177,15 @@ export default function AiMarkdown({content}){
     // Flush accumulated paragraph lines before block-level elements; consecutive prose lines join.
     if(
       looksLikeHeading(t)||/^[-*•]\s+/.test(t)||/^\d+[.)]\s+/.test(t)||
-      /^[-—=_*]{3,}$/.test(t)
+      /^[-—=_*]{3,}$/.test(t)||(t.startsWith('$$')&&t.endsWith('$$'))||(t.startsWith('\\[')&&t.endsWith('\\]'))
     ){flush()}
+
+    // Block math $$...$$ or \[...\]
+    if((t.startsWith('$$')&&t.endsWith('$$')&&t.length>4)||(t.startsWith('\\[')&&t.endsWith('\\]')&&t.length>4)){
+      const mathBody=t.startsWith('$$')?t.slice(2,-2):t.slice(2,-2);
+      out.push(<div className="ai-md-math-block" key={'mb'+out.length}>{cleanMath(mathBody)}</div>);
+      continue;
+    }
 
     let m;
     if((m=t.match(/^(#{1,6})\s*(.*)$/))){

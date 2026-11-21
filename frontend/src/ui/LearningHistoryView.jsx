@@ -144,7 +144,9 @@ export default function LearningHistoryView({ user, go, onReopenTopic }) {
         (filter === 'LESSON' && item.itemType === 'LESSON') ||
         (filter === 'DSA' && item.itemType === 'DSA') ||
         (filter === 'GATE_CSE' && item.itemType === 'GATE_CSE') ||
-        (filter === 'AI_TEACHER' && item.itemType === 'AI_TEACHER');
+        (filter === 'AI_TEACHER' && item.itemType === 'AI_TEACHER') ||
+        (filter === 'QUIZ' && item.itemType === 'QUIZ') ||
+        (filter === 'DPP' && item.itemType === 'DPP');
 
       const q = search.trim().toLowerCase();
       const matchesSearch =
@@ -166,6 +168,10 @@ export default function LearningHistoryView({ user, go, onReopenTopic }) {
         return <GraduationCap size={16} />;
       case 'AI_TEACHER':
         return <BrainCircuit size={16} />;
+      case 'QUIZ':
+        return <Target size={16} />;
+      case 'DPP':
+        return <BrainCircuit size={16} />;
       default:
         return <History size={16} />;
     }
@@ -181,6 +187,10 @@ export default function LearningHistoryView({ user, go, onReopenTopic }) {
         return 'GATE CSE';
       case 'AI_TEACHER':
         return 'AI Teacher';
+      case 'QUIZ':
+        return 'Smart Quiz';
+      case 'DPP':
+        return 'Daily Practice (DPP)';
       default:
         return 'Learning Topic';
     }
@@ -224,6 +234,8 @@ export default function LearningHistoryView({ user, go, onReopenTopic }) {
             ['DSA', 'DSA Practice'],
             ['GATE_CSE', 'GATE CSE'],
             ['AI_TEACHER', 'AI Teacher'],
+            ['QUIZ', 'Quizzes'],
+            ['DPP', 'DPP Practice'],
           ].map(([key, label]) => (
             <button
               key={key}

@@ -90,7 +90,7 @@ public class MentorController {
                 try {
                     StreamCompletion completion = ai.stream(request, chunk -> {
                         if (cancellation.isCancelled()) throw new IllegalStateException("Client disconnected");
-                        try { emitter.send(SseEmitter.event().data(chunk)); }
+                        try { emitter.send(SseEmitter.event().data(formatSseChunk(chunk))); }
                         catch (IOException e) { cancellation.cancel(); throw new IllegalStateException(e); }
                     }, cancellation);
                     if (!cancellation.isCancelled()) {
@@ -158,9 +158,27 @@ public class MentorController {
                 + "\nLesson content:\n" + lessonContent
                 + "\nCourse completed lessons: " + completed
                 + "\nMode: " + mode + "\nTutor instruction: " + instruction
-                + "\nTeaching rule: use short sections, concrete examples and visual mental models only when they improve understanding."
+                + "\nTeaching rule: use short sections, concrete examples and visual mental models only when they improve understanding. Ensure words are separated by spaces and mathematical/complexity notation is written cleanly without distorted brackets."
                 + "\nStudent message: " + student;
         return new AiRequest(AiTask.ADAPTIVE_TUTOR, lesson.getTitle(), context, r.level(), r.language());
+    }
+
+    static String formatSseChunk(String chunk) {
+        if (chunk == null || chunk.isEmpty()) return "";
+        if (chunk.indexOf('\n') == -1) {
+            return chunk.startsWith(" ") ? " " + chunk : chunk;
+        }
+        String[] lines = chunk.split("\n", -1);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < lines.length; i++) {
+            if (i > 0) sb.append("\n");
+            if (lines[i].startsWith(" ")) {
+                sb.append(" ").append(lines[i]);
+            } else {
+                sb.append(lines[i]);
+            }
+        }
+        return sb.toString();
     }
 
     private String limit(String value, int max, String fallback) {

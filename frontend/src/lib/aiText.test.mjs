@@ -66,3 +66,42 @@ test('is idempotent on already-normalized text', () => {
   const once = normalizeAiText('a\n\n\nb');
   assert.equal(normalizeAiText(once), once);
 });
+
+test('normalizes malformed Big-O and mathematical artifacts like $)(n/log n)**', () => {
+  assert.equal(normalizeAiText('Time complexity: $)(n/log n)**'), 'Time complexity: O(log n)');
+  assert.equal(normalizeAiText('Best case is $)(1)** and worst case is $)(n)**'), 'Best case is O(1) and worst case is O(n)');
+});
+
+test('normalizes LaTeX Big-O and complexity expressions', () => {
+  assert.equal(normalizeAiText('Runs in $\\mathcal{O}(n \\log n)$ time'), 'Runs in O(n log n) time');
+  assert.equal(normalizeAiText('Takes $O(\\log n)$ operations'), 'Takes O(log n) operations');
+  assert.equal(normalizeAiText('Bound is $n \\le 10^5$ and $a \\times b$'), 'Bound is $n ≤ 10^5$ and $a × b$');
+});
+
+test('getCompactLessonOverview extracts concise topics without lengthy sections', async () => {
+  const { getCompactLessonOverview } = await import('./aiText.js');
+  const sampleLesson = {
+    title: 'Lesson 1 — Introduction to Binary Trees',
+    topic: 'Binary Trees',
+    content: `# Lesson 1 — Introduction to Binary Trees
+A binary tree is a hierarchical data structure where each node has at most two children. In this lecture, we explore binary tree properties and traversals.
+
+## Core concepts
+- Tree nodes, root, and leaf properties
+- In-order, pre-order, and post-order traversal
+- Height and depth relationships
+
+## Common mistakes
+Students frequently confuse height with depth or forget edge cases.
+
+## About the Author
+Written by the curriculum team.`
+  };
+
+  const overview = getCompactLessonOverview(sampleLesson);
+  assert.ok(overview.summary.includes('hierarchical data structure'));
+  assert.ok(!overview.summary.toLowerCase().includes('mistakes'));
+  assert.ok(!overview.summary.toLowerCase().includes('about the author'));
+  assert.equal(overview.topics.length, 3);
+  assert.ok(overview.topics[0].includes('Tree nodes'));
+});
